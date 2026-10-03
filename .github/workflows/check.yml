@@ -1,0 +1,35 @@
+name: MindPond checks
+on: [push, pull_request]
+jobs:
+  production-contracts:
+    runs-on: ubuntu-latest
+    env:
+      EMBEDDING_ZH_ENABLED: 'false'
+      ONNXRUNTIME_NODE_INSTALL: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: npm-shrinkwrap.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run verify:standalone-package
+      - run: npm audit --omit=dev --audit-level=high
+  client-contracts:
+    runs-on: ubuntu-latest
+    env:
+      EMBEDDING_ZH_ENABLED: 'false'
+      ONNXRUNTIME_NODE_INSTALL: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: npm-shrinkwrap.json
+      - run: npm ci
+      - run: npm install --global @openai/codex@0.153.4 @anthropic-ai/claude-code@2.1.85
+      - run: npm run build
+      - run: npm run verify:client-bundles

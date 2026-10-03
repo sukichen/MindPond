@@ -1,0 +1,18 @@
+{
+  "defaultProfile": "legacy",
+  "buildOnStartup": false,
+  "profiles": [
+    {
+      "profile": {
+        "id": "bge-small-zh-cls",
+        "label": "中文 BGE · CLS",
+        "model": "Xenova/bge-small-zh-v1.5",
+        "revision": "local",
+        "dimensions": 512,
+        "pooling": "cls",
+        "queryPrefix": "为这个句子生成表示以用于检索相关文章："
+      },
+      "runtime": { "device": "cpu", "algorithm": "exact" }
+    }
+  ]
+}

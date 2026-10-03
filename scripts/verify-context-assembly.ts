@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { GraphMemory } from '../src/core/graph-memory.js';
+import { assembleRecall, recallEntry } from '../src/core/context-assembly.js';
+const temp=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-context-budget-'));
+process.env.EMBEDDING_ZH_ENABLED='false';
+const g=new GraphMemory('.',{dbPath:path.join(temp,'memory.db')});
+const vector=[1,...Array(383).fill(0)];
+try {
+  await g.init();
+  const big=await g.createNode({dimension:'fact',layer:'L1',content:'Detailed observation '.repeat(500)+'Production remains unverified.',embedding:vector});
+  const small=await g.createNode({dimension:'fact',layer:'L1',content:'Use the local proxy only for development. Never infer production readiness.',embedding:vector});
+  const different=await g.createNode({dimension:'fact',layer:'L1',content:'Production requires separate validation; this is an independent constraint.',embedding:vector});
+  const raw=await g.search({query:'proxy',embedding:vector,limit:20,minScore:0});
+  const pack=assembleRecall([...raw,...raw,...raw],2500);
+  assert.equal(pack.contextBudget.candidates,3,'multiple matches do not occupy multiple result slots');
+  assert.equal(pack.results.length,2);
+  assert(pack.contextBudget.omitted.some(n=>n.memoryId===big.id));
+  assert(pack.results.some(n=>n.node.content.endsWith('Never infer production readiness.')));
+  assert.equal(Buffer.byteLength(JSON.stringify({results:pack.results.map(recallEntry)}),'utf8'),pack.contextBudget.used);
+  assert(pack.contextBudget.used<=2500);
+  const recall=await g.recall({query:'proxy',embedding:vector,contextBudgetBytes:2500,limit:20,minScore:0,hostId:'host',runId:'run'});
+  const receipt=JSON.parse((await (g as any).db.get('SELECT result_ids FROM memory_recalls WHERE id=?',[recall.recallId])).result_ids);
+  assert.equal(receipt.length,2,'feedback denominator covers the results actually returned');
+  assert(receipt.every((r:any)=>r.contentHash&&typeof r.updatedAt==='number'));
+  await assert.rejects(g.reportRecallFeedback({recallId:recall.recallId,hostId:'host',runId:'run',decisions:[{memoryId:small.id,disposition:'used'},{memoryId:big.id,disposition:'rejected'}]}),/returned by this recall/);
+  assert.equal((await g.recallFeedbackSummary()).decisions.used,0,'invalid later feedback rolls back earlier entries');
+  await g.reportRecallFeedback({recallId:recall.recallId,hostId:'host',runId:'run',decisions:[{memoryId:small.id,disposition:'used'},{memoryId:different.id,disposition:'unassessed'}]});
+  assert.equal((await g.recallFeedbackSummary()).decisions.used,1);
+  await assert.rejects(g.recall({nodeId:small.id,contextBudgetBytes:NaN}),/contextBudgetBytes/);
+  assert.equal((await g.recallFeedbackSummary()).recalls,1,'invalid budgets do not create receipts');
+  const tiny=await g.recall({query:'proxy',embedding:vector,contextBudgetBytes:32});assert.deepEqual(tiny.results,[]);assert(tiny.contextBudget!.omitted.length>0);
+  console.log('PASS whole-unit context budget, canonical dedup, honest omissions, selected-only versioned receipts and atomic feedback');
+} finally {await g.close();await fs.rm(temp,{recursive:true,force:true});}

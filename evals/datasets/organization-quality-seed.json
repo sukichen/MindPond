@@ -1,0 +1,361 @@
+{
+  "version": "mindpond.organization-quality.v1",
+  "description": "Nine independently authored synthetic regression cases. Pipeline starter only; below the 120-case release gate. Labels are for independent review and must not enter model prompts.",
+  "cases": [
+    {
+      "id": "dev-proxy",
+      "group": "local-network",
+      "split": "development",
+      "tags": [
+        "duplicate",
+        "negation"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "The development proxy listens on port 7903 on loopback only. Production exposure has not been reviewed."
+        },
+        {
+          "id": "b",
+          "content": "Local development uses a loopback proxy on port 7903. Whether production can expose it is unverified."
+        }
+      ],
+      "facts": [
+        {
+          "id": "port",
+          "claim": "Development proxy port is 7903."
+        },
+        {
+          "id": "binding",
+          "claim": "Binding is loopback only."
+        },
+        {
+          "id": "unknown",
+          "claim": "Production exposure remains unverified."
+        }
+      ],
+      "forbidden": [
+        "Production internet exposure is safe or has been verified."
+      ],
+      "expectRestraint": false,
+      "expectAssociation": false
+    },
+    {
+      "id": "dev-environments",
+      "group": "mail-delivery",
+      "split": "development",
+      "tags": [
+        "conflict",
+        "environment"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "The staging mail worker drops every outbound message after rendering. This prevents test mail reaching customers."
+        },
+        {
+          "id": "b",
+          "content": "The production mail worker delivers verified transactional messages to customers; it does not drop all messages."
+        }
+      ],
+      "facts": [
+        {
+          "id": "stage",
+          "claim": "Staging drops outbound mail after rendering."
+        },
+        {
+          "id": "production",
+          "claim": "Production delivers verified transactional mail."
+        }
+      ],
+      "forbidden": [
+        "All environments drop every email.",
+        "Staging delivers mail to customers."
+      ],
+      "expectRestraint": true,
+      "expectAssociation": false
+    },
+    {
+      "id": "dev-context",
+      "group": "travel-voucher",
+      "split": "development",
+      "tags": [
+        "association-context"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "The museum ticket allows entry on the booked day."
+        },
+        {
+          "id": "b",
+          "content": "The hotel reservation includes one printed guest voucher."
+        }
+      ],
+      "associations": [
+        {
+          "a": "a",
+          "b": "b",
+          "weight": 0.8,
+          "reason": "The booked museum promotion requires the hotel guest voucher at entry; co-recall avoids forgetting it.",
+          "context": "Only the September partner promotion for this booking. It is not a general requirement for museum entry."
+        }
+      ],
+      "facts": [
+        {
+          "id": "date",
+          "claim": "Museum entry is on the booked day."
+        },
+        {
+          "id": "voucher",
+          "claim": "This hotel reservation includes a guest voucher."
+        },
+        {
+          "id": "condition",
+          "claim": "Voucher linkage applies only to this booking's September partner promotion."
+        }
+      ],
+      "forbidden": [
+        "All museum visitors need a hotel voucher."
+      ],
+      "expectRestraint": false,
+      "expectAssociation": false
+    },
+    {
+      "id": "dev-independent",
+      "group": "two-alexes",
+      "split": "development",
+      "tags": [
+        "same-name",
+        "restraint"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "Alex Chen on the Atlas backend team owns database migration reviews. This record is specific to Atlas."
+        },
+        {
+          "id": "b",
+          "content": "Alex Chen at the external studio coordinates illustrations for the Cedar booklet. Identity matching with other Alex Chens has not been established."
+        }
+      ],
+      "facts": [
+        {
+          "id": "atlas",
+          "claim": "Atlas migration reviews belong to its backend Alex Chen."
+        },
+        {
+          "id": "cedar",
+          "claim": "Cedar illustrations are coordinated by the external studio Alex Chen."
+        },
+        {
+          "id": "identity",
+          "claim": "No evidence establishes these are the same person."
+        }
+      ],
+      "forbidden": [
+        "A single Alex Chen is confirmed to own both roles."
+      ],
+      "expectRestraint": true,
+      "expectAssociation": false
+    },
+    {
+      "id": "holdout-review",
+      "group": "inventory-code",
+      "split": "holdout",
+      "tags": [
+        "partial-profile",
+        "verification-scope"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "Review of inventory/reserve.ts found a transaction around local stock reservation. A unit test exercised one worker; cross-process races were not tested."
+        },
+        {
+          "id": "b",
+          "content": "Review of inventory/release.ts found compensation for a failed local reservation. The test covered a single database connection. Production failover has not been tested."
+        }
+      ],
+      "facts": [
+        {
+          "id": "reserve",
+          "claim": "Local reserve uses a transaction; only one worker was tested."
+        },
+        {
+          "id": "release",
+          "claim": "Local release compensates failed reservations on one connection."
+        },
+        {
+          "id": "unknowns",
+          "claim": "Cross-process races and production failover remain untested."
+        }
+      ],
+      "forbidden": [
+        "The inventory system is verified race-free under production failover."
+      ],
+      "expectRestraint": false,
+      "expectAssociation": false
+    },
+    {
+      "id": "holdout-time",
+      "group": "meeting-schedule",
+      "split": "holdout",
+      "tags": [
+        "version-conflict",
+        "time"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "The August project note scheduled the design sync for Tuesdays at 10:00."
+        },
+        {
+          "id": "b",
+          "content": "The signed September update moves the design sync to Thursdays at 14:00, starting September 10. The August schedule is historical."
+        }
+      ],
+      "facts": [
+        {
+          "id": "past",
+          "claim": "Tuesday 10:00 describes the historical August schedule."
+        },
+        {
+          "id": "current",
+          "claim": "Thursday 14:00 applies starting September 10."
+        }
+      ],
+      "forbidden": [
+        "Both times describe the current recurring meeting.",
+        "The new schedule applied before September 10."
+      ],
+      "expectRestraint": true,
+      "expectAssociation": false
+    },
+    {
+      "id": "holdout-conditional",
+      "group": "printer-workflow",
+      "split": "holdout",
+      "tags": [
+        "association-context",
+        "conditional-recall"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "The office label printer pauses jobs while its thermal head cools."
+        },
+        {
+          "id": "b",
+          "content": "The dispatch desk keeps a tray of labels produced earlier in the same shift."
+        }
+      ],
+      "associations": [
+        {
+          "a": "a",
+          "b": "b",
+          "weight": 0.75,
+          "reason": "During cooling pauses the earlier-label tray lets dispatch continue, so the fallback should be recalled with the pause.",
+          "context": "Only labels for the same destination and current shift may be reused. Old or mismatched labels must never be substituted."
+        }
+      ],
+      "facts": [
+        {
+          "id": "pause",
+          "claim": "The thermal head cooling pause stops current printing."
+        },
+        {
+          "id": "tray",
+          "claim": "There is a current-shift earlier-label tray."
+        },
+        {
+          "id": "limits",
+          "claim": "Fallback applies only to same-destination current-shift labels."
+        }
+      ],
+      "forbidden": [
+        "Any old label can be used during a printer pause."
+      ],
+      "expectRestraint": false,
+      "expectAssociation": false
+    },
+    {
+      "id": "holdout-missing-link",
+      "group": "site-access",
+      "split": "holdout",
+      "tags": [
+        "association-context",
+        "complement",
+        "conditional-recall"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "For the Riverside site inspection on October 9, visitors must check in at the south security desk before entering the equipment room."
+        },
+        {
+          "id": "b",
+          "content": "The October 9 Riverside visitor pass is valid only when paired with the signed inspection invitation. The invitation is stored in the project handover folder."
+        }
+      ],
+      "facts": [
+        {
+          "id": "checkin",
+          "claim": "Riverside inspection visitors check in at the south security desk before equipment-room entry."
+        },
+        {
+          "id": "pass",
+          "claim": "The October 9 visitor pass needs the signed invitation."
+        },
+        {
+          "id": "scope",
+          "claim": "The pass and invitation condition is specific to this inspection, not a general building-access rule."
+        }
+      ],
+      "forbidden": [
+        "Every Riverside visit requires this October 9 invitation."
+      ],
+      "expectRestraint": false,
+      "expectAssociation": true
+    },
+    {
+      "id": "holdout-tools",
+      "group": "repository-tooling",
+      "split": "holdout",
+      "tags": [
+        "similar-topic",
+        "restraint"
+      ],
+      "memories": [
+        {
+          "id": "a",
+          "content": "The app repository uses pnpm with a checked-in pnpm-lock.yaml. Its documented frozen installation command is pnpm install --frozen-lockfile."
+        },
+        {
+          "id": "b",
+          "content": "The separate docs repository uses npm with package-lock.json and validates dependencies with npm ci. No migration of either repository has been requested."
+        }
+      ],
+      "facts": [
+        {
+          "id": "app",
+          "claim": "App uses pnpm and its frozen-lockfile command."
+        },
+        {
+          "id": "docs",
+          "claim": "Docs uses npm ci and package-lock.json."
+        },
+        {
+          "id": "migration",
+          "claim": "No migration between package managers was requested."
+        }
+      ],
+      "forbidden": [
+        "Both repositories should use npm ci.",
+        "A package manager migration has already been approved."
+      ],
+      "expectRestraint": true,
+      "expectAssociation": false
+    }
+  ]
+}

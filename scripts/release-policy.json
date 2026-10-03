@@ -1,0 +1,35 @@
+{
+  "syntheticCredentialLiterals": {
+    "scripts/verify-trusted-context.ts": [
+      "verify-context-secret",
+      "verify-team-secret"
+    ],
+    "scripts/verify-save-preview.ts": [
+      "isolated-test-secret"
+    ],
+    "scripts/verify-opencode-native.ts": [
+      "fixture-secret-1234567890"
+    ],
+    "scripts/verify-memory-revisions.ts": [
+      "revision-test-only"
+    ],
+    "scripts/verify-domains-and-coordination.ts": [
+      "fixture-only-team-secret"
+    ],
+    "scripts/verify-domain-entries.ts": [
+      "verify-domain-entries-secret"
+    ],
+    "scripts/verify-dimension-bridges.ts": [
+      "isolated-test-secret"
+    ],
+    "scripts/verify-legacy-consolidation.ts": [
+      "verify-context-secret"
+    ],
+    "scripts/verify-production-safety.ts": [
+      "review-context-only-fixture"
+    ],
+    "scripts/verify-agent-api.ts": [
+      "workbench-test-key"
+    ]
+  }
+}

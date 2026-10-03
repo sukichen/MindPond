@@ -1,0 +1,89 @@
+{
+  "$comment": "B01 夹具：语义边界反例的固定表述，防止基线演进中回归（对应验收手册 §3 T20/T10/T11 与总计划 §1.3 不可破坏语义）。涟漪数值为规格化样例，不依赖任何具体模型或生产数据。",
+  "fixtureSet": "boundary-counterexamples",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "parallel-seeds-and-path-strength",
+      "title": "并行种子独立、两跳边权相乘且不累加成概率",
+      "mapsTo": ["T20"],
+      "tasks": ["B01", "Q03"],
+      "setup": {
+        "space": "project:alpha",
+        "seeds": [
+          { "memoryId": "m1", "via": "正文命中" },
+          { "memoryId": "m2", "via": "锚点命中" }
+        ],
+        "edges": [
+          { "from": "m3", "to": "m4", "weight": 0.9, "hops": 2, "note": "m3→x 与 x→m4 各 0.9，实际经过两跳" }
+        ]
+      },
+      "expected": [
+        "m1 与 m2 是两个并行种子，各自独立发起涟漪，互不合并",
+        "两跳路径强度 = 0.9 × 0.9 = 0.81，逐跳相乘",
+        "路径强度不累加成概率，多路径不得相加超过单条强度语义",
+        "同空间内维度切换本身不新增一跳"
+      ]
+    },
+    {
+      "id": "same-space-dimension-bridge",
+      "title": "同空间多维度桥有效，跨空间借用无效",
+      "mapsTo": ["T20", "T21"],
+      "tasks": ["B01", "Q02"],
+      "setup": {
+        "space": "project:alpha",
+        "memory": {
+          "memoryId": "m5",
+          "content": "同一份正文",
+          "dimensions": ["build", "runtime"],
+          "note": "m5 在同一空间内作为 build 与 runtime 的维度桥梁"
+        },
+        "foreignSpace": "project:beta"
+      },
+      "expected": [
+        "m5 的多显式维度成立，同空间内经维度桥切换不加跳",
+        "另一条记忆不能仅因与 m5 共享正文就进入 project:beta 的图",
+        "旧 weave 入口看到多个共同维度时不得判为非法"
+      ]
+    },
+    {
+      "id": "session-reverse-leak",
+      "title": "session 私有内容经 team 引用反向泄漏",
+      "mapsTo": ["T10", "T11"],
+      "tasks": ["R03"],
+      "setup": {
+        "privateMemory": {
+          "domain": "session:s7",
+          "content": "私有排障笔记",
+          "references": ["team:t1 的某条公开记忆"]
+        },
+        "adversaryInputs": [
+          { "field": "sessionId", "value": "其他会话 id" },
+          { "field": "scope", "value": "operator" },
+          { "field": "requestId", "value": "其他请求 id" }
+        ]
+      },
+      "expected": [
+        "从 team:t1 查询时，看不到 session:s7 的私有内容与关系理由",
+        "LLM 自报 operator、其他 sessionId、其他 requestId 均无法扩权；可信上下文只能由服务端/连接层绑定",
+        "search/get/trace/profile/log/tasks/events/feedback 全部读取路径同样适用",
+        "未知 session 不返回任何 session 记忆，不默认全局读取"
+      ]
+    },
+    {
+      "id": "team-write-without-user-grant",
+      "title": "无用户主动授权写入 team",
+      "mapsTo": ["T11"],
+      "tasks": ["R03"],
+      "setup": {
+        "attempt": "agent 在没有真实用户主动请求的情况下，把 session/personal 语义内容发布到 team 域",
+        "contextFreeInputs": ["模型生成的文本", "整理提案", "画像输出", "锚点提案"]
+      },
+      "expected": [
+        "team 语义写入必须来自真实用户主动请求；授权不能从模型生成文本推导",
+        "整理、画像、锚点操作不得绕过 session/team 边界",
+        "拒绝时返回所缺上下文或授权事实，不自动扩大权限或改域"
+      ]
+    }
+  ]
+}

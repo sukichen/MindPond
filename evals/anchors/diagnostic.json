@@ -1,0 +1,230 @@
+{
+  "memories": [
+    {
+      "key": "restart",
+      "content": "sample-agent 的独立守卫负责发布恢复。新版本只有通过启动探测后才能成为稳定版本；启动失败时保留失败修改供排查，并切回已经验证的代码。不能依赖故障中的 agent 自己恢复。",
+      "anchors": [
+        {
+          "text": "sample-agent 自我修改后重启失败如何恢复服务",
+          "basis": "启动失败时保留失败修改供排查",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        },
+        {
+          "text": "发布前检查新版本能否启动及回滚条件",
+          "basis": "新版本只有通过启动探测后才能成为稳定版本",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        }
+      ]
+    },
+    {
+      "key": "lan",
+      "content": "sample-agent 网页与后端通信使用同源代理。手机访问时，页面中的 localhost 指向手机自己，因此网页的 API 和 WebSocket 应使用网页当前地址，再由服务器转发到内部服务。",
+      "anchors": [
+        {
+          "text": "手机能打开页面但聊天一直连接失败",
+          "basis": "页面中的 localhost 指向手机自己",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        },
+        {
+          "text": "局域网网页在电脑正常但手机不能用",
+          "basis": "网页的 API 和 WebSocket 应使用网页当前地址",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        }
+      ]
+    },
+    {
+      "key": "draft",
+      "content": "sample-agent 输入框在网络断开时不应清空草稿或显示已发送。中文输入法正在选字时，回车只确认候选字；必须等组合输入结束后才允许回车发送。",
+      "anchors": [
+        {
+          "text": "中文选字按回车导致消息提前发送",
+          "basis": "回车只确认候选字",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        },
+        {
+          "text": "掉线后输入内容消失",
+          "basis": "网络断开时不应清空草稿",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        }
+      ]
+    },
+    {
+      "key": "receipt",
+      "content": "sample-agent 对不确定的保存应答使用原始 idempotencyKey 和完全相同的载荷重试。只有收到持久化回执才能宣称保存完成；同 key 不同内容必须报冲突，不能静默覆盖。",
+      "anchors": [
+        {
+          "text": "保存请求超时后如何避免重复记忆",
+          "basis": "使用原始 idempotencyKey 和完全相同的载荷重试",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        }
+      ]
+    },
+    {
+      "key": "guardian",
+      "content": "sample-agent 恢复守卫必须独立于待发布代码运行，并保存上一份已验证版本的标识。服务启动与健康检查有期限，不能无限等待；失败修改应作为诊断材料保留。",
+      "anchors": [
+        {
+          "text": "谁在 agent 无法启动时执行版本恢复",
+          "basis": "恢复守卫必须独立于待发布代码运行",
+          "spaceId": "project:sample-agent",
+          "memoryType": "operations"
+        }
+      ]
+    },
+    {
+      "key": "session",
+      "content": "MindPond 中 session 记录只在相应会话活跃或暂停期间可读。长期偏好放入 personal；team 发布必须来自用户明确要求，agent 不能因为觉得有用就自行共享。",
+      "anchors": [
+        {
+          "text": "临时任务信息不应该出现在下一次对话",
+          "basis": "session 记录只在相应会话活跃或暂停期间可读",
+          "spaceId": "project:mindpond",
+          "memoryType": "design"
+        },
+        {
+          "text": "自动把个人经验共享给团队是否允许",
+          "basis": "team 发布必须来自用户明确要求",
+          "spaceId": "project:mindpond",
+          "memoryType": "design"
+        }
+      ]
+    },
+    {
+      "key": "ripple",
+      "content": "MindPond 每个直接命中的记忆都是并行入口。关联传播只在同一空间和类型内进行，每条路径分别乘边权；同一正文在多个空间存在不意味着可以跨空间跳转。",
+      "anchors": [
+        {
+          "text": "两个直接命中的记忆是否需要串联计算衰减",
+          "basis": "每个直接命中的记忆都是并行入口",
+          "spaceId": "project:mindpond",
+          "memoryType": "design"
+        },
+        {
+          "text": "一份记忆属于多个空间时会不会跨维度传播",
+          "basis": "不意味着可以跨空间跳转",
+          "spaceId": "project:mindpond",
+          "memoryType": "design"
+        }
+      ]
+    },
+    {
+      "key": "expiry",
+      "content": "MindPond 的记忆内容变化后，原先的关联依据需要复核。需要复核不等于事实错误；不同环境和版本可能使表面矛盾同时成立，整理不能仅凭当前场景否定历史依据。",
+      "anchors": [
+        {
+          "text": "新旧记忆相互矛盾时是否直接删除旧记录",
+          "basis": "不同环境和版本可能使表面矛盾同时成立",
+          "spaceId": "project:mindpond",
+          "memoryType": "design"
+        }
+      ]
+    }
+  ],
+  "associations": [
+    {
+      "a": "restart",
+      "b": "guardian",
+      "weight": 0.9
+    }
+  ],
+  "queries": [
+    {
+      "query": "sample-agent 改完自己后彻底起不来了，怎样找回上一个能用的版本？",
+      "relevant": [
+        "restart",
+        "guardian"
+      ],
+      "spaceId": "project:sample-agent",
+      "memoryType": "operations"
+    },
+    {
+      "query": "电脑上聊天正常，换同一个 Wi-Fi 的手机就连不上后端",
+      "relevant": [
+        "lan"
+      ],
+      "spaceId": "project:sample-agent",
+      "memoryType": "operations"
+    },
+    {
+      "query": "拼音候选词还没选完，回车竟然把半句话发出去了",
+      "relevant": [
+        "draft"
+      ],
+      "spaceId": "project:sample-agent",
+      "memoryType": "operations"
+    },
+    {
+      "query": "网络断了之后刚打的一段字没了",
+      "relevant": [
+        "draft"
+      ],
+      "spaceId": "project:sample-agent",
+      "memoryType": "operations"
+    },
+    {
+      "query": "写记忆时返回超时，重新请求会不会重复写两条？",
+      "relevant": [
+        "receipt"
+      ],
+      "spaceId": "project:sample-agent",
+      "memoryType": "operations"
+    },
+    {
+      "query": "怎么证明新版本真正启动成功再把它当作稳定版？",
+      "relevant": [
+        "restart",
+        "guardian"
+      ],
+      "spaceId": "project:sample-agent",
+      "memoryType": "operations"
+    },
+    {
+      "query": "今天执行到一半的临时信息，不希望在别的会话继续出现",
+      "relevant": [
+        "session"
+      ],
+      "spaceId": "project:mindpond",
+      "memoryType": "design"
+    },
+    {
+      "query": "agent 能自行把个人工作经验发表到团队记忆吗？",
+      "relevant": [
+        "session"
+      ],
+      "spaceId": "project:mindpond",
+      "memoryType": "design"
+    },
+    {
+      "query": "搜索同时找到三个节点，它们会互相乘权重吗？",
+      "relevant": [
+        "ripple"
+      ],
+      "spaceId": "project:mindpond",
+      "memoryType": "design"
+    },
+    {
+      "query": "同一正文有不同空间成员，涟漪能直接跳过去吗？",
+      "relevant": [
+        "ripple"
+      ],
+      "spaceId": "project:mindpond",
+      "memoryType": "design"
+    },
+    {
+      "query": "旧环境下有效的记录与今天结论相反，整理该怎么处理？",
+      "relevant": [
+        "expiry"
+      ],
+      "spaceId": "project:mindpond",
+      "memoryType": "design"
+    }
+  ],
+  "description": "Manually authored generic engineering fixtures; no real user transcripts, memory IDs or runtime records."
+}
