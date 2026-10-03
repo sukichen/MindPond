@@ -3,6 +3,8 @@
 import 'dotenv/config';
 import { GraphMemory } from './core/graph-memory.js';
 import { defaultDatabasePath } from './core/runtime-paths.js';
+// Reserve stdout for the command's JSON results, regardless of log formatting.
+process.env.MINDPOND_LOG_STDERR = '1';
 const args=process.argv.slice(2);
 const flag=(name:string)=>{const at=args.indexOf(name);return at<0?undefined:args[at+1];};
 const command=args[0];

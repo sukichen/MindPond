@@ -58,9 +58,14 @@ try {
   assert.equal((await fs.lstat(installed)).isSymbolicLink(), false);
   const pkg = JSON.parse(await fs.readFile(path.join(installed, 'package.json'), 'utf8'));
   assert.equal(pkg.dependencies.zod, '4.5.4');
-  const modelStatusOutput=(await exec(path.join(temp,'node_modules/.bin/mindpond-models'),['status'],{cwd:temp,env,timeout:15000})).stdout;
-  const modelStatus=JSON.parse(modelStatusOutput.split('\n').filter(line=>!line.startsWith('{"timestamp"')).join('\n'));
-  assert.equal(modelStatus.activeProfile,'legacy');assert(modelStatus.presets.length>=6);
+  for (const format of ['json', 'text']) {
+    const modelStatusOutput=(await exec(path.join(temp,'node_modules/.bin/mindpond-models'),['status'],{
+      cwd:temp,env:{...env,LOG_FORMAT:format,MINDPOND_LOG_STDERR:'0'},timeout:15000,
+    })).stdout;
+    const modelStatus=JSON.parse(modelStatusOutput);
+    assert.equal(modelStatus.activeProfile,'legacy');assert(modelStatus.presets.length>=6);
+  }
+  console.log('PASS installed model status keeps stdout valid JSON in both log formats');
   const connectBin=path.join(temp,'node_modules/.bin/mindpond-connect');
   const bundleDir=path.join(temp,'client-bundle');
   await exec(connectBin,['prepare','--client','claude','--directory',bundleDir,'--db',path.join(temp,'data','mindpond.db')],{cwd:temp,env,timeout:10000});
