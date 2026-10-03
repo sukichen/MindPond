@@ -9,11 +9,13 @@ export async function runMinimalHost({ dbPath, llm }) {
   const pond = new MindPond({ dbPath });
   await pond.init();
   try {
-    const rules = protocolRulesResponse();
-    const scope = { spaceId: 'example/local-proxy', memoryType: 'fact' };
+    const dimensionPolicy = await pond.graph.getDimensionPolicy();
+    const rules = {...protocolRulesResponse(),dimensionPolicy};
+    const identity=dimensionPolicy.definitions.some(d=>d.id==='environment'&&d.enabled)?'environment':dimensionPolicy.defaultDimension;
+    const scope = { spaceId: 'example/local-proxy', memoryType: identity };
     const content = 'The development proxy listens on localhost:7903. Production deployment is unverified.';
     const options = {
-      domain: { kind: 'personal', id: 'default' }, memberships: [scope], idempotencyKey: 'example/proxy-v1',
+      domain: { kind: 'personal', id: 'default' }, dimensions:[identity], memberships: [scope], idempotencyKey: 'example/proxy-v1',
       anchors: [{ ...scope, text: 'development proxy address', basis: 'development proxy listens on localhost:7903' }],
     };
     const preview = await pond.validateSave(content, options);
@@ -21,7 +23,7 @@ export async function runMinimalHost({ dbPath, llm }) {
     const saved = await pond.save(content, options);
     assert.equal((await pond.save(content, options)).id, saved.id);
     await pond.save('After changing the development proxy port, update its local launch configuration.', {
-      memberships: [scope], idempotencyKey: 'example/proxy-v2',
+      dimensions:[identity], memberships: [scope], idempotencyKey: 'example/proxy-v2',
     });
     const request = await pond.graph.organizationRequests.createRequest({ ...scope, batchSize: 2 });
     const progress = await driveOrganizationRequest(pond.graph, { requestId: request.requestId, llm, budgetMs: 10000 });

@@ -20,6 +20,10 @@ npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP
 
 服务根地址提供搜索、记忆库、人工整理、空间图谱和 action log。搜索直接调用 agent 使用的 GraphMemory.search，支持仅直接命中的对照、传播路径与逐段关联依据。高级参数与原始 JSON 可展开；详情支持正文编辑、关联理由、适用场景、逐条复核与停用/恢复。
 
+## 默认维度与自定义
+
+新库默认优先使用 `profile`（人物与偏好）、`commitment`（约定与目标）、`environment`（工具与环境）、`work`（项目与工作知识）、`practice`（方法与经验），缺省身份为 `work`。旧四维明确标为历史兼容，保留显式旧身份与旧计划重放；新知识优先使用这五个视角。定义、数量、颜色和提示词均可在工作台自定义，多个身份可以落在同一记忆上。项目使用 space，子主题使用 tags。已有数据库配置不会随升级覆盖，也不会自动迁移已有记忆。见 [维度与提示词](docs/custom-dimensions.md)。
+
 ## 给 agent 的标准提示词
 
 - [首次连接提示](docs/memory-bootstrap-prompt.md)：初始化时给出检索、代码审查期间保存、阶段核对与信任边界；完整规则按需读取。
@@ -30,7 +34,7 @@ npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP
 - [跨 agent 生长契约](docs/host-growth-contract.md)：生命周期、接口字段与迁移边界；旧宿主专用章节按通用协议逐步迁移。
 - [工作台与宿主接入](docs/workbench-and-host.md)：人工操作与 host 协作流程。
 
-这些提示词直接从运行时代码导出；npm run check 会检查是否漂移。MCP 工具只保留简短规则，完整写入规范通过 memory_save_policy 按需读取。阶段改进可用 memory_finish 批量保存、修订与反馈；memory_directory / memory_event_search / memory_history 分别提供目录、原始场景和动作历史。HTTP 使用 GET /api/memory/save-policy。
+这些提示词直接从运行时代码和新安装默认配置导出；运行时以当前数据库的维度与自定义提示词为准。npm run check 会检查是否漂移。MCP 工具只保留简短规则，完整写入规范通过 memory_save_policy 按需读取。阶段改进可用 memory_finish 批量保存、修订与反馈；memory_directory / memory_event_search / memory_history 分别提供目录、原始场景和动作历史。HTTP 使用 GET /api/memory/save-policy。
 
 一条记忆建议按“对象与范围 → 事实/决策/操作 → 条件与方法 → 结果与依据 → 例外与限制 → 来源与时间”组织。只写有依据的部分，也可以用包含相同信息的连贯段落；不强迫填满模板，不为固定字数省掉条件，也不把操作过程拆成大量碎片。
 
@@ -57,18 +61,18 @@ npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP
 ```bash
 # 多入口涟漪检索；maxDepth=0 可对照仅直接命中
 curl -s localhost:7903/api/memory/search -H 'Content-Type: application/json' \
-  -d '{"query":"本地调试端口","spaceId":"project-P","memoryType":"configuration","maxDepth":2}'
+  -d '{"query":"本地调试端口","spaceId":"project-P","memoryType":"environment","maxDepth":2}'
 
 # 保存完整正文；新接入应显式使用稳定的空间和类型
 curl -s localhost:7903/api/memory/save -H 'Content-Type: application/json' \
   -d '{"content":"项目 P 本地开发服务监听 127.0.0.1:7903；远程访问通过代理。修改端口后同步核对启动脚本和代理目标，不直接开放公网监听。",
-       "source":"conversation","importance":5,"tags":["本地调试"],
-       "memberships":[{"spaceId":"project-P","memoryType":"configuration"}]}'
+       "dimensions":["environment"],"source":"conversation","importance":5,"tags":["本地调试"],
+       "memberships":[{"spaceId":"project-P","memoryType":"environment"}]}'
 
 # 关联必须有理由和场景；成员 ID 必须来自实际读过的记忆
 curl -s localhost:7903/api/memory/association -H 'Content-Type: application/json' \
   -d '{"memberAId":"<member-a>","memberBId":"<member-b>",
-       "spaceId":"project-P","memoryType":"configuration","weight":0.9,
+       "spaceId":"project-P","memoryType":"environment","weight":0.9,
        "reason":"代理曾因仍指向旧端口导致远程调试失败，两个配置需一起检查。",
        "context":"项目 P 本地开发与远程代理访问，修改本地端口后适用；不推断生产配置。"}'
 ```

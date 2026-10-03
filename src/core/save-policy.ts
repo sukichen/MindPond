@@ -1,5 +1,6 @@
 /** Shared host instructions. Concise factual explanations, never private reasoning. */
-export const MEMORY_SAVE_POLICY_VERSION = 'memory-save.v3.0';
+import {DEFAULT_DIMENSION_CONFIGURATION,dimensionPolicy as buildDimensionPolicy} from './dimension-config.js';
+export const MEMORY_SAVE_POLICY_VERSION = 'memory-save.v3.1';
 export const MEMORY_SAVE_LIMITS = { content: 100000, tags: 16, tagLength: 64, memberships: 16, scopeLength: 128, related: 64, basisLength: 2000 } as const;
 
 /** Short tool metadata stays in the model's working context. Full rules are on demand. */
@@ -178,7 +179,7 @@ deferred. No-change is legitimate. Use memory_capabilities for the concise host
 workflow and budgets; MindPond does not intercept agent tools or own an LLM key.
 `.trim();
 
-export function memorySavePolicyPayload(dimensionPolicy?:import('./dimension-config.js').DimensionConfiguration & {instructions:string}) {
+export function memorySavePolicyPayload(dimensionPolicy:import('./dimension-config.js').DimensionConfiguration & {instructions:string}=buildDimensionPolicy(DEFAULT_DIMENSION_CONFIGURATION)) {
   return {
     version: MEMORY_SAVE_POLICY_VERSION, residentText: MEMORY_RESIDENT_SAVE_POLICY+(dimensionPolicy?'\n\n'+dimensionPolicy.instructions:''), text: MEMORY_SAVE_POLICY+(dimensionPolicy?'\n\n'+dimensionPolicy.instructions:''), ...(dimensionPolicy?{dimensionPolicy}:{}), limits: MEMORY_SAVE_LIMITS,
     stageExample:{stageId:'environment-debug-1',operations:[{id:'proxy-finding',kind:'save',input:{content:'本地代理出现 ECONNREFUSED，观察到它仅绑定 loopback；生产配置尚未检查，原因仍是暂定解释。下次排查先检查实际 bind 地址与目标环境。',domain:{kind:'personal',id:'default'},dimensions:[dimensionPolicy?.defaultDimension??'fact']}}]},
@@ -191,7 +192,8 @@ export function memorySavePolicyPayload(dimensionPolicy?:import('./dimension-con
       content: '对象与范围：项目 P 本地开发服务。\n操作：服务监听 127.0.0.1:7903；修改端口后同步更新启动脚本和代理目标。\n依据：一次修改端口后，代理仍指向旧地址，导致远程调试失败。\n限制：远程访问经代理，不直接开放公网监听；此记录不描述生产部署。',
       source: 'conversation', importance: 5, tags: ['本地调试', '代理配置'],
       domain: {kind: 'personal', id: 'default'},
-      memberships: [{ spaceId: '项目 P', memoryType: '配置' }],
+      dimensions:[dimensionPolicy.defaultDimension],
+      memberships: [{ spaceId: '项目 P', memoryType: dimensionPolicy.defaultDimension }],
       related: [{ membershipId: 'actual-read-member-id', score: 0.9,
         reason: '代理曾因指向旧端口而导致访问失败，监听配置与代理目标需要一起核对。',
         context: '项目 P 本地开发与代理调试，修改本地端口后适用；不推断生产部署配置。' }],

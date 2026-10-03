@@ -7,7 +7,7 @@ import {ProfileVectorIndex} from './profile-vector-index.js';
 import { MemoryWorkflow } from './memory-workflow.js';
 import { initializeTextIndex, trigramExpression } from './text-index.js';
 import { PriorityQueue } from './priority-queue.js';
-import { DEFAULT_DIMENSION_CONFIGURATION, validateDimensionConfiguration, dimensionPolicy, type DimensionConfiguration } from './dimension-config.js';
+import { DEFAULT_DIMENSION_CONFIGURATION, LEGACY_DIMENSION_CONFIGURATION, validateDimensionConfiguration, dimensionPolicy, type DimensionConfiguration } from './dimension-config.js';
 import { assembleRecall, recallEntry, validateContextBudget, type RecallBudget } from './context-assembly.js';
 /**
  * Graph Memory — canonical bodies, independent space memberships, and ripple.
@@ -59,6 +59,7 @@ const logger = createModuleLogger('graph-memory');
 
 export type Dimension = string;
 
+/** @deprecated Legacy SQLite storage values only. Use getDimensionPolicy() for configured identities. */
 export const VALID_DIMENSIONS: Dimension[] = ['fact', 'event', 'decision', 'lesson', 'skill'];
 
 /** Memory layers (inspired by TencentDB Agent Memory L0-L3) */
@@ -2600,7 +2601,7 @@ export class GraphMemory {
   async getOrganizationJob(jobId: string): Promise<OrganizationJob | null> {
     const row = await this.db!.get<any>(
       'SELECT p.snapshot, j.status, j.lease_expires_at FROM organization_payloads p JOIN organization_jobs j ON j.id = p.job_id WHERE j.id = ?', [jobId]);
-    return row ? { ...JSON.parse(row.snapshot), dimensionPolicy:JSON.parse(row.snapshot).dimensionPolicy??dimensionPolicy(DEFAULT_DIMENSION_CONFIGURATION), domain: JSON.parse(row.snapshot).domain ?? {kind:'personal',id:'default'}, status: row.status, leaseExpiresAt: row.lease_expires_at } : null;
+    return row ? { ...JSON.parse(row.snapshot), dimensionPolicy:JSON.parse(row.snapshot).dimensionPolicy??dimensionPolicy(LEGACY_DIMENSION_CONFIGURATION), domain: JSON.parse(row.snapshot).domain ?? {kind:'personal',id:'default'}, status: row.status, leaseExpiresAt: row.lease_expires_at } : null;
   }
 
   async releaseOrganizationJob(jobId: string): Promise<void> {

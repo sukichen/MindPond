@@ -93,6 +93,12 @@ try {
     await new Promise(resolve => setTimeout(resolve, 50));
   const port = /listening on .*:(\d+)/.exec(output)?.[1];
   assert.ok(port, output.slice(-3000));
+  const dimensionResponse=await fetch(`http://127.0.0.1:${port}/api/memory/dimensions`);
+  assert.equal(dimensionResponse.status,200);
+  const {configuration}=await dimensionResponse.json() as any;
+  assert.equal(configuration.defaultDimension,'work');
+  assert.deepEqual(configuration.definitions.slice(0,5).map((d:any)=>d.id),['profile','commitment','environment','work','practice']);
+  assert(configuration.definitions.slice(5).every((d:any)=>d.label.includes('历史兼容')));
   for (const route of ['/', '/health', '/vendor/vis-network.min.js', '/licenses/third-party.txt']) {
     const response = await fetch(`http://127.0.0.1:${port}${route}`, { signal: AbortSignal.timeout(5000) });
     assert.equal(response.status, 200, route);

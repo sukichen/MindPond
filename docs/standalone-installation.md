@@ -42,11 +42,14 @@ import { MindPond, driveOrganizationRequest, protocolRulesResponse } from 'mindp
 const pond = new MindPond({ dbPath: '/absolute/path/to/my-memory.db' });
 await pond.init();
 try {
-  const rules = protocolRulesResponse(); // 将规则交给主 agent；保存其版本。
+  const dimensionPolicy = await pond.graph.getDimensionPolicy();
+  const rules = {...protocolRulesResponse(), dimensionPolicy}; // 给主 agent 当前实例规则。
+  const identity = dimensionPolicy.definitions.some(d => d.id === 'environment' && d.enabled)
+    ? 'environment' : dimensionPolicy.defaultDimension;
   const input = {
     content: '本地开发代理监听 localhost:7903；生产部署尚未验证。',
-    domain: { kind: 'personal', id: 'default' },
-    memberships: [{ spaceId: 'project/local-proxy', memoryType: 'fact' }],
+    domain: { kind: 'personal', id: 'default' }, dimensions: [identity],
+    memberships: [{ spaceId: 'project/local-proxy', memoryType: identity }],
     idempotencyKey: 'host/run/observation-1',
   };
   const { content, ...options } = input;
@@ -68,7 +71,7 @@ SDK 是受信宿主接口。将工具交给不受信调用者时，应通过有�
 ```js
 const request = await pond.graph.organizationRequests.createRequest({
   domain: { kind: 'personal', id: 'default' },
-  spaceId: 'project/local-proxy', memoryType: 'fact', batchSize: 2,
+  spaceId: 'project/local-proxy', memoryType: 'environment', batchSize: 2,
   idempotencyKey: 'host/user-request/organization-1',
 });
 const progress = await driveOrganizationRequest(pond.graph, {
@@ -113,7 +116,7 @@ import { prepareLifecycleEvent, MemoryPipelineManager } from 'mindpond';
 const event = {
   kind: 'before_compact', hostId: 'my-host', runId: 'review-1',
   checkpointId: 'module-review-1', sessionId: 'logical-session-1',
-  spaceId: 'project/demo', memoryType: 'fact',
+  spaceId: 'project/demo', memoryType: 'environment',
   observations: [{
     id: 'storage-module',
     content: '本地存储写入使用事务；只审阅了该模块，跨进程竞态尚未验证。',
@@ -129,7 +132,7 @@ const job = await pipeline.getExtractionJob({
 // MCP 对应 memory_extraction_job / memory_extraction_commit。
 ```
 
-来源版本必须来自宿主实际观察，示例占位值不能照抄。任务材料包含签发的观察 ID；提取回复必须通过 `source_observation_ids` 引用支持它的观察，并保留 `source_message_ids`。核心从任务元数据绑定项目空间和来源，模型文本不能替换它们；无效引用使整批拒绝。提取出的 dimension 可为 fact/decision/lesson/skill，仍留在当前 session。之后通过同一整理服务 synthesize 画像，不自动晋升为 personal/team。
+来源版本必须来自宿主实际观察，示例占位值不能照抄。任务材料包含签发的观察 ID；提取回复必须通过 `source_observation_ids` 引用支持它的观察，并保留 `source_message_ids`。核心从任务元数据绑定项目空间和来源，模型文本不能替换它们；无效引用使整批拒绝。提取出的 dimension 必须使用当前实例的已配置身份（新安装优先 profile/commitment/environment/work/practice），仍留在当前 session。之后通过同一整理服务 synthesize 画像，不自动晋升为 personal/team。
 
 重启或换 agent 重放同一事件时保留原 hostId/runId/checkpointId、sessionId 和 observations；同 key 不同内容拒绝。已保存的发现应引用原 memoryIds 报 checkpoint，不再作为新原文重复投递。相似内容的不同事件不会擅自去重，需要整理判断。
 

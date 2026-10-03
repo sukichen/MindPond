@@ -15,7 +15,7 @@ const g = new GraphMemory();
 try {
   await g.init();
   const policy = memorySavePolicyPayload();
-  assert.equal(policy.version, 'memory-save.v3.0');
+  assert.equal(policy.version, 'memory-save.v3.1');
   for (const marker of ['DECIDE WHETHER TO SAVE', 'CHOOSE ONE USEFUL UNIT', 'WRITE SELF-CONTAINED CONTENT']) assert(policy.text.includes(marker));
   const { related: _exampleRelated, content, ...example } = policy.example;
   const saved = await g.saveMemory(content, example);

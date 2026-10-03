@@ -49,7 +49,7 @@ try {
   const request = { query: '7903', spaceId: 'P', memoryType: 'config', maxDepth: 2, minScore: .3, limit: 10 };
   const httpPolicy = await api('/api/memory/save-policy'), mcpPolicy = await tool('memory_save_policy', {});
   assert.deepEqual(mcpPolicy.policy, httpPolicy.policy);
-  assert.equal(httpPolicy.policy.version, 'memory-save.v3.0');
+  assert.equal(httpPolicy.policy.version, 'memory-save.v3.1');
   const catalog = await client.listTools();
   assert(!catalog.tools.some(t=>t.name==='memory_retrieval_build'||t.name==='memory_retrieval_activate'));
   assert.ok(catalog.tools.find(t => t.name === 'memory_save')!.description.includes('memory_dimension_policy'));

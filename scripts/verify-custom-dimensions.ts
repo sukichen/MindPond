@@ -10,13 +10,34 @@ import {hostOperations,dimensionsSchema} from '../src/core/host-contract.js';
 import {organizationTask} from '../src/core/organization-policy.js';
 import {MemoryPipelineManager} from '../src/core/memory-pipeline.js';
 import {memorySavePolicyPayload} from '../src/core/save-policy.js';
+import {LEGACY_DIMENSION_CONFIGURATION} from '../src/core/dimension-config.js';
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-custom-dim-'));
 const old=process.env.MEMORY_DB_PATH;process.env.MEMORY_DB_PATH=path.join(dir,'pond.db');
 const embed=getEmbeddingService();const generate=embed.generateEmbedding;embed.generateEmbedding=async()=>[1,...Array(383).fill(0)];
 let graph=new GraphMemory();
 try{
   await graph.init();
-  const initial=await graph.getDimensionConfiguration();assert.equal(initial.definitions.length,4);
+  const initial=await graph.getDimensionConfiguration();
+  assert.equal(initial.defaultDimension,'work');
+  assert.deepEqual(initial.definitions.slice(0,5).map(d=>d.id),['profile','commitment','environment','work','practice']);
+  assert.equal(initial.definitions.length,9,'five preferred identities plus explicit legacy compatibility');
+  assert(initial.definitions.slice(5).every(d=>d.label.includes('历史兼容')));
+  const initialPolicy=await graph.getDimensionPolicy();
+  assert.equal(memorySavePolicyPayload(initialPolicy).example.memberships[0].memoryType,'work');
+  assert.deepEqual(memorySavePolicyPayload(initialPolicy).example.dimensions,['work']);
+  const fresh=await graph.saveMemory('A new installation uses its configured work default.');
+  assert.equal((await graph.getNodeById(fresh.id))?.dimension,'work');
+  await graph.deleteNode(fresh.id,'Remove default-preset fixture before replacing the taxonomy.');
+  const oldPath=path.join(dir,'old-template.db');
+  let oldGraph=new GraphMemory('.', {dbPath:oldPath});
+  try {
+    await oldGraph.init();
+    await (oldGraph as any).db.run('UPDATE memory_dimension_config SET revision=1,payload=? WHERE id=1',[JSON.stringify(LEGACY_DIMENSION_CONFIGURATION)]);
+    await oldGraph.close();oldGraph=new GraphMemory('.', {dbPath:oldPath});await oldGraph.init();
+    assert.deepEqual(await oldGraph.getDimensionConfiguration(),LEGACY_DIMENSION_CONFIGURATION,'even untouched revision=1 existing configurations must survive an upgrade');
+    const legacyPolicy=await oldGraph.getDimensionPolicy();
+    assert.equal(memorySavePolicyPayload(legacyPolicy).example.memberships[0].memoryType,'fact','live policy overrides the published default');
+  } finally {await oldGraph.close();}
   const ids=['人物画像','procedure','constructor',...Array.from({length:17},(_,i)=>'custom-'+i)];
   const input={expectedRevision:initial.revision,defaultDimension:ids[0],prompt:'CLASSIFICATION-CUSTOM-PROMPT: use only evidenced identities.',definitions:ids.map(id=>({id,label:'用户 '+id,description:'Meaning of '+id,instructions:'RULE-'+id+': preserve conditions.',color:'#aabbcc',enabled:true}))};
   const config=await graph.configureDimensions(input);assert.equal(config.definitions.length,20);

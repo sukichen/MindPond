@@ -186,14 +186,14 @@ try {
   // ---- A01: the save-policy example passes the REAL save validator once the
   // placeholder association target is replaced with a real issued membership
   // id (exactly what the policy itself teaches: never submit placeholders).
-  // The anchor must live in the example's own placement (项目 P/配置) because
+  // The anchor must live in the example's configured placement because
   // related targets resolve to one active shared space/type. ----
+  const ex = (await get('/api/memory/save-policy')).body.policy.example;
   const anchor = await post('/api/memory/save', {
     content: 'PROTO-A01 association anchor memory in the example placement.',
-    memberships: [{ spaceId: '项目 P', memoryType: '配置' }],
+    dimensions: ex.dimensions, memberships: ex.memberships,
   });
   assert.equal(anchor.status, 200, `anchor save failed: ${JSON.stringify(anchor.body)}`);
-  const ex = memorySavePolicyPayload().example;
   const savedExample = await post('/api/memory/save', {
     ...ex,
     related: [{ ...ex.related[0], membershipId: anchor.body.memberships[0].id }],

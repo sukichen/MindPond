@@ -38,7 +38,7 @@ try {
   assert.equal(cap.mcpConnection.toolProfile,'work');
   assert.deepEqual(cap.mcpConnection.availableTools,names);
   const policy=(await call(a,'memory_save_policy')).policy;
-  assert.equal(policy.version,'memory-save.v3.0');
+  assert.equal(policy.version,'memory-save.v3.1');
   for(const marker of ['multi-round','Environment:','Code:','User intent:','Effort is a trigger','expectedUpdatedAt'])
     assert(policy.milestoneGuidance.includes(marker),marker);
   const saveTool=workTools.find(t=>t.name==='memory_save')!;
