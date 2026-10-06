@@ -95,7 +95,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         }
       }
       const result = await handler(args);
-      await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(TRUST_SESSION?{kind:'session',id:TRUST_SESSION}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name})});
+      await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(TRUST_SESSION?{kind:'session',id:TRUST_SESSION}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal}:{})})});
       if (name === 'memory_capabilities') {
         const entry = result.content?.find((c: any) => c.type === 'text');
         if (entry) {
@@ -108,7 +108,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       return result;
     } catch (err) {
       const e = toStructuredError(err);
-      await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!trusted.operator?(TRUST_SESSION?{kind:'session',id:TRUST_SESSION}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code})});
+      await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!trusted.operator?(TRUST_SESSION?{kind:'session',id:TRUST_SESSION}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code,...(trustBound?{principal:trusted.principal}:{})})});
       return { content: [{ type: 'text' as const, text: JSON.stringify({ error: e }) }], isError: true };
     } finally {release();activeCalls.delete(active);}
   });

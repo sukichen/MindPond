@@ -82,6 +82,9 @@ try {
   assert.equal((await makeRequest({'Mcp-Session-Id':b.transport.sessionId!})).status,404,'another account cannot hijack a transport');
   assert.equal((await makeRequest()).status,400,'non-initialize request needs a session');
   assert.equal((await fetch(new URL('/api/memory/graph',url),{headers:{Host:'127.0.0.1:7904'}})).status,404,'no operator API exposed');
+  const audit=await (graph as any).db.all("SELECT reason FROM memory_action_log WHERE action='host_tool_completed'");
+  assert(audit.some((entry:any)=>JSON.parse(entry.reason).principal==='account-one'));
+  assert(audit.some((entry:any)=>JSON.parse(entry.reason).principal==='account-two'));
   console.log('PASS real central HTTP MCP: shared personal/idempotency, independent projects, account/domain/session/Origin/Host guards');
 
   // Proxy runs in a separate process, with no database path or local model.
