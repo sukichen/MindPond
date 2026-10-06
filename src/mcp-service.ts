@@ -52,8 +52,13 @@ function bound<T extends { sessionId?: unknown; domains?: unknown; domain?: unkn
     const session = narrowTrustedSession(trusted, next.sessionId);
     next.sessionId = next.sessionId === undefined && next.domain && next.domain.kind !== 'session' ? undefined : session;
   }
-  if ('domains' in args) next.domains = narrowTrustedDomains(trusted, next.domains, next.sessionId);
-  if ('domain' in args) next.domain = narrowTrustedDomain(trusted, normalizeDomain(next.domain, next.sessionId), next.sessionId);
+  // Collaboration tools take domains rather than a separate sessionId.
+  // Normalize those references against the trusted connection without
+  // widening its scope when that redundant argument is absent.
+  const domainSession = next.sessionId ?? trusted.sessionId;
+  if ('domains' in args) next.domains = narrowTrustedDomains(trusted, next.domains, domainSession);
+  if ('domain' in args) next.domain = narrowTrustedDomain(trusted,
+    normalizeDomain(next.domain, next.sessionId ?? (next.domain?.kind === 'session' ? trusted.sessionId : undefined)), domainSession);
   if (next.scope !== undefined) narrowTrustedContext(trusted, { scope: next.scope });
   return next;
 }

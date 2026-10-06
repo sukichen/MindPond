@@ -74,6 +74,18 @@ try {
   const message={sessionId:capPrivate.mcpConnection.sessionId,content:'A fixture session observes a pending environment question.',role:'user',messageId:'fixture-message'};
   const raw=await call(privateClient.client,'memory_message_save',message);assert.equal((await call(privateClient.client,'memory_message_save',message)).id,raw.id,'host message identity survives retries');
   const isolatedRecall=await call(privateClient.client,'memory_host_recall',{query:'environment',minScore:0});assert(!isolatedRecall.results.some((r:any)=>r.node.id===saved.id));
+  const ownSession={kind:'session',id:capPrivate.mcpConnection.sessionId};
+  const collaboration=await call(privateClient.client,'work_context_create',{goal:'Current-session collaboration',domain:ownSession});
+  const task=await call(privateClient.client,'work_task_create',{contextId:collaboration.id,title:'Check the current session',domains:[ownSession]});
+  assert((await call(privateClient.client,'work_task_list',{contextId:collaboration.id,domains:[ownSession]})).some((item:any)=>item.id===task.id));
+  const claim=await call(privateClient.client,'work_task_claim',{taskId:task.id,agentId:'fixture-agent',domains:[ownSession]});
+  await call(privateClient.client,'work_task_renew',{taskId:task.id,agentId:'fixture-agent',leaseToken:claim.leaseToken,domains:[ownSession]});
+  const submitted=await call(privateClient.client,'work_task_transition',{taskId:task.id,agentId:'fixture-agent',eventId:'fixture-submit',expectedRevision:claim.task.revision,leaseToken:claim.leaseToken,status:'submitted',reason:'Fixture checked',domains:[ownSession]});
+  assert.equal(submitted.status,'submitted');
+  for(const name of ['work_context_create','work_task_list']){
+    const forbidden=await privateClient.client.callTool({name,arguments:name==='work_context_create'?{goal:'Wrong session',domain:{kind:'session',id:capA.mcpConnection.sessionId}}:{contextId:collaboration.id,domains:[{kind:'session',id:capA.mcpConnection.sessionId}]}});
+    assert(forbidden.isError,'collaboration cannot widen the trusted session');
+  }
 
   const processMemory=await call(a.client,'memory_save',{content:'Only account one current investigation may read this unfinished hypothesis.',dimensions:['work']});
   const processNode=await graph.getNodeById(processMemory.id,{trackAccess:false});assert.equal(processNode!.domain.kind,'session');
