@@ -12,12 +12,12 @@ process.env.MINDPOND_LOG_STDERR='1';
 let startupGraph:GraphMemory|undefined;
 try {
   const args=process.argv.slice(2),command=args.shift()??'serve';
-  const {values}=parseArgs({args,options:{config:{type:'string'},principal:{type:'string'},personal:{type:'string'},'token-file':{type:'string'},rotate:{type:'boolean'},db:{type:'string'},host:{type:'string'},port:{type:'string'},'allowed-host':{type:'string',multiple:true},'tls-cert':{type:'string'},'tls-key':{type:'string'}}});
+  const {values}=parseArgs({args,options:{config:{type:'string'},principal:{type:'string'},personal:{type:'string'},profile:{type:'string'},'token-file':{type:'string'},rotate:{type:'boolean'},db:{type:'string'},host:{type:'string'},port:{type:'string'},'allowed-host':{type:'string',multiple:true},'tls-cert':{type:'string'},'tls-key':{type:'string'}}});
   const config=values.config??process.env.MINDPOND_MCP_ACCOUNTS;
   if(!config)throw new Error('--config or MINDPOND_MCP_ACCOUNTS is required');
   if(command==='grant'){
     if(!values.principal||!values['token-file'])throw new Error('grant requires --principal and --token-file');
-    console.log(JSON.stringify(await issueNetworkGrant({configFile:config,tokenFile:values['token-file'],principal:values.principal,personalId:values.personal,rotate:values.rotate}),null,2));
+    console.log(JSON.stringify(await issueNetworkGrant({configFile:config,tokenFile:values['token-file'],principal:values.principal,personalId:values.personal,rotate:values.rotate,toolProfile:values.profile as 'work'|'full'|undefined}),null,2));
   }else if(command==='serve'){
     await readNetworkConfiguration(config);
     const host=values.host??'127.0.0.1',port=Number(values.port??7904);

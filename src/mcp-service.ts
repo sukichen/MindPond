@@ -87,6 +87,11 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       args = { ...args };
       for (const key of ['sessionId', 'domain', 'domains']) if (key in shape && !(key in args)) args[key] = undefined;
       if (trustBound) {
+        if(name.startsWith('memory_work_') && typeof args.workId==='string' && !trusted.operator) {
+          const domain=await graphMemory.hostWorkDomain(args.workId);
+          if(!domain)throw new MindPondError('scope_denied','host work target is unavailable in the trusted context');
+          narrowTrustedDomain(trusted,domain,trusted.sessionId);
+        }
         if (!trusted.operator && (name === 'memory_dedupe_scan' || name === 'memory_dedupe_resolve' || /^memory_l[23]_/.test(name)))
           throw new MindPondError('scope_denied', 'global deduplication and legacy aggregation require operator capability');
         if (name.startsWith('memory_organization_')) await authorizeOrganizationAccess(graphMemory, args, trusted);
@@ -179,7 +184,7 @@ tool(
   'memory_save',
   MEMORY_SAVE_TOOL_DESCRIPTION,
   {
-    dimensions:dimensionsSchema.optional(),anchors:z.array(anchorSchema).max(6).optional(),
+    dimension:z.string().min(1).max(128).optional().describe('Legacy host classification; prefer configured dimensions'),    dimensions:dimensionsSchema.optional(),anchors:z.array(anchorSchema).max(6).optional(),
     sourceRefs: z.array(sourceReferenceSchema).max(64).optional(),
     idempotencyKey: z.string().min(1).max(256).optional(),
     content: z.string().trim().min(1).max(100000).describe('One self-contained useful unit: object/scope, facts or procedure, conditions, observed basis, exceptions. Omit unsupported sections; no empty headings.'),
@@ -205,8 +210,8 @@ tool(
       ).max(64)
       .optional(),
   },
-  async ({ content, dimensions, anchors, source, tags, sessionId, domain, teamAuthorization, importance, memberships, related, sourceRefs, idempotencyKey }) => {
-    const result = await graphMemory.saveMemory(content, bound({ dimensions, anchors, source, tags, sessionId, domain, teamAuthorization, importance, memberships, related, sourceRefs, idempotencyKey }));
+  async ({ content, dimension, dimensions, anchors, source, tags, sessionId, domain, teamAuthorization, importance, memberships, related, sourceRefs, idempotencyKey }) => {
+    const result = await graphMemory.saveMemory(content, bound({ dimension, dimensions, anchors, source, tags, sessionId, domain, teamAuthorization, importance, memberships, related, sourceRefs, idempotencyKey }));
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   },
 );
@@ -323,6 +328,10 @@ tool(
   { transcript: z.string().min(1).max(1000000), sessionId: z.string().optional(), idempotencyKey: z.string().min(1).max(256).optional() },
   async ({transcript,sessionId,idempotencyKey}) => ({content:[{type:'text',text:JSON.stringify({...await graphMemory.ingestTranscript(transcript,bound({sessionId}).sessionId,idempotencyKey),hostDriven:true})}]}),
 );
+
+tool('memory_message_save','Host ingestion of one raw message with durable session/message identity. Saves SESSION evidence and extraction work, never personal knowledge.',
+  {sessionId:z.string().min(1).max(256),content:z.string().min(1).max(1000000),role:z.string().min(1).max(64),messageId:z.string().min(1).max(256)},
+  async ({sessionId,content,role,messageId})=>({content:[{type:'text',text:JSON.stringify({id:await graphMemory.saveMessage(bound({sessionId}).sessionId,content,role,messageId)})}]}));
 
 tool(
   'memory_extraction_job',

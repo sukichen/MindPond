@@ -94,3 +94,17 @@ node dist/mcp-http.js grant \
 `npm run verify:network-mcp` 使用隔离临时库和真实 SDK HTTP/stdio 客户端，验证跨账户共享、幂等、域/session/项目边界、Host/Origin 拒绝、会话劫持拒绝、凭据轮换、桥接和三类客户端 bundle。测试使用合成向量，不证明真实模型效果，也不代表已在你的工作机器或真实系统账户下部署。
 
 网络协议实现依据锁定的 TypeScript MCP SDK 和 [2025-11-25 Streamable HTTP 规范](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/transports.mdx)；后续 draft 的传输变更需单独迁移。
+
+## Automation hosts with background work
+
+Ordinary interactive clients keep the default `work` profile. A host that also drains organization work and extraction can receive a domain-scoped `full` account:
+
+```sh
+mindpond-mcp-http grant --config /private/accounts.json \
+  --principal automation-worker --personal default --profile full \
+  --token-file /private/worker.token
+```
+
+`--profile` is validated and preserved during credential rotation unless explicitly changed. A full catalog does not grant operator authority: global deduplication and legacy aggregation remain denied on network accounts. Work transitions resolve the persisted work domain before accepting its ID.
+
+The full host contract includes `memory_message_save` (stable host message ID), `memory_work_scopes` (scoped restart recovery), `memory_host_recall` (complete typed result metadata without vectors), `memory_host_read`, and `memory_host_snapshot` (scoped counts or a bounded graph). `memory_host_create` retains explicit L0/L1 legacy snapshot semantics without vector upload, verified assertions or L2/L3 aggregation. Prefer ordinary idempotent saves and organization for new knowledge. These tools are optional for general MCP clients; background hosts must negotiate their presence and must not substitute an empty success or local database on failure. Classification presets are exported as library constants for hosts that customize only an untouched installation template.

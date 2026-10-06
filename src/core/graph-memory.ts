@@ -1940,11 +1940,18 @@ export class GraphMemory {
   }
   /** Maintenance discovery reads durable queues, including extraction work
    * created without a live host checkpoint. Team work remains user initiated. */
-  async pendingOrganizationScopes() {
+  async hostWorkDomain(workId:string):Promise<MemoryDomainRef|null> {
+    const row=await this.db!.get<{domain_kind:MemoryDomainRef['kind'];domain_id:string}>('SELECT domain_kind,domain_id FROM host_work WHERE id=?',[workId]);
+    return row?{kind:row.domain_kind,id:row.domain_id}:null;
+  }
+
+  async pendingOrganizationScopes(context?:DomainReadContext) {
+    const domains=context?resolveReadDomains(context):undefined;
+    const scope=domains?' AND ('+domains.map(()=>'(domain_kind=? AND domain_id=?)').join(' OR ')+')':'';
     const rows=await this.db!.all<any[]>(`SELECT domain_kind,domain_id,space_id,memory_type,MIN(available_at) next
       FROM host_work w WHERE status IN ('pending','leased') AND domain_kind!='team'
       AND (domain_kind!='session' OR EXISTS(SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=w.domain_id AND d.status='active'))
-      GROUP BY domain_kind,domain_id,space_id,memory_type ORDER BY next LIMIT 64`);
+      ${scope} GROUP BY domain_kind,domain_id,space_id,memory_type ORDER BY next LIMIT 64`,domains?.flatMap(d=>[d.kind,d.id])??[]);
     return rows.map(r=>({domain:{kind:r.domain_kind,id:r.domain_id} as MemoryDomainRef,spaceId:r.space_id,memoryType:r.memory_type}));
   }
   async getProfileHistory(membershipId:string, context?:DomainReadContext) {
@@ -4936,9 +4943,15 @@ export class GraphMemory {
    *  otherwise L0 raw records drown the structured graph (43% of rpbot's nodes). */
   /** Operator visualization uses the SAME semantic edges as ripple. Provenance
    * is available separately/on demand and never masquerades as co-recall. */
-  async getFullGraph(limit=200,layer?:MemoryLayer,options:{spaceId?:string;memoryType?:string;includeEvents?:boolean}={}) {
+  async getFullGraph(limit=200,layer?:MemoryLayer,options:{spaceId?:string;memoryType?:string;includeEvents?:boolean;context?:DomainReadContext}={}) {
     const where=["n.superseded_by IS NULL","EXISTS(SELECT 1 FROM memory_memberships m WHERE m.memory_id=n.id AND m.active=1"+(options.spaceId?' AND m.space_id=?':'')+(options.memoryType?' AND m.memory_type=?':'')+")"];
     const args:unknown[]=[...(options.spaceId?[options.spaceId]:[]),...(options.memoryType?[options.memoryType]:[])];
+    if(options.context) {
+      const domains=resolveReadDomains(options.context);
+      where.push('('+domains.map(()=>'(n.domain_kind=? AND n.domain_id=?)').join(' OR ')+')');
+      where.push("(n.domain_kind!='session' OR EXISTS(SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=n.domain_id AND d.status IN ('active','paused')))");
+      args.push(...domains.flatMap(d=>[d.kind,d.id]));
+    }
     if(!options.includeEvents)where.push("n.dimension!='event' AND n.layer!='L0'");
     if(layer){where.push('n.layer=?');args.push(layer);}
     let rows=await this.db!.all<any[]>(`SELECT ${NODE_COLUMNS_NO_EMBEDDING_N} FROM nodes n WHERE ${where.join(' AND ')} ORDER BY n.created_at DESC LIMIT ?`,[...args,limit]);
@@ -5066,11 +5079,14 @@ export class GraphMemory {
     };
   }
 
-  async getStats(): Promise<{ total: number; byDimension: Record<Dimension, number>; byLayer: Record<string, number>; bySession: Record<string, number> }> {
+  async getStats(context?:DomainReadContext): Promise<{ total: number; byDimension: Record<Dimension, number>; byLayer: Record<string, number>; bySession: Record<string, number> }> {
     if (!this.db) throw new Error('Database not initialized');
-    const total = await this.db.get<{ c: number }>(`SELECT COUNT(*) as c FROM nodes`);
-    const dims = await this.db.all<any>(`SELECT j.value AS dimension, COUNT(*) AS c FROM nodes n, json_each(CASE WHEN n.dimensions IS NULL OR n.dimension='event' THEN json_array(n.dimension) ELSE n.dimensions END) j GROUP BY j.value`);
-    const layers = await this.db.all<any>(`SELECT layer, COUNT(*) as c FROM nodes GROUP BY layer`);
+    const domains=context?resolveReadDomains(context):undefined;
+    const where=domains?' WHERE ('+domains.map(()=>'(n.domain_kind=? AND n.domain_id=?)').join(' OR ')+") AND (n.domain_kind!='session' OR EXISTS(SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=n.domain_id AND d.status IN ('active','paused')))":'';
+    const parameters=domains?.flatMap(d=>[d.kind,d.id])??[];
+    const total = await this.db.get<{ c: number }>(`SELECT COUNT(*) as c FROM nodes n${where}`,parameters);
+    const dims = await this.db.all<any>(`SELECT j.value AS dimension, COUNT(*) AS c FROM nodes n, json_each(CASE WHEN n.dimensions IS NULL OR n.dimension='event' THEN json_array(n.dimension) ELSE n.dimensions END) j${where} GROUP BY j.value`,parameters);
+    const layers = await this.db.all<any>(`SELECT layer, COUNT(*) as c FROM nodes n${where} GROUP BY layer`,parameters);
     const byDim: Record<string, number> = {};
     for (const d of dims) byDim[d.dimension] = d.c;
     const byLayer: Record<string, number> = {};

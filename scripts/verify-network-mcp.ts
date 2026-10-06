@@ -63,6 +63,18 @@ try {
     const forbidden=await privateClient.client.callTool({name,arguments:{}});assert(forbidden.isError,'full catalog must not grant operator authority');
   }
   const hidden=await privateClient.client.callTool({name:'memory_get',arguments:{nodeId:saved.id}});assert(hidden.isError||!!decode(hidden).error);
+
+  assert.equal((await call(privateClient.client,'memory_host_snapshot',{view:'stats'})).total,0,'scoped counts must not expose unrelated memories');
+  assert.equal((await call(privateClient.client,'memory_host_snapshot',{view:'graph'})).nodes.length,0,'graph must apply account grants before the window limit');
+  assert.equal((await call(privateClient.client,'memory_work_scopes')).length,0);
+  const checkpoint=await call(a.client,'memory_checkpoint',{hostId:'fixture',runId:'run',checkpointId:'checkpoint',domain:{kind:'personal',id:'default'},spaceId:'project:one',memoryType:'environment',outcome:'saved',reason:'Observed guide',memoryIds:[saved.id],requestOrganization:true});
+  assert(checkpoint.workId);
+  const otherWork=await privateClient.client.callTool({name:'memory_work_retry',arguments:{workId:checkpoint.workId,reason:'Unauthorized attempt'}});assert(otherWork.isError,'work ids must not bypass account/domain ownership');
+  const capPrivate=await call(privateClient.client,'memory_capabilities');
+  const message={sessionId:capPrivate.mcpConnection.sessionId,content:'A fixture session observes a pending environment question.',role:'user',messageId:'fixture-message'};
+  const raw=await call(privateClient.client,'memory_message_save',message);assert.equal((await call(privateClient.client,'memory_message_save',message)).id,raw.id,'host message identity survives retries');
+  const isolatedRecall=await call(privateClient.client,'memory_host_recall',{query:'environment',minScore:0});assert(!isolatedRecall.results.some((r:any)=>r.node.id===saved.id));
+
   const processMemory=await call(a.client,'memory_save',{content:'Only account one current investigation may read this unfinished hypothesis.',dimensions:['work']});
   const processNode=await graph.getNodeById(processMemory.id,{trackAccess:false});assert.equal(processNode!.domain.kind,'session');
   const hiddenSession=await b.client.callTool({name:'memory_get',arguments:{nodeId:processMemory.id}});assert(hiddenSession.isError||!!decode(hiddenSession).error);

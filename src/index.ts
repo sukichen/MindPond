@@ -392,6 +392,7 @@ export { assembleRecall, recallEntry } from './core/context-assembly.js';
 export type { RecallBudget } from './core/context-assembly.js';
 
 export type {DimensionConfiguration,DimensionDefinition} from './core/dimension-config.js';
+export {DEFAULT_DIMENSION_CONFIGURATION, LEGACY_DIMENSION_CONFIGURATION} from './core/dimension-config.js';
 
 export { createOpenCodeMemoryPlugin } from './integrations/opencode-plugin.js';
 export type { OpenCodeMemoryOptions } from './integrations/opencode-plugin.js';

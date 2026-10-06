@@ -31,8 +31,9 @@ export function authenticateNetworkAccount(config:NetworkConfiguration,header:un
   return config.grants.find(grant=>timingSafeEqual(hash,Buffer.from(grant.tokenHash,'hex')));
 }
 /** Offline admin operation; lock avoids losing another administrator's update. */
-export async function issueNetworkGrant(options:{configFile:string;tokenFile:string;principal:string;personalId?:string;rotate?:boolean}) {
+export async function issueNetworkGrant(options:{configFile:string;tokenFile:string;principal:string;personalId?:string;rotate?:boolean;toolProfile?:McpToolProfile}) {
   const configFile=path.resolve(options.configFile),tokenFile=path.resolve(options.tokenFile);
+  if(options.toolProfile!==undefined)parseMcpToolProfile(options.toolProfile);
   if(configFile===tokenFile)throw new Error('Token file must differ from server configuration');
   if(!/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u.test(options.principal))throw new Error('Invalid principal');
   await fs.mkdir(path.dirname(configFile),{recursive:true,mode:0o700});
@@ -48,7 +49,7 @@ export async function issueNetworkGrant(options:{configFile:string;tokenFile:str
     const domains=options.personalId!==undefined?[normalizeDomain({kind:'personal',id:options.personalId})]:previous?.domains??[{kind:'personal' as const,id:'default'}];
     const token=randomBytes(32).toString('base64url');
     await fs.writeFile(tokenFile,token+'\n',{flag:'wx',mode:0o600});wroteToken=true;
-    const grant:NetworkGrant={principal:options.principal,tokenHash:tokenDigest(token),domains,toolProfile:previous?.toolProfile??'work'};
+    const grant:NetworkGrant={principal:options.principal,tokenHash:tokenDigest(token),domains,toolProfile:parseMcpToolProfile(options.toolProfile??previous?.toolProfile??'work')};
     config.grants=[...config.grants.filter(g=>g.principal!==grant.principal),grant];
     const temporary=configFile+'.'+randomBytes(8).toString('hex')+'.tmp';
     try {await fs.writeFile(temporary,JSON.stringify(config,null,2)+'\n',{flag:'wx',mode:0o600});await fs.rename(temporary,configFile);}
