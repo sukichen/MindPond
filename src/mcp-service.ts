@@ -87,8 +87,8 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       args = { ...args };
       for (const key of ['sessionId', 'domain', 'domains']) if (key in shape && !(key in args)) args[key] = undefined;
       if (trustBound) {
-        if (!trusted.operator && (name === 'memory_dedupe_scan' || name === 'memory_dedupe_resolve'))
-          throw new MindPondError('scope_denied', 'global deduplication requires operator capability');
+        if (!trusted.operator && (name === 'memory_dedupe_scan' || name === 'memory_dedupe_resolve' || /^memory_l[23]_/.test(name)))
+          throw new MindPondError('scope_denied', 'global deduplication and legacy aggregation require operator capability');
         if (name.startsWith('memory_organization_')) await authorizeOrganizationAccess(graphMemory, args, trusted);
         if (name === 'memory_save' || name === 'memory_save_validate') {
           Object.assign(args, narrowTrustedSaveContext(trusted, args));

@@ -30,6 +30,8 @@ try {
     await issueNetworkGrant({configFile,tokenFile,principal,personalId:principal==='unrelated'?'private':'default'});
     tokenFiles.set(principal,tokenFile);tokens.set(principal,(await fs.readFile(tokenFile,'utf8')).trim());
   }
+  const fullConfig=await readNetworkConfiguration(configFile);fullConfig.grants.find(g=>g.principal==='unrelated')!.toolProfile='full';
+  await fs.writeFile(configFile,JSON.stringify(fullConfig),{mode:0o600});
   assert(!((await fs.readFile(configFile,'utf8')).includes(tokens.get('account-one')!)),'server file stores only token hashes');
   await graph.init();
   const allowedHosts=['127.0.0.1:7904'];
@@ -57,6 +59,9 @@ try {
   const other=await call(b.client,'memory_save',{...sharedInput,content:'Different project endpoint remains independently scoped.',memberships:[{spaceId:'project:two',memoryType:'environment'}],idempotencyKey:'other-project'});
   const search=await call(a.client,'memory_search',{query:'development guide',spaceId:'project:one',minScore:0});
   assert(search.results.some((v:any)=>v.id===saved.id));assert(!search.results.some((v:any)=>v.id===other.id));
+  for(const name of ['memory_l2_batch','memory_l3_batch','memory_dedupe_scan']){
+    const forbidden=await privateClient.client.callTool({name,arguments:{}});assert(forbidden.isError,'full catalog must not grant operator authority');
+  }
   const hidden=await privateClient.client.callTool({name:'memory_get',arguments:{nodeId:saved.id}});assert(hidden.isError||!!decode(hidden).error);
   const processMemory=await call(a.client,'memory_save',{content:'Only account one current investigation may read this unfinished hypothesis.',dimensions:['work']});
   const processNode=await graph.getNodeById(processMemory.id,{trackAccess:false});assert.equal(processNode!.domain.kind,'session');
