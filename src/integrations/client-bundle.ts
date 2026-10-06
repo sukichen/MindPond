@@ -9,7 +9,8 @@ import { MindPondError } from '../core/errors.js';
 
 export type MemoryClient = 'codex' | 'claude' | 'opencode';
 export interface ClientBundleOptions {
-  client: MemoryClient; directory: string; dbPath: string; sessionId?: string;
+  client: MemoryClient; directory: string; dbPath?: string; sessionId?: string;
+  remoteUrl?:string;tokenFile?:string;allowHttp?:boolean;
   personalId?: string; name?: string; embeddingConfigPath?:string;modelDirectory?:string; nodePath?: string; mcpPath?: string; toolProfile?: McpToolProfile; nativeAdapter?:boolean; capturePublicMessages?:boolean;
 }
 interface BundleManifest {
@@ -29,20 +30,25 @@ function toml(v:unknown):string {
 }
 export async function prepareClientBundle(options:ClientBundleOptions) {
   if(!['codex','claude','opencode'].includes(options.client))throw conflict('Unsupported client');
-  const directory=absolute(options.directory,'directory'), dbPath=absolute(options.dbPath,'dbPath');
+  const directory=absolute(options.directory,'directory'), remote=!!options.remoteUrl;
+  const dbPath=remote?'':absolute(options.dbPath!,'dbPath');
+  if(remote&&(options.dbPath||options.personalId||options.nativeAdapter||options.embeddingConfigPath||options.modelDirectory))throw conflict('Remote connection identities, database and model are controlled by the central server');
+  if(remote){const url=new URL(options.remoteUrl!);if(url.username||url.password||url.search||url.hash||!['https:','http:'].includes(url.protocol))throw conflict('Invalid remote endpoint');const token=absolute(options.tokenFile!,'tokenFile');if(token===directory||token.startsWith(directory+path.sep))throw conflict('Keep credentials outside the removable bundle');}
   if(dbPath===directory||dbPath.startsWith(directory+path.sep))throw conflict('Keep the database outside the removable connection bundle');
   const name=options.name??'mindpond';
   if(!/^[a-z][a-z0-9_-]{0,63}$/.test(name))throw conflict('name must be a simple lowercase MCP identifier');
   for(const [key,value] of Object.entries({sessionId:options.sessionId,personalId:options.personalId}))
     if(value!==undefined&&(!value.trim()||value.length>256||value!==value.trim()))throw conflict(key+' requires 1–256 characters without surrounding whitespace');
+  if(remote&&options.sessionId&&!/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u.test(options.sessionId))throw conflict('Remote session requires a stable host label of 1–128 characters');
   const toolProfile = parseMcpToolProfile(options.toolProfile ?? 'work');
-  const env={MINDPOND_TOOL_PROFILE:toolProfile,MEMORY_DB_PATH:dbPath,MEMORY_TRUST_PRINCIPAL:`${options.client}/local`,
+  const localEnv={MINDPOND_TOOL_PROFILE:toolProfile,MEMORY_DB_PATH:dbPath,MEMORY_TRUST_PRINCIPAL:`${options.client}/local`,
     MEMORY_TRUST_DOMAINS:JSON.stringify([{kind:'personal',id:options.personalId??'default'}]),
     ...(options.embeddingConfigPath?{MINDPOND_EMBEDDING_CONFIG:absolute(options.embeddingConfigPath,'embeddingConfigPath')}:{}),
     ...(options.modelDirectory?{EMBEDDING_MODEL_DIR:absolute(options.modelDirectory,'modelDirectory')}:{}),
     MEMORY_TRUST_SESSION:options.sessionId??'',MEMORY_TRUST_OPERATOR:'0'};
+  const env=remote?{MINDPOND_REMOTE_URL:options.remoteUrl!,MINDPOND_REMOTE_TOKEN_FILE:absolute(options.tokenFile!,'tokenFile'),...(options.sessionId?{MINDPOND_REMOTE_SESSION:options.sessionId}:{})}:localEnv;
   const server={command:absolute(options.nodePath??process.execPath,'nodePath'),
-    args:[absolute(options.mcpPath??fileURLToPath(new URL('../mcp.js',import.meta.url)),'mcpPath')],env};
+    args:remote?[absolute(options.mcpPath??fileURLToPath(new URL('../mcp-remote.js',import.meta.url)),'mcpPath'),...(options.allowHttp?['--allow-http']:[])]:[absolute(options.mcpPath??fileURLToPath(new URL('../mcp.js',import.meta.url)),'mcpPath')],env};
   await fs.access(server.args[0]);
   const files:Record<string,string>={'instructions.md':MEMORY_BOOTSTRAP+'\n'};
   let launch:BundleManifest['launch'];
@@ -53,7 +59,7 @@ export async function prepareClientBundle(options:ClientBundleOptions) {
     files['mcp.json']=json({mcpServers:{[name]:{type:'stdio',...server}}});
     launch={command:'claude',args:['--mcp-config',path.join(directory,'mcp.json'),'--append-system-prompt',MEMORY_BOOTSTRAP],env:{}};
   } else {
-    const native=options.nativeAdapter??(!options.sessionId);
+    const native=!remote&&(options.nativeAdapter??(!options.sessionId));
     if(native){
       const pluginPath=path.join(path.dirname(server.args[0]),'integrations','opencode-plugin.js');
       await fs.access(pluginPath);

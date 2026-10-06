@@ -18,11 +18,13 @@
         "zod": "4.5.4"
       },
       "bin": {
-        "mindpond-connect": "dist/connect.js",
-        "mindpond-maintenance": "dist/maintenance.js",
-        "mindpond-mcp": "dist/mcp.js",
-        "mindpond-server": "dist/server.js",
-        "mindpond-models": "./dist/models.js"
+        "mindpond-server": "./dist/server.js",
+        "mindpond-mcp": "./dist/mcp.js",
+        "mindpond-connect": "./dist/connect.js",
+        "mindpond-maintenance": "./dist/maintenance.js",
+        "mindpond-models": "./dist/models.js",
+        "mindpond-mcp-http": "./dist/mcp-http.js",
+        "mindpond-mcp-remote": "./dist/mcp-remote.js"
       },
       "devDependencies": {
         "@types/express": "^4.17.21",

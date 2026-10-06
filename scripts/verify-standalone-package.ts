@@ -6,6 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import {createServer as createPortProbe} from 'node:net';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const exec = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,6 +27,7 @@ try {
   const manifest = JSON.parse(packed.stdout)[0];
   const names: string[] = manifest.files.map((f: any) => f.path);
   assert.ok(names.includes('dist/server.js') && names.includes('dist/mcp.js') && names.includes('dist/connect.js') && names.includes('dist/models.js'));
+  assert.ok(names.includes('dist/mcp-http.js')&&names.includes('dist/mcp-remote.js'));
   assert.ok(names.includes('npm-shrinkwrap.json'),'Published package must retain audited transitive pins');
   assert.ok(names.includes('examples/minimal-host/run.mjs'));
   assert.ok(names.includes('LICENSE')&&names.includes('THIRD_PARTY_NOTICES.md')&&names.includes('licenses/dependencies.txt'));
@@ -56,6 +60,23 @@ try {
   assert.equal(consumerAudit.metadata.vulnerabilities.total,0,'The clean consumer dependency tree must pass audit too');
   console.log('PASS installed consumer dependency versions and official production audit (0 findings)');
   assert.equal((await fs.lstat(installed)).isSymbolicLink(), false);
+  const networkConfig=path.join(temp,'central.accounts.json'),networkToken=path.join(temp,'account.token');
+  await exec(path.join(temp,'node_modules/.bin/mindpond-mcp-http'),['grant','--config',networkConfig,'--principal','package-account','--personal','default','--token-file',networkToken],{cwd:temp,env,timeout:10000});
+  const probe=createPortProbe();probe.listen(0,'127.0.0.1');await new Promise<void>(resolve=>probe.once('listening',resolve));
+  const networkPort=(probe.address() as import('node:net').AddressInfo).port;await new Promise<void>(resolve=>probe.close(()=>resolve()));
+  const central=spawn(path.join(temp,'node_modules/.bin/mindpond-mcp-http'),['serve','--config',networkConfig,'--db',path.join(temp,'network.db'),'--port',String(networkPort)],{cwd:temp,env,stdio:['ignore','pipe','pipe']});children.push(central);
+  let centralOutput='';central.stdout!.on('data',v=>centralOutput+=v);central.stderr!.on('data',v=>centralOutput+=v);
+  const centralDeadline=Date.now()+15000;
+  while(!centralOutput.includes('[mindpond-mcp-http] listening')&&Date.now()<centralDeadline&&central.exitCode===null)await new Promise(resolve=>setTimeout(resolve,50));
+  assert(centralOutput.includes('[mindpond-mcp-http] listening'),centralOutput);
+  const remoteClient=new Client({name:'package-network',version:'1'});
+  try {
+    await remoteClient.connect(new StdioClientTransport({command:path.join(temp,'node_modules/.bin/mindpond-mcp-remote'),args:['--url',`http://127.0.0.1:${networkPort}/mcp`,'--token-file',networkToken,'--session','installed-session'],env,stderr:'pipe'}));
+    const remoteSave=await remoteClient.callTool({name:'memory_save',arguments:{content:'Installed network entry writes centrally, not in the client process.',domain:{kind:'personal',id:'default'},dimensions:['work'],idempotencyKey:'package-network'}});
+    assert(!remoteSave.isError);assert((await fs.stat(path.join(temp,'network.db'))).isFile());
+    const remoteConfig=(await remoteClient.callTool({name:'memory_dimension_policy',arguments:{}}));assert(!remoteConfig.isError);
+  }finally{await remoteClient.close();}
+  console.log('PASS installed account grant, central HTTP executable and separate stdio remote executable');
   const pkg = JSON.parse(await fs.readFile(path.join(installed, 'package.json'), 'utf8'));
   assert.equal(pkg.dependencies.zod, '4.5.4');
   for (const format of ['json', 'text']) {

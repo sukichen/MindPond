@@ -62,3 +62,7 @@ HTTP `/api/memory/search`、MCP `memory_search` 和 SDK `pond.recall` 可传 `co
 新 OpenCode 连接省略 --session 时默认生成文件插件，使用宿主实际 sessionID。配置中的静态 MCP 被禁用，原生工具供日常工作，memory_action 供高级接口。已有静态 session 配置保留兼容；使用 --native 可显式切换。--no-capture 禁用公开正文自动留存。
 
 插件、MCP 和目录不增加 operator 权限，不自带 LLM。完整使用反馈和语义整理仍需宿主模型执行。流程见 [任务记忆循环](task-memory-loop.md)。
+
+## 局域网中心账户
+
+需要由其它账户/机器访问中心库时，使用 `prepare --remote-url <中心 /mcp URL> --token-file <私有令牌文件>`；不传 `--db`。可用 `--session <宿主真实逻辑会话>` 继续同一会话，未提供则每次连接独立。三个客户端均生成 stdio 桥接配置；OpenCode 远程模式不使用本地 native adapter。详见 [网络 MCP](network-mcp.md)。

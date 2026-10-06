@@ -26,3 +26,7 @@ connections/
 evals/results/
 evals/baselines/
 .DS_Store
+
+# Account grants and opaque LAN credentials
+*.accounts.json
+*.token

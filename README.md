@@ -20,6 +20,10 @@ npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP
 
 服务根地址提供搜索、记忆库、人工整理、空间图谱和 action log。搜索直接调用 agent 使用的 GraphMemory.search，支持仅直接命中的对照、传播路径与逐段关联依据。高级参数与原始 JSON 可展开；详情支持正文编辑、关联理由、适用场景、逐条复核与停用/恢复。
 
+## 中心账户与局域网
+
+可由中心账户运行 `mindpond-mcp-http`，其它系统/工作账户使用各自凭据通过局域网接入。账户与机器/IP 解耦；支持多个账户共用个人域、独立 session 和项目空间。`mindpond-connect --remote-url ... --token-file ...` 可为 Codex、Claude Code、OpenCode 生成 stdio 桥接配置，客户端无需共享数据库或模型。部署、逻辑 session 和权限边界见 [网络 MCP](docs/network-mcp.md)。
+
 ## 默认维度与自定义
 
 新库默认优先使用 `profile`（人物与偏好）、`commitment`（约定与目标）、`environment`（工具与环境）、`work`（项目与工作知识）、`practice`（方法与经验），缺省身份为 `work`。旧四维明确标为历史兼容，保留显式旧身份与旧计划重放；新知识优先使用这五个视角。定义、数量、颜色和提示词均可在工作台自定义，多个身份可以落在同一记忆上。项目使用 space，子主题使用 tags。已有数据库配置不会随升级覆盖，也不会自动迁移已有记忆。见 [维度与提示词](docs/custom-dimensions.md)。
