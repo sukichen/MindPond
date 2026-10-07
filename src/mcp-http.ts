@@ -8,16 +8,26 @@ import {GraphMemory} from './core/graph-memory.js';
 import {defaultDatabasePath} from './core/runtime-paths.js';
 import {createNetworkMcpApp} from './integrations/network-server.js';
 import {readNetworkConfiguration,issueNetworkGrant} from './integrations/network-config.js';
+import {workspaceSchema} from './core/collaboration-tools.js';
 process.env.MINDPOND_LOG_STDERR='1';
 let startupGraph:GraphMemory|undefined;
 try {
   const args=process.argv.slice(2),command=args.shift()??'serve';
-  const {values}=parseArgs({args,options:{config:{type:'string'},principal:{type:'string'},personal:{type:'string'},profile:{type:'string'},'token-file':{type:'string'},rotate:{type:'boolean'},db:{type:'string'},host:{type:'string'},port:{type:'string'},'allowed-host':{type:'string',multiple:true},'tls-cert':{type:'string'},'tls-key':{type:'string'}}});
+  const {values}=parseArgs({args,options:{config:{type:'string'},principal:{type:'string'},personal:{type:'string'},profile:{type:'string'},'token-file':{type:'string'},rotate:{type:'boolean'},'workspace-file':{type:'string'},db:{type:'string'},host:{type:'string'},port:{type:'string'},'allowed-host':{type:'string',multiple:true},'tls-cert':{type:'string'},'tls-key':{type:'string'}}});
   const config=values.config??process.env.MINDPOND_MCP_ACCOUNTS;
   if(!config)throw new Error('--config or MINDPOND_MCP_ACCOUNTS is required');
   if(command==='grant'){
     if(!values.principal||!values['token-file'])throw new Error('grant requires --principal and --token-file');
     console.log(JSON.stringify(await issueNetworkGrant({configFile:config,tokenFile:values['token-file'],principal:values.principal,personalId:values.personal,rotate:values.rotate,toolProfile:values.profile as 'work'|'full'|undefined}),null,2));
+  }else if(command==='workspace'){
+    if(!values['workspace-file'])throw new Error('workspace requires --workspace-file');
+    const accounts=await readNetworkConfiguration(config),stat=await fs.stat(values['workspace-file']);
+    if(!stat.isFile()||stat.size>131072)throw new Error('Workspace definition must be a small file');
+    const workspace=workspaceSchema.parse(JSON.parse(await fs.readFile(values['workspace-file'],'utf8')));
+    if(workspace.members.some(m=>!accounts.grants.some(g=>g.principal===m.principal)))throw new Error('Every member must be a registered account');
+    const graph=new GraphMemory('.',{dbPath:values.db??defaultDatabasePath()});startupGraph=graph;await graph.init();
+    console.log(JSON.stringify(await graph.collaboration.configure(workspace,{v:1,principal:'local-operator',operator:true,issuedAt:Date.now(),expiresAt:Number.MAX_SAFE_INTEGER}),null,2));
+    await graph.close();startupGraph=undefined;
   }else if(command==='serve'){
     await readNetworkConfiguration(config);
     const host=values.host??'127.0.0.1',port=Number(values.port??7904);
@@ -34,5 +44,5 @@ try {
     let closing=false;
     const stop=async()=>{if(closing)return;closing=true;const timeout=setTimeout(()=>process.exit(1),30000);timeout.unref();try{await network.close(server);await graph.close();clearTimeout(timeout);}catch{process.exitCode=1;}};
     process.once('SIGTERM',()=>{void stop();});process.once('SIGINT',()=>{void stop();});
-  }else throw new Error('Use serve or grant');
+  }else throw new Error('Use serve, grant or workspace');
 }catch{await startupGraph?.close().catch(()=>{});console.error('Network MCP startup failed. Check command options, private grant configuration and database path.');process.exitCode=1;}

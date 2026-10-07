@@ -55,7 +55,7 @@ export class HostSessionService {
       if('domains' in shape)a.domains=narrowTrustedDomains(trusted,a.domains,a.sessionId as string|undefined);
       if('domain' in shape)a.domain=narrowTrustedDomain(trusted,normalizeDomain(a.domain,context.sessionId),context.sessionId);
       if(tool==='memory_save_validate')Object.assign(a,narrowTrustedSaveContext(trusted,args));
-      return op.run(op.schema.parse(a),context);
+      return op.run(op.schema.parse(a),context,trusted);
     }
     if(['memory_organization_claim','memory_organization_validate','memory_organization_commit','memory_organization_release','memory_organization_renew','memory_association_upsert','memory_association_review','memory_extraction_commit'].includes(tool))Object.assign(a,nativeOperationSchema(tool,this.operations)!.parse(a));
     switch(tool) {

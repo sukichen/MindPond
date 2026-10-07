@@ -159,6 +159,7 @@ app.use((req, res, next) => {
 // ---- web UI (self-contained static page, no build step) ----
 app.get('/', (_req, res) => res.sendFile(path.join(WEB_DIR, 'index.html')));
 app.get('/graph', (_req, res) => res.sendFile(path.join(WEB_DIR, 'graph.html')));
+app.get('/collaboration', (_req, res) => res.sendFile(path.join(WEB_DIR, 'collaboration.html')));
 app.use('/assets', express.static(WEB_DIR));
 app.get('/vendor/vis-network.min.js', (_req, res) => res.type('application/javascript').sendFile(VIS_UMD));
 app.get('/licenses/third-party.txt', (_req, res) =>
@@ -789,7 +790,7 @@ for(const op of hostOperations(graphMemory)) app.post(op.path, async(req,res)=>{
       if ('domain' in shape) body.domain = narrowTrustedDomain(req.trusted, normalizeDomain(body.domain, body.sessionId), body.sessionId);
       if (body.scope === 'operator' && !req.trusted.operator) throw new MindPondError('scope_denied', 'operator capability requires a trusted operator context');
     }
-    const result=await op.run(op.schema.parse(body),callerContext(req,body));
+    const result=await op.run(op.schema.parse(body),callerContext(req,body),req.trusted??(!CONTEXT_SECRET?{v:1,principal:'local-operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}:undefined));
     await graphMemory.logAction({action:'host_tool_completed',nodeId:typeof body.nodeId==='string'?body.nodeId:undefined,domain:req.trusted&&!req.trusted.operator?(req.trusted.sessionId?{kind:'session',id:req.trusted.sessionId}:req.trusted.domains?.[0]):undefined,reason:JSON.stringify({tool:op.name})});
     res.json(result);
   }

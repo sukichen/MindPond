@@ -1,0 +1,47 @@
+/** Installed-style CLI, signed REST workbench and native host use the same ACLs. */
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {spawn,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {createServer} from 'node:net';
+import {fileURLToPath} from 'node:url';
+import {GraphMemory} from '../src/core/graph-memory.js';
+import {HostSessionService} from '../src/integrations/host-session.js';
+import {signContextToken} from '../src/core/trust.js';
+const exec=promisify(execFile),dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-collab-workbench-'));
+const root=fileURLToPath(new URL('../',import.meta.url)),dbPath=path.join(dir,'memory.db'),config=path.join(dir,'accounts.json');
+const env={...process.env,EMBEDDING_ZH_ENABLED:'false',MEMORY_DB_PATH:dbPath,MEMORY_HOST:'127.0.0.1',MEMORY_API_KEY:'',MEMORY_CONTEXT_SECRET:'fixture',MEMORY_OPERATOR_KEY:'',MEMORY_ALLOW_ANONYMOUS:'0'};
+let child:ReturnType<typeof spawn>|undefined,graph:GraphMemory|undefined;
+try{
+  for(const principal of ['reporter-account','developer-account'])await exec(process.execPath,[path.join(root,'dist/mcp-http.js'),'grant','--config',config,'--principal',principal,'--personal',principal,'--token-file',path.join(dir,principal+'.token')],{env});
+  const workspace={id:'workbench-project',teamId:'developers',title:'Workbench fixture',expectedRevision:0,members:[{principal:'reporter-account',roles:['reporter','reviewer']},{principal:'developer-account',roles:['worker']}]};
+  const workspaceFile=path.join(dir,'workspace.json');await fs.writeFile(workspaceFile,JSON.stringify(workspace));
+  const created=await exec(process.execPath,[path.join(root,'dist/mcp-http.js'),'workspace','--config',config,'--db',dbPath,'--workspace-file',workspaceFile],{env});assert.equal(JSON.parse(created.stdout).revision,1);
+  await fs.writeFile(workspaceFile,JSON.stringify({...workspace,id:'bad',members:[{principal:'unregistered',roles:['reporter']}]}));
+  await assert.rejects(exec(process.execPath,[path.join(root,'dist/mcp-http.js'),'workspace','--config',config,'--db',dbPath,'--workspace-file',workspaceFile],{env}));
+  const probe=createServer();probe.listen(0,'127.0.0.1');await new Promise<void>(r=>probe.once('listening',r));const port=(probe.address() as import('node:net').AddressInfo).port;await new Promise<void>(r=>probe.close(()=>r()));
+  child=spawn(process.execPath,[path.join(root,'dist/server.js')],{env:{...env,MEMORY_PORT:String(port)},stdio:['ignore','pipe','pipe']});let logs='';child.stdout!.on('data',x=>logs+=x);child.stderr!.on('data',x=>logs+=x);
+  const base=`http://127.0.0.1:${port}`,deadline=Date.now()+20000;while(!logs.includes('listening')&&Date.now()<deadline&&child.exitCode===null)await new Promise(r=>setTimeout(r,50));assert(logs.includes('listening'),logs);
+  const token=(principal:string)=>signContextToken({principal,domains:[{kind:'personal',id:principal}]},env.MEMORY_CONTEXT_SECRET);
+  const request=async(route:string,body?:unknown,principal?:string)=>{const response=await fetch(base+route,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...(principal?{'x-mindpond-context':token(principal)}:{})},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,text:await response.text()};};
+  const post=async(route:string,body:unknown,principal:string)=>{const r=await request('/api/work/'+route,body,principal);assert.equal(r.status,200,r.text);return JSON.parse(r.text);};
+  const page=await request('/collaboration');assert.equal(page.status,200);for(const id of ['handoffForm','inbox','thread','workspaceForm','contextToken'])assert(page.text.includes(`id="${id}"`));
+  const asset=await request('/assets/collaboration.js');assert.equal(asset.status,200);assert(!asset.text.includes('innerHTML'));assert(!asset.text.includes('localStorage'));
+  assert.equal((await request('/api/work/workspaces',{})).status,403);
+  assert.equal((await request('/api/work/workspace/configure',workspace,'reporter-account')).status,403);
+  const report={summary:'Fixture issue',project:'Tool',version:'Fixture v1',environment:'Test fixture',expected:'Expected fixture behavior',actual:'Observed fixture failure',reproduction:['Run the fixture'],evidence:[{label:'Error',content:'Fixture error text',source:'file:///fixture/private/error.log'}],attempts:[],unknowns:['Real production outcome'],acceptance:['Reporter repeats the fixture']};
+  const handoff=await post('handoff',{workspaceId:workspace.id,recipient:'developer-account',reviewer:'reporter-account',report,idempotencyKey:'workbench-handoff',principal:'developer-account',operator:true},'reporter-account');
+  const thread=await post('thread',{taskId:handoff.taskId},'developer-account');assert.equal(thread.creator,'reporter-account');assert.deepEqual(thread.report,report);
+  assert.equal((await request('/api/work/thread',{taskId:handoff.taskId},'unrelated')).status,403);
+  graph=new GraphMemory('.',{dbPath});await graph.init();
+  const native=new HostSessionService(graph,[{kind:'personal',id:'developer-account'}],'developer-account');
+  const inbox=await native.call('native-session','work_inbox') as any;assert(inbox.items.some((v:any)=>v.taskId===handoff.taskId));
+  const brief=await native.call('native-session','memory_brief',{task:'Check a fixture issue'}) as any;assert.equal(brief.collaboration.principal,'developer-account');assert(brief.collaboration.updates.some((v:any)=>v.taskId===handoff.taskId));
+  const claim=await native.call('native-session','work_task_claim',{taskId:handoff.taskId,eventId:'native-claim',agentId:'reporter-account',expectedRevision:thread.task.revision}) as any;assert.equal(claim.task.assignee,'developer-account');
+  const renewed=await native.call('native-session','work_task_renew',{taskId:handoff.taskId,agentId:'fake',leaseToken:claim.leaseToken}) as any;assert.equal(renewed.revision,claim.task.revision);
+  const reader=new HostSessionService(graph,[{kind:'personal',id:'unrelated'}],'unrelated');await assert.rejects(reader.call('another-session','work_thread_get',{taskId:handoff.taskId}));
+  const log=await graph.actionLogPage({context:{domains:[{kind:'team',id:'developers'}]}});assert(!log.log.some((e:any)=>e.action.startsWith('collaboration_')),'memory-domain grants do not leak workspace audit metadata');
+  console.log('PASS collaboration CLI/workbench/native: registered members; signed account identity; anonymous/spoofed access rejected; complete report; task-start inbox hints; no legacy ACL bypass or scoped-log leakage');
+}finally{if(child&&child.exitCode===null){const exited=new Promise<void>(r=>child!.once('exit',()=>r()));child.kill('SIGTERM');await exited;}await graph?.close();await fs.rm(dir,{recursive:true,force:true});}

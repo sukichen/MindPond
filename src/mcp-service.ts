@@ -110,7 +110,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         const entry = result.content?.find((c: any) => c.type === 'text');
         if (entry) {
           const payload = JSON.parse(entry.text);
-          entry.text = JSON.stringify({ ...payload, mcpConnection: { toolProfile, availableTools: exposedTools,
+          entry.text = JSON.stringify({ ...payload, mcpConnection: { toolProfile, availableTools: exposedTools,principal:trustBound?trusted.principal:null,
             sessionId: TRUST_SESSION || null, domains: TRUST_DOMAINS,
             maintenance: toolProfile === 'work' ? 'Bulk requests, worker draining, legacy and destructive administration need a separate full-profile connection (MINDPOND_TOOL_PROFILE=full). The work profile supports scoped saves, edits, small organization jobs and collaboration tasks.' : 'All tools are exposed.' } });
         }
@@ -129,7 +129,7 @@ for (const op of hostOperations(graphMemory)) {
     const shape = op.schema.shape as Record<string, unknown>;
     const scoped = { ...args };
     for (const key of ['sessionId', 'domain', 'domains']) if (key in shape && !(key in scoped)) scoped[key] = undefined;
-    return {content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(bound(scoped)),callerContext()))}]};
+    return {content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(bound(scoped)),callerContext(),trustBound?trusted:undefined))}]};
   });
 }
 

@@ -15,7 +15,7 @@ import { MindPondError } from './errors.js';
 
 /** Semver of the host protocol. A major bump marks incompatible rule changes:
  * clients must reject or negotiate a downgrade, never apply stale rules. */
-export const PROTOCOL_VERSION = '1.6.0';
+export const PROTOCOL_VERSION = '1.7.0';
 
 export interface ProtocolSection { id: string; title: string; rules: number[]; digest: string; text: string }
 

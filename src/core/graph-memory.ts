@@ -44,6 +44,7 @@ import { organizationMaterial } from './organization-material.js';
 import { ORGANIZATION_POLICY_VERSION } from './organization-policy.js';
 import { OrganizationRequestStore } from './organization-request.js';
 import { MemoryRevisions } from './memory-revisions.js';
+import { CollaborationStore } from './collaboration.js';
 
 export interface MemoryEditPatch {
   dimensions?:KnowledgeDimension[]; replaceMembershipIds?:string[]; anchors?:MemoryAnchor[]; content?:string; importance?:number;
@@ -413,6 +414,7 @@ export class GraphMemory {
   private growth!: GrowthStore;
   /** O01: request service — one bounded organization pass over a fixed watermark. */
   organizationRequests!: OrganizationRequestStore;
+  collaboration!: CollaborationStore;
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
   private readonly materialBudgetChars = Math.max(1000, Number(process.env.ORGANIZATION_MATERIAL_BUDGET_CHARS ?? 48000));
@@ -1122,6 +1124,8 @@ export class GraphMemory {
       getOrganizationJob: jobId => this.getOrganizationJob(jobId),
     }, () => this.now(), async (action, payload) => { await this.logAction({ action, reason: stableJSON(payload) }); }), ['init','createRequest','listRequests','getRequest','nextBatch','reportBatch','finishRequest','cancelRequest','listEvents']);
     await this.organizationRequests.init();
+    this.collaboration=this.coordinator.service(new CollaborationStore(this.db,work=>this.growthWrite(work),this.clock),['init','configure','workspaces','handoff','inbox','get','reply','ack','managedTask','taskList','taskMutation']);
+    await this.collaboration.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');
@@ -1997,10 +2001,11 @@ export class GraphMemory {
     if (!readable.length) return [];
     const where=readable.map(()=>'(domain_kind=? AND domain_id=?)').join(' OR ');
     const params=readable.flatMap(domain=>[domain.kind,domain.id]);
-    const rows=await this.db!.all<any>(`SELECT * FROM work_contexts WHERE (${where}) AND (domain_kind != 'session' OR EXISTS (SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=work_contexts.domain_id AND d.status IN ('active','paused'))) ORDER BY updated_at DESC LIMIT 200`,params);
+    const rows=await this.db!.all<any>(`SELECT * FROM work_contexts WHERE (${where}) AND NOT EXISTS(SELECT 1 FROM work_collaboration_workspaces w WHERE w.context_id=work_contexts.id) AND (domain_kind != 'session' OR EXISTS (SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=work_contexts.domain_id AND d.status IN ('active','paused'))) ORDER BY updated_at DESC LIMIT 200`,params);
     return rows.map((row:any)=>this.workContextRow(row));
   }
   private async readableWorkContext(contextId: string, domains?: MemoryDomainRef[]): Promise<any> {
+    if(await this.db!.get('SELECT 1 FROM work_collaboration_workspaces WHERE context_id=?',[contextId]))throw new MindPondError('scope_denied','Account-managed collaboration requires the authenticated handoff/task interfaces');
     const context=await this.db!.get<any>('SELECT * FROM work_contexts WHERE id=?',[contextId]);
     if (!context) throw new Error('Work context is missing or closed');
     const readable=domains !== undefined ? domains.map(domain=>normalizeDomain(domain,domain.kind==='session'?domain.id:undefined)) : [{kind:'personal' as const,id:'default'}];
@@ -2270,6 +2275,10 @@ export class GraphMemory {
       // domains — other scopes' content/reasons and unattributed legacy rows
       // are never surfaced. Operators (no context) keep the full audit trail.
       const readable = resolveReadDomains(opts.context);
+      // Workspace ACLs are independent of memory-domain grants. Ordinary
+      // memory history cannot disclose other collaboration workspaces;
+      // their participants read the authenticated thread event stream.
+      where.push("action NOT LIKE 'collaboration_%'");
       where.push(readable.length ? '(' + readable.map(() => '(domain_kind = ? AND domain_id = ?)').join(' OR ') + ')' : '0');
       for (const d of readable) params.push(d.kind, d.id);
     }
