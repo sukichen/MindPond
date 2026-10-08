@@ -398,4 +398,5 @@ export { createOpenCodeMemoryPlugin } from './integrations/opencode-plugin.js';
 export type { OpenCodeMemoryOptions } from './integrations/opencode-plugin.js';
 export type { MemoryFinishInput, MemoryEditPatch } from './core/graph-memory.js';
 export {CollaborationStore,COLLABORATION_POLICY} from './core/collaboration.js';
-export type {CollaborationRole,CollaborationWorkspaceInput,ProblemReport,HandoffInput,ReplyInput} from './core/collaboration.js';
+export type {CollaborationRole,CollaborationWorkspaceInput,ProblemReport,HandoffInput,ReplyInput,IterationInput,VerificationInput} from './core/collaboration.js';
+export type {WorkWaitInput,WorkCallRuntime} from './core/collaboration-wait.js';

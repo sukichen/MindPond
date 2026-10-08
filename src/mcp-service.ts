@@ -34,9 +34,10 @@ import type { DomainReadContext, MemoryDomainRef } from './core/domain.js';
 
 import { MemoryPipelineManager } from './core/memory-pipeline.js';
 import type { McpToolProfile } from './core/mcp-tool-profile.js';
+import type {WorkCallRuntime} from './core/collaboration-wait.js';
 
 /** Same catalog and scope checks for stdio and each authenticated HTTP connection. */
-export function createMemoryMcpServer(graphMemory:GraphMemory, options:{trusted?:TrustedCallContext;toolProfile?:McpToolProfile}={}) {
+export function createMemoryMcpServer(graphMemory:GraphMemory, options:{trusted?:TrustedCallContext;toolProfile?:McpToolProfile;authorizeWait?:()=>Promise<void>;waitSignal?:(requestId:string|number)=>AbortSignal|undefined}={}) {
 const trustBound=options.trusted!==undefined;
 const trusted=options.trusted??{v:1 as const,principal:'stdio-host',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
 const TRUST_SESSION=trusted.sessionId??'';
@@ -76,14 +77,15 @@ const server = new McpServer({
 const toolProfile = parseMcpToolProfile(options.toolProfile);
 const exposedTools: string[] = [];
 let closing=false;
+const shutdownSignal=new AbortController();
 const activeCalls=new Set<Promise<unknown>>();
 
 /** R01: every tool failure returns isError with the structured error shape
  * (code/retryable/nextAction) so MCP clients react to data, not prose. */
-function tool(name: string, description: string, shape: any, handler: (args: any) => Promise<any>) {
+function tool(name: string, description: string, shape: any, handler: (args: any,runtime?:WorkCallRuntime) => Promise<any>) {
   if (!exposesMcpTool(toolProfile, name)) return;
   exposedTools.push(name);
-  server.tool(name, description, shape, async (args: any) => {
+  server.tool(name, description, shape, async (args: any,extra:{signal:AbortSignal;requestId:string|number}) => {
     if(closing)return {content:[{type:'text' as const,text:'Memory server is closing; retry the same operation key'}],isError:true};
     let release!:()=>void;const active=new Promise<void>(r=>release=r);activeCalls.add(active);
     try {
@@ -104,7 +106,8 @@ function tool(name: string, description: string, shape: any, handler: (args: any
           Object.assign(args, narrowTrustedSaveContext(trusted, args));
         }
       }
-      const result = await handler(args);
+      const disconnected=options.waitSignal?.(extra.requestId);
+      const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
       await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(TRUST_SESSION?{kind:'session',id:TRUST_SESSION}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal}:{})})});
       if (name === 'memory_capabilities') {
         const entry = result.content?.find((c: any) => c.type === 'text');
@@ -125,11 +128,11 @@ function tool(name: string, description: string, shape: any, handler: (args: any
 }
 
 for (const op of hostOperations(graphMemory)) {
-  tool(op.name, op.description, op.schema.shape, async (args: any) => {
+  tool(op.name, op.description, op.schema.shape, async (args: any,runtime) => {
     const shape = op.schema.shape as Record<string, unknown>;
     const scoped = { ...args };
     for (const key of ['sessionId', 'domain', 'domains']) if (key in shape && !(key in scoped)) scoped[key] = undefined;
-    return {content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(bound(scoped)),callerContext(),trustBound?trusted:undefined))}]};
+    return {content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(bound(scoped)),callerContext(),trustBound?trusted:undefined,runtime))}]};
   });
 }
 
@@ -559,9 +562,12 @@ tool(
 );
 
 
-return {server, async close(){
-  if(closing)return;closing=true;
-  await Promise.allSettled([...activeCalls]);
-  await server.close();
+let closePromise:Promise<void>|undefined;
+const beginShutdown=()=>{closing=true;shutdownSignal.abort();};
+return {server,beginShutdown,close(){
+  if(closePromise)return closePromise;
+  beginShutdown();
+  closePromise=(async()=>{await Promise.allSettled([...activeCalls]);await server.close();})();
+  return closePromise;
 }};
 }

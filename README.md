@@ -24,7 +24,7 @@ npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP
 
 可由中心账户运行 `mindpond-mcp-http`，其它系统/工作账户使用各自凭据通过局域网接入。账户与机器/IP 解耦；支持多个账户共用个人域、独立 session 和项目空间。`mindpond-connect --remote-url ... --token-file ...` 可为 Codex、Claude Code、OpenCode 生成 stdio 桥接配置，客户端无需共享数据库或模型。部署、逻辑 session 和权限边界见 [网络 MCP](docs/network-mcp.md)。
 
-不同账户可通过显式授权的协作工作区交接问题、完整现场证据与补充讨论。持久收件箱区分发布、已读、接收、领取、提交和验收；协作不授予其它账户的私人记忆访问权限。配置及宿主接入见 [跨账户协作](docs/cross-account-collaboration.md)，前端入口为 `/collaboration`。
+不同账户可通过显式授权的协作工作区交接问题、完整现场证据与补充讨论。持久收件箱区分发布、已读、接收、领取、提交和验收；已运行的 Agent 可通过 `work_wait` 挂起等待指定代码轮次的验证结果，前端实时展示迭代过程；协作不授予其它账户的私人记忆访问权限。配置及宿主接入见 [跨账户协作](docs/cross-account-collaboration.md)，前端入口为 `/collaboration`。
 
 ## 默认维度与自定义
 

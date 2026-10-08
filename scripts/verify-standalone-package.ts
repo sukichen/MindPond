@@ -26,6 +26,7 @@ try {
   const packed = await exec('npm', ['pack', '--json', '--pack-destination', temp], { cwd: root, maxBuffer: 4_000_000 });
   const manifest = JSON.parse(packed.stdout)[0];
   const names: string[] = manifest.files.map((f: any) => f.path);
+  for(const asset of ['web/collaboration.html','web/collaboration.js','web/collaboration-loop.js','web/collaboration.css'])assert(names.includes(asset),`Installed workbench must include ${asset}`);
   assert.ok(names.includes('dist/server.js') && names.includes('dist/mcp.js') && names.includes('dist/connect.js') && names.includes('dist/models.js'));
   assert.ok(names.includes('dist/mcp-http.js')&&names.includes('dist/mcp-remote.js'));
   assert.ok(names.includes('npm-shrinkwrap.json'),'Published package must retain audited transitive pins');

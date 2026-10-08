@@ -1124,7 +1124,7 @@ export class GraphMemory {
       getOrganizationJob: jobId => this.getOrganizationJob(jobId),
     }, () => this.now(), async (action, payload) => { await this.logAction({ action, reason: stableJSON(payload) }); }), ['init','createRequest','listRequests','getRequest','nextBatch','reportBatch','finishRequest','cancelRequest','listEvents']);
     await this.organizationRequests.init();
-    this.collaboration=this.coordinator.service(new CollaborationStore(this.db,work=>this.growthWrite(work),this.clock),['init','configure','workspaces','handoff','inbox','get','reply','ack','managedTask','taskList','taskMutation']);
+    this.collaboration=this.coordinator.service(new CollaborationStore(this.db,work=>this.growthWrite(work),this.clock,work=>this.coordinator.exclusive(work)),['init','configure','workspaces','handoff','inbox','get','reply','ack','managedTask','taskList','taskMutation','submitIteration','verifyIteration','activity']);
     await this.collaboration.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
@@ -5129,6 +5129,7 @@ export class GraphMemory {
     for (const timer of this.backgroundTimers) clearTimeout(timer);
     this.backgroundTimers.clear();
     this.closePromise = (async () => {
+      await this.collaboration?.closeWaits();
       await this.profileRetrieval?.close();
       this.profileBuildScheduled.clear();
       await this.coordinator.shutdown(async () => {

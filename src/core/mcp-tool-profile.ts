@@ -20,6 +20,7 @@ const WORK_TOOLS = new Set([
   'memory_organization_commit', 'memory_organization_renew', 'memory_organization_release',
   'work_context_create', 'work_context_list', 'work_task_create', 'work_task_list',
   'work_task_claim', 'work_task_renew', 'work_task_transition',
+  'work_wait','work_activity','work_iteration_submit','work_verification_report',
   'work_workspaces','work_handoff','work_inbox','work_thread_get','work_reply','work_ack',
 ]);
 export function exposesMcpTool(profile: McpToolProfile, name: string): boolean {

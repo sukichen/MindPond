@@ -778,6 +778,9 @@ app.get('/api/protocol/rules', async (req, res) => {
   } catch (err) { failErr(res, err); }
 });
 for(const op of hostOperations(graphMemory)) app.post(op.path, async(req,res)=>{
+  const abort=new AbortController();
+  const disconnected=()=>{if(!res.writableEnded)abort.abort();};
+  res.once('close',disconnected);
   try {
     const body: any = { ...(req.body ?? {}) };
     // R03: host operations inherit the trusted context — model-authored
@@ -790,11 +793,12 @@ for(const op of hostOperations(graphMemory)) app.post(op.path, async(req,res)=>{
       if ('domain' in shape) body.domain = narrowTrustedDomain(req.trusted, normalizeDomain(body.domain, body.sessionId), body.sessionId);
       if (body.scope === 'operator' && !req.trusted.operator) throw new MindPondError('scope_denied', 'operator capability requires a trusted operator context');
     }
-    const result=await op.run(op.schema.parse(body),callerContext(req,body),req.trusted??(!CONTEXT_SECRET?{v:1,principal:'local-operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}:undefined));
+    const result=await op.run(op.schema.parse(body),callerContext(req,body),req.trusted??(!CONTEXT_SECRET?{v:1,principal:'local-operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}:undefined),{signal:abort.signal});
     await graphMemory.logAction({action:'host_tool_completed',nodeId:typeof body.nodeId==='string'?body.nodeId:undefined,domain:req.trusted&&!req.trusted.operator?(req.trusted.sessionId?{kind:'session',id:req.trusted.sessionId}:req.trusted.domains?.[0]):undefined,reason:JSON.stringify({tool:op.name})});
     res.json(result);
   }
   catch(error){failErr(res,error,400);}
+  finally{res.removeListener('close',disconnected);}
 });
 
 app.get('/api/memory/save-policy', async (_req, res) => {try{ok(res,{policy:memorySavePolicyPayload(await graphMemory.getDimensionPolicy())});}catch(e){failErr(res,e);}});
@@ -951,6 +955,7 @@ async function main() {
   const shutdown = async () => {
     if (closing) return;
     closing = true;
+    await graphMemory.collaboration.closeWaits();
     for (const stream of actionStreams) stream.end();
     const deadline = setTimeout(() => listener.closeAllConnections(), 30_000);
     deadline.unref();

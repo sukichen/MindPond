@@ -29,6 +29,8 @@ try{
   const post=async(route:string,body:unknown,principal:string)=>{const r=await request('/api/work/'+route,body,principal);assert.equal(r.status,200,r.text);return JSON.parse(r.text);};
   const page=await request('/collaboration');assert.equal(page.status,200);for(const id of ['handoffForm','inbox','thread','workspaceForm','contextToken'])assert(page.text.includes(`id="${id}"`));
   const asset=await request('/assets/collaboration.js');assert.equal(asset.status,200);assert(!asset.text.includes('innerHTML'));assert(!asset.text.includes('localStorage'));
+  for(const id of ['activityTasks','activityConnection','autoObserve'])assert(page.text.includes(`id="${id}"`));
+  const loopAsset=await request('/assets/collaboration-loop.js');assert.equal(loopAsset.status,200);assert(loopAsset.text.includes('renderActivity'));assert(!loopAsset.text.includes('innerHTML'));
   assert.equal((await request('/api/work/workspaces',{})).status,403);
   assert.equal((await request('/api/work/workspace/configure',workspace,'reporter-account')).status,403);
   const report={summary:'Fixture issue',project:'Tool',version:'Fixture v1',environment:'Test fixture',expected:'Expected fixture behavior',actual:'Observed fixture failure',reproduction:['Run the fixture'],evidence:[{label:'Error',content:'Fixture error text',source:'file:///fixture/private/error.log'}],attempts:[],unknowns:['Real production outcome'],acceptance:['Reporter repeats the fixture']};
@@ -41,6 +43,12 @@ try{
   const brief=await native.call('native-session','memory_brief',{task:'Check a fixture issue'}) as any;assert.equal(brief.collaboration.principal,'developer-account');assert(brief.collaboration.updates.some((v:any)=>v.taskId===handoff.taskId));
   const claim=await native.call('native-session','work_task_claim',{taskId:handoff.taskId,eventId:'native-claim',agentId:'reporter-account',expectedRevision:thread.task.revision}) as any;assert.equal(claim.task.assignee,'developer-account');
   const renewed=await native.call('native-session','work_task_renew',{taskId:handoff.taskId,agentId:'fake',leaseToken:claim.leaseToken}) as any;assert.equal(renewed.revision,claim.task.revision);
+  const iteration=await post('iteration/submit',{taskId:handoff.taskId,eventId:'rest-iteration',expectedRevision:claim.task.revision,leaseToken:claim.leaseToken,codeVersion:'fixture-rest-sha',artifactRef:'fixture://commit/rest',summary:'REST fixture correction',resultRefs:['fixture://diff/rest']},'developer-account');
+  const waiting=post('wait',{taskId:handoff.taskId,roundId:iteration.roundId,codeVersion:iteration.codeVersion,afterSeq:iteration.seq,until:'verification_result',waitMs:3000},'developer-account');
+  const waitDeadline=Date.now()+3000;while(!(await graph.collaboration.activity({}, {v:1,principal:'operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER})).tasks[0].waits.length){assert(Date.now()<waitDeadline);await new Promise(r=>setTimeout(r,15));}
+  const projection=await post('activity',{},'reporter-account');assert.equal(projection.tasks[0].currentIteration.codeVersion,iteration.codeVersion);assert.equal(projection.tasks[0].waits[0].principal,'developer-account');
+  await post('verification/report',{taskId:handoff.taskId,roundId:iteration.roundId,codeVersion:iteration.codeVersion,expectedRevision:iteration.taskRevision,eventId:'rest-verified',verdict:'passed',summary:'Fixture REST cases pass',evidence:[{label:'Fixture output',content:'Fixture REST assertion passed'}]},'reporter-account');
+  assert.equal((await waiting).iteration.state,'passed');
   const reader=new HostSessionService(graph,[{kind:'personal',id:'unrelated'}],'unrelated');await assert.rejects(reader.call('another-session','work_thread_get',{taskId:handoff.taskId}));
   const log=await graph.actionLogPage({context:{domains:[{kind:'team',id:'developers'}]}});assert(!log.log.some((e:any)=>e.action.startsWith('collaboration_')),'memory-domain grants do not leak workspace audit metadata');
   console.log('PASS collaboration CLI/workbench/native: registered members; signed account identity; anonymous/spoofed access rejected; complete report; task-start inbox hints; no legacy ACL bypass or scoped-log leakage');

@@ -30,7 +30,7 @@
     "verify:custom-dimensions": "tsx scripts/verify-custom-dimensions.ts",
     "verify:task-memory": "tsx scripts/verify-task-memory.ts",
     "docs:prompts": "tsx scripts/export-host-prompts.ts",
-    "check": "npm run build && npm run verify:graph-ripple && npm run verify:graph-dimensions && npm run verify:dimension-bridges && npm run verify:custom-dimensions && npm run verify:anchors && tsx scripts/export-host-prompts.ts --check && npm run verify:save-policy && npm run verify:save-index-sync && npm run verify:multi-agent && npm run verify:network-mcp && npm run verify:collaboration && npm run verify:save-preview && npm run verify:organization-driver && npm run verify:errors && npm run verify:trusted-context && npm run verify:legacy-consolidation && npm run verify:organize-request && npm run verify:growth && npm run verify:host-runner && npm run verify:extraction && npm run verify:lifecycle && npm run verify:legacy-domain-links && npm run verify:domains && npm run verify:domain-migration && npm run verify:domain-synthesis && npm run verify:domain-entries && npm run verify:session-lifecycle && npm run verify:recall-feedback && npm run verify:task-memory && npm run verify:wide-memory-loop && npm run verify:opencode-native && npm run verify:context-assembly && npm run verify:memory-revisions && npm run verify:quality-harness && npm run verify:request-workbench && npm run verify:context && npm run verify:workbench && npm run verify:protocol-discovery && npm run verify:space-ripple && npm run smoke && npm run eval:ripple && tsx scripts/verify-agent-api.ts && npm run verify:production-safety && npm run verify:database-maintenance && npm run verify:embedding-profiles && npm run verify:licenses && npm run verify:release",
+    "check": "npm run build && npm run verify:graph-ripple && npm run verify:graph-dimensions && npm run verify:dimension-bridges && npm run verify:custom-dimensions && npm run verify:anchors && tsx scripts/export-host-prompts.ts --check && npm run verify:save-policy && npm run verify:save-index-sync && npm run verify:multi-agent && npm run verify:network-mcp && npm run verify:collaboration && npm run verify:collaboration-wait && npm run verify:save-preview && npm run verify:organization-driver && npm run verify:errors && npm run verify:trusted-context && npm run verify:legacy-consolidation && npm run verify:organize-request && npm run verify:growth && npm run verify:host-runner && npm run verify:extraction && npm run verify:lifecycle && npm run verify:legacy-domain-links && npm run verify:domains && npm run verify:domain-migration && npm run verify:domain-synthesis && npm run verify:domain-entries && npm run verify:session-lifecycle && npm run verify:recall-feedback && npm run verify:task-memory && npm run verify:wide-memory-loop && npm run verify:opencode-native && npm run verify:context-assembly && npm run verify:memory-revisions && npm run verify:quality-harness && npm run verify:request-workbench && npm run verify:context && npm run verify:workbench && npm run verify:protocol-discovery && npm run verify:space-ripple && npm run smoke && npm run eval:ripple && tsx scripts/verify-agent-api.ts && npm run verify:production-safety && npm run verify:database-maintenance && npm run verify:embedding-profiles && npm run verify:licenses && npm run verify:release",
     "verify:agent-api": "npm run build && tsx scripts/verify-agent-api.ts",
     "eval:ripple": "tsx scripts/eval-ripple.ts --strict",
     "verify:growth": "tsx scripts/verify-growth.ts",
@@ -74,7 +74,8 @@
     "eval:prepare-source": "tsx scripts/prepare-source-eval.ts",
     "mcp:http": "node dist/mcp-http.js serve",
     "verify:network-mcp": "tsx scripts/verify-network-mcp.ts",
-    "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts"
+    "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts",
+    "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
@@ -133,7 +134,11 @@
     "docs/workbench-and-host.md",
     "docs/protocol-rules.json",
     "docs/network-mcp.md",
-    "docs/cross-account-collaboration.md"
+    "docs/cross-account-collaboration.md",
+    "web/collaboration.html",
+    "web/collaboration.js",
+    "web/collaboration.css",
+    "web/collaboration-loop.js"
   ],
   "license": "MIT",
   "repository": {

@@ -13,6 +13,7 @@ import { narrowTrustedContext, narrowTrustedSaveContext, narrowTrustedDomain, na
 import { authorizeOrganizationAccess } from '../core/organization-access.js';
 import { normalizeDomain, type MemoryDomainRef } from '../core/domain.js';
 import { MindPondError } from '../core/errors.js';
+import type {WorkCallRuntime} from '../core/collaboration-wait.js';
 
 export class HostSessionService {
   private pipeline:MemoryPipelineManager;
@@ -20,11 +21,11 @@ export class HostSessionService {
   constructor(private graph:GraphMemory,private domains:MemoryDomainRef[],private principal:string) {
     this.pipeline=new MemoryPipelineManager(graph);this.operations=hostOperations(graph);
   }
-  async call(sessionId:string,tool:string,args:Record<string,unknown>={}) {
-    try {const result=await this.execute(sessionId,tool,args);await this.graph.logAction({action:'host_tool_completed',domain:{kind:'session',id:sessionId},reason:JSON.stringify({tool})});return result;}
+  async call(sessionId:string,tool:string,args:Record<string,unknown>={},runtime?:WorkCallRuntime) {
+    try {const result=await this.execute(sessionId,tool,args,runtime);await this.graph.logAction({action:'host_tool_completed',domain:{kind:'session',id:sessionId},reason:JSON.stringify({tool})});return result;}
     catch(error){await this.graph.logAction({action:'host_tool_failed',domain:{kind:'session',id:sessionId},reason:JSON.stringify({tool})});throw error;}
   }
-  private async execute(sessionId:string,tool:string,args:Record<string,unknown>) {
+  private async execute(sessionId:string,tool:string,args:Record<string,unknown>,runtime?:WorkCallRuntime) {
     if(!sessionId || sessionId.length>256)throw new MindPondError('invalid_input','Native session is required');
     if(tool==='memory_native_schema') {
       const name=z.string().min(1).max(128).parse(args.name);
@@ -55,7 +56,7 @@ export class HostSessionService {
       if('domains' in shape)a.domains=narrowTrustedDomains(trusted,a.domains,a.sessionId as string|undefined);
       if('domain' in shape)a.domain=narrowTrustedDomain(trusted,normalizeDomain(a.domain,context.sessionId),context.sessionId);
       if(tool==='memory_save_validate')Object.assign(a,narrowTrustedSaveContext(trusted,args));
-      return op.run(op.schema.parse(a),context,trusted);
+      return op.run(op.schema.parse(a),context,trusted,runtime);
     }
     if(['memory_organization_claim','memory_organization_validate','memory_organization_commit','memory_organization_release','memory_organization_renew','memory_association_upsert','memory_association_review','memory_extraction_commit'].includes(tool))Object.assign(a,nativeOperationSchema(tool,this.operations)!.parse(a));
     switch(tool) {

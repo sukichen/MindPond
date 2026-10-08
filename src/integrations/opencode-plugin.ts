@@ -45,7 +45,9 @@ class WorkerTransport {
     const id=randomUUID(),frame=JSON.stringify({id,sessionId,tool,args})+'\n';
     if(Buffer.byteLength(frame)>2000000)return Promise.reject(new Error(JSON.stringify({code:'material_over_budget',message:'Native call exceeds 2 MB; split complete operations into smaller stages before submitting',retryable:false})));
     return new Promise<any>((resolve,reject)=>{
-      const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error('MindPond timed out; reuse the original operation IDs'));},this.options.timeoutMs??15000);
+      const waitMs=tool==='work_wait'?Math.min(55000,Math.max(100,Number((args as {waitMs?:number})?.waitMs??25000))):0;
+      const timeout=waitMs?Math.max(this.options.timeoutMs??15000,waitMs+5000):this.options.timeoutMs??15000;
+      const timer=setTimeout(()=>{this.pending.delete(id);this.child?.stdin.write(JSON.stringify({cancel:id})+'\n');reject(new Error('MindPond timed out; reuse the original operation IDs'));},timeout);
       this.pending.set(id,{resolve,reject,timer});
       this.child!.stdin.write(frame,error=>{if(error){clearTimeout(timer);this.pending.delete(id);reject(error);}});
     });
