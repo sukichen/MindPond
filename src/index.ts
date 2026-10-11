@@ -68,7 +68,7 @@ export interface MindPondOptions {
    * endpoints) — MindPond itself never holds a key.
    */
   llm?: LLMFn;
-  /** Max associative out-edges per node (default 6) */
+  /** Max distinct associative neighbours per canonical memory, both directions (default 6). */
   maxDegree?: number;
 }
 

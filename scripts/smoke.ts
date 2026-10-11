@@ -35,7 +35,7 @@ async function main() {
   if (outConns.length !== 1 || inConns.length !== 1) throw new Error('bidirectional connections failed');
   if (inConns[0].node.id !== c.id) throw new Error('incoming neighbor should be c');
 
-  // 3. degree cap: fill a's OUT edges to 6 then try a 7th stronger
+  // 3. degree cap: incoming and outgoing share six distinct neighbour slots.
   for (let i = 0; i < 5; i++) {
     const n = await g.createNode({ dimension: 'fact', layer: 'L1', content: `filler ${i}`, importance: 1 });
     await g.upsertEdge(a.id, n.id, 'related', 0.3 + i * 0.05);
@@ -44,8 +44,8 @@ async function main() {
   await g.upsertEdge(a.id, strong.id, 'similar-to', 0.95);
   const after = await g.getConnections(a.id);
   const outAfter = after.filter(x => x.direction === 'out');
-  console.log(`degree cap: out=${outAfter.length} total=${after.length} (expect 6 out, 7 total)`);
-  if (outAfter.length !== 6) throw new Error('degree cap failed');
+  console.log(`degree cap: out=${outAfter.length} total=${after.length} (expect 5 out, 6 total)`);
+  if (outAfter.length !== 5 || after.length !== 6) throw new Error('degree cap failed');
   if (!outAfter.some(x => x.node.id === strong.id)) throw new Error('strong edge should evict weakest');
 
   // 4. search hits

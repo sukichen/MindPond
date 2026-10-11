@@ -1,4 +1,5 @@
 import { ConnectionCoordinator } from './connection-coordinator.js';
+import { admitDegreeNeighbour, degreeNeighbours, degreeRepairPlan, evictDegreeNeighbour, DEFAULT_MAX_ASSOCIATION_DEGREE } from './association-degree.js';
 import { auditDatabase } from './database-maintenance.js';
 import { ProfileRetrieval, type ProfileRetrievalDependencies } from './profile-retrieval.js';
 import type { RetrievalConfigInput } from './embedding-profiles.js';
@@ -400,7 +401,7 @@ export class GraphMemory {
 
   private readonly DEFAULT_MIN_SCORE = 0.3;
   private readonly DEFAULT_MAX_DEPTH = 2;
-  private readonly maxOutEdges: number;
+  private readonly maxAssociationDegree: number;
   /** Version stored in SQLite so a reader notices writes from another process. */
   private indexGeneration = -1;
   /** sqlite has one connection per GraphMemory. Serialize BEGIN/COMMIT blocks
@@ -428,7 +429,9 @@ export class GraphMemory {
   constructor(workspacePath = '.', opts: { maxDegree?: number; clock?: () => number; dbPath?: string;retrieval?:RetrievalConfigInput;retrievalDependencies?:ProfileRetrievalDependencies } = {}) {
     const rootPath = path.resolve(workspacePath, '..');
     this.dataPath = opts.dbPath ?? process.env.MEMORY_DB_PATH ?? path.join(rootPath, 'data', 'graph.db');
-    this.maxOutEdges = Math.max(1, Math.floor(opts.maxDegree ?? 6));
+    const maxDegree = opts.maxDegree ?? DEFAULT_MAX_ASSOCIATION_DEGREE;
+    if (!Number.isFinite(maxDegree) || maxDegree < 1) throw new Error('maxDegree must be a finite positive number');
+    this.maxAssociationDegree = Math.floor(maxDegree);
     /** R02: injectable clock for lease deadlines and timestamps — fault tests
      *  drive the whole pond on a controlled timeline. */
     this.clock = opts.clock ?? Date.now;
@@ -1160,6 +1163,25 @@ export class GraphMemory {
     `);
     await this.setMeta('index_generation', (await this.getMeta('index_generation')) ?? '0');
 
+    // Restore the canonical, bidirectional neighbour cap after all schema and
+    // legacy imports are ready. No backup or graph rewrite on healthy startup.
+    if ((await degreeRepairPlan(this.db, this.maxAssociationDegree)).length) {
+      const backupDir = fs.mkdtempSync(path.join(path.dirname(this.dataPath), '.pre-degree-cap-'));
+      fs.chmodSync(backupDir, 0o700);
+      const backup = path.join(backupDir, 'graph.db');
+      await this.db.run('VACUUM INTO ?', [backup]);
+      fs.chmodSync(backup, 0o600);
+      await this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const rejected = await degreeRepairPlan(this.db, this.maxAssociationDegree);
+        for (const pair of rejected) await evictDegreeNeighbour(this.db, pair.a, pair.b, this.maxAssociationDegree, 'startup degree repair');
+        await this.db.run('INSERT INTO memory_action_log(ts,action,reason) VALUES (?,?,?)',
+          [Date.now(), 'association_degree_repaired', JSON.stringify({ limit: this.maxAssociationDegree, removedNeighbours: rejected.length, backup })]);
+        await this.db.exec('COMMIT');
+        logger.info(`Restored association degree <= ${this.maxAssociationDegree}; removed ${rejected.length} neighbours; backup: ${backup}`);
+      } catch (error) { await this.db.exec('ROLLBACK'); throw error; }
+    }
+
     // Load existing nodes into vector index
     const vectorColumns=await this.db.all<Array<{name:string}>>('PRAGMA table_info(nodes)');
     if(!vectorColumns.some(c=>c.name==='embedding_profile'))await this.db.exec('ALTER TABLE nodes ADD COLUMN embedding_profile TEXT');
@@ -1677,6 +1699,8 @@ export class GraphMemory {
         for (const rel of options.related ?? []) {
           resolved.push({ target: await this.resolveSaveRelated(rel, placements, domain), rel });
         }
+        if (new Set(resolved.map(item => item.target.memoryId)).size > this.maxAssociationDegree)
+          throw new MindPondError('invalid_input', `related exceeds the ${this.maxAssociationDegree} distinct neighbour limit`);
         await this.assertDimensions(dimensions);
         const id = crypto.randomUUID(), now = Date.now();
         await this.db!.run('INSERT INTO nodes (id, dimension, layer, content, embedding, importance, tags, source, domain_kind, domain_id, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -1688,12 +1712,16 @@ export class GraphMemory {
         await this.db!.run('UPDATE nodes SET dimensions=?,primary_dimension=? WHERE id=?',[JSON.stringify(dimensions),dimension,id]);
         await this.anchors.replace(id,content,preparedAnchors);
         const memberships = await this.getMemberships(id, { activeOnly: true });
+        const evictionStart = (await this.db!.get<{id:number}>('SELECT COALESCE(MAX(rowid),0) id FROM memory_action_log'))!.id;
+        const createdAssociations = new Set<string>();
         for (const { target, rel } of resolved) {
           const own = memberships.find(m => m.spaceId === target.spaceId && m.memoryType === target.memoryType)!;
-          await this.upsertAssociationLocked(own.id, target.id, target.spaceId, target.memoryType, rel.score, rel);
+          const association = await this.upsertAssociationLocked(own.id, target.id, target.spaceId, target.memoryType, rel.score, rel);
+          createdAssociations.add(association.id);
         }
         if (sourceRefs.length) await this.db!.run('INSERT INTO memory_sources(memory_id,payload) VALUES (?,?)', [id,stableJSON(sourceRefs)]);
-        const receipt = { id, memberships, edgesCreated: resolved.length, edgesRejected: 0, edgesEvicted: 0 };
+        const edgesEvicted = (await this.db!.get<{n:number}>("SELECT COUNT(*) n FROM memory_action_log WHERE rowid>? AND action='association_degree_evicted'",[evictionStart]))!.n;
+        const receipt = { id, memberships, edgesCreated: createdAssociations.size, edgesRejected: 0, edgesEvicted };
         if (receiptKey) await this.db!.run('INSERT INTO memory_receipts(key,request_hash,payload) VALUES (?,?,?)',[receiptKey,requestHash,stableJSON(receipt)]);
         await this.logAction({ action: 'node_created', nodeId: id, reason: JSON.stringify({ action: 'memory_save', domain, contextualAssociations: resolved.length }) });
         await this.db!.run("UPDATE memory_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'index_generation'");
@@ -1747,12 +1775,18 @@ export class GraphMemory {
     if (options.related !== undefined && !Array.isArray(options.related)) throw new Error('related must be an array');
     if ((options.related?.length ?? 0) > MEMORY_SAVE_LIMITS.related) throw new Error('related supports at most 64 entries per save');
     const relatedIssues: Array<{ index: number; constraint: string; fix: string }> = [];
+    const relatedNeighbours = new Set<string>();
     let relatedAccepted = 0;
     for (const [index, rel] of ((options.related as RelatedMemory[] | undefined) ?? []).entries()) {
       try {
         this.validateAssociationBasis(rel);
         if (!Number.isFinite(rel.score) || rel.score < 0 || rel.score > 1) throw new Error('score must be 0–1');
-        await this.resolveSaveRelated(rel, placements, domain);
+        const target = await this.resolveSaveRelated(rel, placements, domain);
+        relatedNeighbours.add(target.memoryId);
+        if (relatedNeighbours.size > this.maxAssociationDegree) throw new Error(`related exceeds the ${this.maxAssociationDegree} distinct neighbour limit`);
+        const neighbours = await degreeNeighbours(this.db!, target.memoryId);
+        if (neighbours.length >= this.maxAssociationDegree && rel.score <= neighbours[neighbours.length-this.maxAssociationDegree].weight)
+          throw new Error(`target already has ${this.maxAssociationDegree} neighbours with equal or stronger weights`);
         relatedAccepted += 1;
       } catch (err) {
         relatedIssues.push({ index, constraint: (err as Error).message,
@@ -1935,6 +1969,7 @@ export class GraphMemory {
         const a=members.find(m=>m.id===sourceMemberId),b=members.find(m=>m.id===targetMemberId);
         if(!a||!b||!a.active||!b.active||a.domain_kind==='team'||b.domain_kind!=='team'||a.dimension==='event'||b.dimension==='event')throw new Error('Team references require active private knowledge → team knowledge');
         if(a.space_id!==b.space_id||a.memory_type!==b.memory_type)throw new Error('Team references cannot cross spaces/types');
+        await this.requireAssociationCapacity(a.memory_id,b.memory_id,weight,true);
         const id='team-ref:'+digest([sourceMemberId,targetMemberId]);
         await this.db!.run('INSERT INTO memory_team_references(id,source_member_id,target_member_id,weight,reason,context,created_at,source_version,target_version) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source_member_id,target_member_id) DO UPDATE SET weight=excluded.weight,reason=excluded.reason,context=excluded.context,created_at=excluded.created_at,source_version=excluded.source_version,target_version=excluded.target_version',[id,sourceMemberId,targetMemberId,weight,basis.reason,basis.context,Date.now(),a.version,b.version]);
         await this.growth.audit('team_reference_updated',{id,sourceMemberId,targetMemberId},a.memory_id);
@@ -2226,6 +2261,7 @@ export class GraphMemory {
     const domains = await this.db.all<any>('SELECT n.domain_kind,n.domain_id FROM memory_memberships m JOIN nodes n ON n.id=m.memory_id WHERE m.id IN (?,?)',[memberAId,memberBId]);
     if (domains.length !== 2 || domains[0].domain_kind !== domains[1].domain_kind || domains[0].domain_id !== domains[1].domain_id)
       throw new Error('Associations cannot cross memory domains');
+    await this.requireAssociationCapacity(a.memory_id, b.memory_id, weight);
     const [memberA, memberB] = memberAId < memberBId ? [memberAId, memberBId] : [memberBId, memberAId];
     const clamped = Math.max(0, Math.min(1, weight));
     const existing = await this.db.get<any>(
@@ -2419,6 +2455,14 @@ export class GraphMemory {
           after.dimension=restoring.before.node.primary_dimension??(previousDims.includes(restoring.before.node.dimension)?restoring.before.node.dimension:previousDims[0]??restoring.before.node.dimension);
           after.dimensions=JSON.parse(restoring.before.node.dimensions??JSON.stringify(after.dimension==='event'?[]:[after.dimension]));
           await this.growth.bump();
+        }
+        if (patch.dimensions !== undefined || restoring) {
+          // Restoration can revive historical associations. Refuse the entire
+          // edit if either the memory or any restored neighbour exceeds its cap.
+          const neighbours = await degreeNeighbours(this.db!, nodeId);
+          for (const id of [nodeId, ...neighbours.map(row=>row.neighbour)])
+            if ((await degreeNeighbours(this.db!, id)).length > this.maxAssociationDegree)
+              throw new MindPondError('invalid_input', `Reactivating memberships exceeds the ${this.maxAssociationDegree} neighbour limit; review archived associations first`);
         }
         if (embedding) {
           await this.db!.run('UPDATE nodes SET embedding = ?,embedding_profile=? WHERE id = ?', [embedding.length ? Buffer.from(new Float32Array(embedding).buffer) : null,legacyEmbeddingIdentity(),nodeId]);
@@ -2859,19 +2903,27 @@ export class GraphMemory {
               JSON.stringify(opMeta)]);
         }
         for (const edge of dropped) {
+          await this.db!.run('DELETE FROM memory_associations WHERE id = ?', [edge.id]);
+          if (edge.id.startsWith('legacy-assoc:')) await this.db!.run('DELETE FROM edges WHERE id = ?', [edge.id.slice(13)]);
+        }
+        for (const edge of dropped.sort((a,b)=>b.weight-a.weight || a.id.localeCompare(b.id))) {
           const a = replacements.get(edge.memberAId) ?? edge.memberAId;
           const b = replacements.get(edge.memberBId) ?? edge.memberBId;
           if (a !== b) {
             const [left, right] = [a, b].sort();
             const existing = await this.db!.get<any>('SELECT weight FROM memory_associations WHERE member_a_id = ? AND member_b_id = ?', [left, right]);
-            const carried = await this.upsertAssociationLocked(a, b, edge.spaceId, edge.memoryType, Math.max(edge.weight, existing?.weight ?? 0));
+            const weight = Math.max(edge.weight, existing?.weight ?? 0);
+            const endpoints = await this.db!.all<Array<{memory_id:string}>>('SELECT memory_id FROM memory_memberships WHERE id IN (?,?)',[a,b]);
+            if (!(await admitDegreeNeighbour(this.db!,endpoints[0].memory_id,endpoints[1].memory_id,weight,this.maxAssociationDegree))) {
+              await this.logAction({action:'association_carry_rejected',edgeId:edge.id,reason:JSON.stringify({jobId,reason:'degree cap',limit:this.maxAssociationDegree})});
+              continue;
+            }
+            const carried = await this.upsertAssociationLocked(a, b, edge.spaceId, edge.memoryType, weight);
             for (const evidence of edge.evidence ?? []) await this.db!.run(
               'INSERT OR IGNORE INTO association_evidence (association_id, id, payload) VALUES (?, ?, ?)', [carried.id, evidence.id, JSON.stringify(evidence)]);
             await this.logAction({ action: 'association_carried', edgeId: carried.id,
               reason: JSON.stringify({ jobId, previousAssociation: edge, status: 'needs_review' }) });
           }
-          await this.db!.run('DELETE FROM memory_associations WHERE id = ?', [edge.id]);
-          if (edge.id.startsWith('legacy-assoc:')) await this.db!.run('DELETE FROM edges WHERE id = ?', [edge.id.slice(13)]);
           await this.db!.run('INSERT INTO memory_action_log (ts, action, edge_id, reason) VALUES (?, ?, ?, ?)',
             [now, 'association_deleted', edge.id, JSON.stringify({ jobId, reason: 'endpoint consolidated', ...edge })]);
         }
@@ -3295,7 +3347,7 @@ export class GraphMemory {
 
   /**
    * Degree guard (user design 2026-09-03): each node holds at most
-   * MAX_OUT_EDGES *associative* edges (related/similar-to/caused-by/fixes/supports).
+   * six different associative neighbours (incoming and outgoing) (related/similar-to/caused-by/fixes/supports).
    * Structural edges (derived_from/aggregates/distills/mentions) are exempt —
    * they are the layer skeleton and must never be evicted.
    * When full and the new edge's weight beats the weakest existing one,
@@ -3308,37 +3360,19 @@ export class GraphMemory {
     ...GraphMemory.ASSOCIATIVE_LABELS, ...GraphMemory.STRUCTURAL_LABELS, 'contradicts',
   ]);
 
-  private async enforceDegreeCap(fromId: string, label: string, newWeight: number): Promise<boolean> {
-    if (!this.db) return true; // no DB → no guard (shouldn't happen in prod)
-    if (!GraphMemory.ASSOCIATIVE_LABELS.has(label)) return true; // structural and contradiction edges bypass the cap
-
-    const rows = await this.db.all<any>(
-      `SELECT id, to_id, label, weight FROM edges
-       WHERE from_id = ? AND label IN ('related','similar-to','caused-by','fixes','supports')
-       ORDER BY weight ASC`,
-      [fromId]
-    );
-    if (rows.length < this.maxOutEdges) return true;
-
-    const weakest = rows[0];
-    if (newWeight <= weakest.weight) {
-      await this.logAction({
-        action: 'edge_rejected', fromId, edgeId: weakest.id, toId: weakest.to_id,
-        label, weight: newWeight,
-        reason: `degree cap ${this.maxOutEdges} full; new weight <= weakest ${weakest.weight}`,
+  private async requireAssociationCapacity(a: string, b: string, weight: number, oneWay = false): Promise<void> {
+    if (!(await admitDegreeNeighbour(this.db!, a, b, weight, this.maxAssociationDegree, oneWay)))
+      throw new MindPondError('invalid_input', `Association neighbour limit ${this.maxAssociationDegree} reached; new weight must exceed the weakest existing neighbour`, {
+        nextAction: 'Keep the existing associations or supply stronger evidence for a higher weight.',
       });
-      return false; // newcomer is weaker than everything in seat — reject
-    }
+  }
 
-    // Hard-delete the weakest edge (user rule: evicted = gone; action log is the audit trail)
-    await this.db.run(`DELETE FROM edges WHERE id = ?`, [weakest.id]);
-    await this.db.run(`DELETE FROM memory_associations WHERE id = ?`, [`legacy-assoc:${weakest.id}`]);
-    await this.logAction({
-      action: 'edge_evicted', edgeId: weakest.id, fromId, toId: weakest.to_id,
-      label: weakest.label, weight: weakest.weight,
-      reason: `degree cap ${this.maxOutEdges}; replaced by weight ${newWeight}`,
-    });
-    return true;
+  private async enforceDegreeCap(fromId: string, toId: string, label: string, newWeight: number): Promise<boolean> {
+    if (!GraphMemory.ASSOCIATIVE_LABELS.has(label)) return true;
+    if (await admitDegreeNeighbour(this.db!, fromId, toId, newWeight, this.maxAssociationDegree)) return true;
+    await this.logAction({ action: 'edge_rejected', fromId, toId, label, weight: newWeight,
+      reason: `degree cap ${this.maxAssociationDegree}; new weight does not exceed weakest neighbour` });
+    return false;
   }
 
   /**
@@ -3354,6 +3388,7 @@ export class GraphMemory {
     if (!this.db) throw new Error('Database not initialized');
     if (fromId === toId) throw new Error('Self-referential edges not allowed');
     if (!GraphMemory.VALID_EDGE_LABELS.has(label)) throw new Error(`Unsupported edge label: ${label}`);
+    if (!Number.isFinite(weight)) throw new Error('weight must be finite');
     const clamped = Math.max(0, Math.min(1, weight));
 
     // Capacity check and write form one transaction. Without this, concurrent
@@ -3371,7 +3406,7 @@ export class GraphMemory {
         return { id: existing.id, fromId, toId, label, weight: next, createdAt: existing.created_at };
       }
 
-      if (!(await this.enforceDegreeCap(fromId, label, clamped))) {
+      if (!(await this.enforceDegreeCap(fromId, toId, label, clamped))) {
         return null;
       }
       const edge: MemoryEdge = { id: crypto.randomUUID(), fromId, toId, label, weight: clamped, createdAt: Date.now() };
@@ -3413,7 +3448,7 @@ export class GraphMemory {
       await this.db.run(
         `INSERT INTO memory_associations (id, space_id, memory_type, member_a_id, member_b_id, weight, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET weight = excluded.weight, updated_at = excluded.updated_at`,
+         ON CONFLICT(space_id,memory_type,member_a_id,member_b_id) DO UPDATE SET weight = MAX(weight,excluded.weight), updated_at = excluded.updated_at`,
         [`legacy-assoc:${edge.id}`, spaceId, memoryType, memberA, memberB, edge.weight, edge.createdAt, Date.now()]
       );
     }
@@ -3778,12 +3813,22 @@ export class GraphMemory {
         memberMap.set(member.id,target.id);
       }
       const associations=await this.listAssociations(undefined,{membershipIds:[...memberMap.keys()]});
-      for(const edge of associations) {
+      for (const source of sources) {
+        await this.db!.run('UPDATE memory_memberships SET active=0,version=version+1,updated_at=? WHERE memory_id=? AND active=1',[Date.now(),source.id]);
+        await this.db!.run('UPDATE nodes SET superseded_by=?,updated_at=? WHERE id=?',[keepId,Date.now(),source.id]);
+      }
+      for(const edge of associations.sort((a,b)=>b.weight-a.weight || a.id.localeCompare(b.id))) {
         const a=memberMap.get(edge.memberAId)??edge.memberAId,b=memberMap.get(edge.memberBId)??edge.memberBId;
         if(a!==b) {
           const [left,right]=[a,b].sort();
           const previous=await this.db!.get<any>('SELECT weight FROM memory_associations WHERE member_a_id=? AND member_b_id=?',[left,right]);
-          const carried=await this.upsertAssociationLocked(a,b,edge.spaceId,edge.memoryType,Math.max(edge.weight,previous?.weight??0));
+          const weight=Math.max(edge.weight,previous?.weight??0);
+          const endpoints=await this.db!.all<Array<{memory_id:string}>>('SELECT memory_id FROM memory_memberships WHERE id IN (?,?)',[a,b]);
+          if(!(await admitDegreeNeighbour(this.db!,endpoints[0].memory_id,endpoints[1].memory_id,weight,this.maxAssociationDegree))) {
+            await this.logAction({action:'association_carry_rejected',edgeId:edge.id,reason:stableJSON({reason:'degree cap',limit:this.maxAssociationDegree})});
+            continue;
+          }
+          const carried=await this.upsertAssociationLocked(a,b,edge.spaceId,edge.memoryType,weight);
           for(const evidence of edge.evidence??[])await this.db!.run('INSERT OR IGNORE INTO association_evidence(association_id,id,payload) VALUES (?,?,?)',[carried.id,evidence.id,stableJSON(evidence)]);
           await this.logAction({action:'association_carried',edgeId:carried.id,reason:stableJSON({previousAssociation:edge,status:'needs_review',reason})});
         }
@@ -3806,13 +3851,11 @@ export class GraphMemory {
           const previous=await this.db!.get<any>('SELECT * FROM edges WHERE from_id=? AND to_id=? AND label=?',[from,to,edge.label]);
           if(previous)await this.db!.run('UPDATE edges SET weight=MAX(weight,?) WHERE id=?',[edge.weight,previous.id]);
           else {
-            if(!(await this.enforceDegreeCap(from,edge.label,edge.weight)))continue;
+            if(!(await this.enforceDegreeCap(from,to,edge.label,edge.weight)))continue;
             await this.db!.run('INSERT INTO edges(id,from_id,to_id,label,weight,created_at) VALUES (?,?,?,?,?,?)',[crypto.randomUUID(),from,to,edge.label,edge.weight,Date.now()]);
           }
           edgesMoved++;
         }
-        await this.db!.run('UPDATE memory_memberships SET active=0,version=version+1,updated_at=? WHERE memory_id=? AND active=1',[Date.now(),source.id]);
-        await this.db!.run('UPDATE nodes SET superseded_by=?,updated_at=? WHERE id=?',[keepId,Date.now(),source.id]);
         await this.db!.run("INSERT INTO edges(id,from_id,to_id,label,weight,created_at) VALUES (?,?,?,'derived_from',1,?)",[crypto.randomUUID(),keepId,source.id,Date.now()]);
         await this.logAction({action:'node_deduplicated',nodeId:source.id,toId:keepId,reason});
       }

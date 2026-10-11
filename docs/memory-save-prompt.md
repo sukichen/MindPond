@@ -103,6 +103,8 @@ independent retrieval boundaries and not authentication or tenant isolation.
 Only associate memories actually read in the current task. Never search solely
 to manufacture edges. Omit related when concrete co-recall value is unknown;
 shared topics, similar words, or common tags do not by themselves justify a link.
+Each memory has at most 6 distinct associative neighbours across spaces and directions.
+At capacity, only a stronger weight replaces the weakest neighbour; never inflate weights to bypass the limit.
 For EVERY related[] entry, you MUST provide score, reason, and context:
 - reason: a concise factual explanation of why recalling the pair helps and the
   complementary detail or observation that established the connection. Do not
