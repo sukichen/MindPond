@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { open } from 'sqlite';
 import sqlite3 from 'sqlite3';
 import { GraphMemory } from '../src/core/graph-memory.js';
@@ -101,7 +102,7 @@ if(process.argv[2]==='--worker') {
     assert.equal((await db.get('SELECT active FROM memory_memberships WHERE id=?',[environment.id])).active,0);
     console.log('PASS validation catches oversized saves and dimension restoration cannot bypass capacity');
 
-    process.env.MEMORY_TEAM_AUTH_SECRET='degree-fixture-team-secret';
+    process.env.MEMORY_TEAM_AUTH_SECRET=randomBytes(32).toString('hex');
     const teamGrant=signTeamWriteGrant({v:1,authorizationId:'degree-fixture',teamId:'degree-team',requestId:'fixture-user-request',operations:['save'],issuedAt:Date.now()-1000,expiresAt:Date.now()+60000},process.env.MEMORY_TEAM_AUTH_SECRET);
     const privateSource=await create('private reference source','team-reference');
     const teamNodes=[];
