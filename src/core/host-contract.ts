@@ -7,6 +7,7 @@ import type { DomainReadContext } from './domain.js';
 import { organizationTask } from './organization-policy.js';
 import { protocolRulesResponse } from './protocol.js';
 import { MindPondError } from './errors.js';
+import {officeOperations} from './office-tools.js';
 import { collaborationOperations } from './collaboration-tools.js';
 import { COLLABORATION_POLICY } from './collaboration.js';
 import type {WorkCallRuntime} from './collaboration-wait.js';
@@ -128,10 +129,13 @@ export function hostOperations(graph:GraphMemory) {
     {name:'memory_organization_request_finish',path:'/api/host/organization/request/finish',description:'Finish a request because the budget is exhausted (T13): every pending member becomes explicitly uncovered and the derived receipt is partial — never a full-library completion. All outstanding batches need a conclusion first.',schema:z.object({requestId:z.string().min(1),reason:z.string().min(1).max(256),detail:z.string().max(2000).optional()}),run:async(a:any)=>graph.organizationRequests.finishRequest(a.requestId,{reason:a.reason,detail:a.detail})},
     {name:'memory_organization_request_cancel',path:'/api/host/organization/request/cancel',description:'Cancel an organization request: every pending/in-flight member becomes uncovered with reason cancelled; a terminal request keeps its frozen receipt.',schema:z.object({requestId:z.string().min(1),reason:z.string().min(1).max(256)}),run:async(a:any)=>graph.organizationRequests.cancelRequest(a.requestId,a.reason)},
   ];
-  return [...operations,...collaborationOperations(graph)].map(operation => ({...operation, run:async(args:any, context?:DomainReadContext,actor?:TrustedCallContext,runtime?:WorkCallRuntime) => {
+  const officeCatalog=officeOperations(graph),officeNames=new Set(officeCatalog.map(op=>op.name));
+  return [...operations,...collaborationOperations(graph),...officeCatalog].map(operation => ({...operation, run:async(args:any, context?:DomainReadContext,actor?:TrustedCallContext,runtime?:WorkCallRuntime) => {
+    if(officeNames.has(operation.name))return (operation.run as (a:any,t?:TrustedCallContext,r?:WorkCallRuntime)=>Promise<unknown>)(args,actor,runtime);
     if(['work_workspace_configure','work_workspaces','work_handoff','work_inbox','work_thread_get','work_reply','work_ack','work_iteration_submit','work_verification_report','work_wait','work_activity'].includes(operation.name))return (operation.run as (a:any,t?:TrustedCallContext,r?:WorkCallRuntime)=>Promise<unknown>)(args,actor,runtime);
     if(operation.name==='memory_brief'&&actor){
       const brief=await operation.run(args) as object;
+      if(actor.agentId){const discovery=await graph.offices.bootstrap({},actor);return {...brief,collaboration:{identity:discovery.identity,seats:discovery.seats.map((s:any)=>({assignmentId:s.id,officeId:s.office_id,role:s.role})),nextAction:'Use work_bootstrap and this chat workSessionId. Legacy account inboxes are not used for independent agents.'}};}
       const inbox=await graph.collaboration.inbox({limit:3,unreadOnly:true},actor);
       return {...brief,collaboration:{principal:actor.principal,updates:inbox.items.map(item=>({seq:item.seq,taskId:item.taskId,kind:item.kind,status:item.status})),nextAction:'Use work_inbox for all updates and work_thread_get for complete evidence; these operational hints are not recalled memory or read receipts.'}};
     }

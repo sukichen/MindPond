@@ -46,6 +46,7 @@ import { ORGANIZATION_POLICY_VERSION } from './organization-policy.js';
 import { OrganizationRequestStore } from './organization-request.js';
 import { MemoryRevisions } from './memory-revisions.js';
 import { CollaborationStore } from './collaboration.js';
+import {OfficeStore} from './office.js';
 
 export interface MemoryEditPatch {
   dimensions?:KnowledgeDimension[]; replaceMembershipIds?:string[]; anchors?:MemoryAnchor[]; content?:string; importance?:number;
@@ -416,6 +417,7 @@ export class GraphMemory {
   /** O01: request service — one bounded organization pass over a fixed watermark. */
   organizationRequests!: OrganizationRequestStore;
   collaboration!: CollaborationStore;
+  offices!: OfficeStore;
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
   private readonly materialBudgetChars = Math.max(1000, Number(process.env.ORGANIZATION_MATERIAL_BUDGET_CHARS ?? 48000));
@@ -1129,6 +1131,8 @@ export class GraphMemory {
     await this.organizationRequests.init();
     this.collaboration=this.coordinator.service(new CollaborationStore(this.db,work=>this.growthWrite(work),this.clock,work=>this.coordinator.exclusive(work)),['init','configure','workspaces','handoff','inbox','get','reply','ack','managedTask','taskList','taskMutation','submitIteration','verifyIteration','activity']);
     await this.collaboration.init();
+    this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','open','get','exchange','material','progress','item']);
+    await this.offices.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');
@@ -5172,6 +5176,7 @@ export class GraphMemory {
     for (const timer of this.backgroundTimers) clearTimeout(timer);
     this.backgroundTimers.clear();
     this.closePromise = (async () => {
+      await this.offices?.close();
       await this.collaboration?.closeWaits();
       await this.profileRetrieval?.close();
       this.profileBuildScheduled.clear();

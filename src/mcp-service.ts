@@ -1,3 +1,5 @@
+import {AsyncLocalStorage} from 'node:async_hooks';
+import {OFFICE_INSTRUCTIONS,officeMemorySession} from './core/office.js';
 import { recallEntry } from './core/context-assembly.js';
 import { MEMORY_BOOTSTRAP } from './core/bootstrap.js';
 import { parseMcpToolProfile, exposesMcpTool } from './core/mcp-tool-profile.js';
@@ -39,8 +41,9 @@ import type {WorkCallRuntime} from './core/collaboration-wait.js';
 /** Same catalog and scope checks for stdio and each authenticated HTTP connection. */
 export function createMemoryMcpServer(graphMemory:GraphMemory, options:{trusted?:TrustedCallContext;toolProfile?:McpToolProfile;authorizeWait?:()=>Promise<void>;waitSignal?:(requestId:string|number)=>AbortSignal|undefined}={}) {
 const trustBound=options.trusted!==undefined;
-const trusted=options.trusted??{v:1 as const,principal:'stdio-host',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
-const TRUST_SESSION=trusted.sessionId??'';
+const baseTrusted=options.trusted??{v:1 as const,principal:'stdio-host',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+const contextStorage=new AsyncLocalStorage<TrustedCallContext>();
+const trusted=new Proxy(baseTrusted,{get:(target,key)=>Reflect.get(contextStorage.getStore()??target,key)});
 const TRUST_DOMAINS=trusted.domains??[];
 /** Narrow tool arguments to the bound trusted context before they reach core. */
 function callerContext(): DomainReadContext | undefined {
@@ -72,7 +75,7 @@ const hostConsolidation = new MemoryConsolidation(graphMemory, undefined);
 const server = new McpServer({
   name: 'agent-memory',
   version: '0.1.0',
-}, { instructions: MEMORY_BOOTSTRAP });
+}, { instructions: options.trusted?.agentId?OFFICE_INSTRUCTIONS+'\n'+MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP });
 
 const toolProfile = parseMcpToolProfile(options.toolProfile);
 const exposedTools: string[] = [];
@@ -84,11 +87,22 @@ const activeCalls=new Set<Promise<unknown>>();
  * (code/retryable/nextAction) so MCP clients react to data, not prose. */
 function tool(name: string, description: string, shape: any, handler: (args: any,runtime?:WorkCallRuntime) => Promise<any>) {
   if (!exposesMcpTool(toolProfile, name)) return;
+  if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))return;
+  if(options.trusted?.agentId&&name.startsWith('memory_'))shape={...shape,workSessionId:z.string().min(1).max(128).optional()};
   exposedTools.push(name);
   server.tool(name, description, shape, async (args: any,extra:{signal:AbortSignal;requestId:string|number}) => {
     if(closing)return {content:[{type:'text' as const,text:'Memory server is closing; retry the same operation key'}],isError:true};
     let release!:()=>void;const active=new Promise<void>(r=>release=r);activeCalls.add(active);
     try {
+      if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))
+        throw new MindPondError('scope_denied','Independent agents use office v2 tools; legacy account-wide collaboration cannot represent this identity. Call work_bootstrap.');
+      let current:TrustedCallContext={...baseTrusted};
+      if(options.trusted?.agentId&&name.startsWith('memory_')&&args.workSessionId){
+        const binding=await graphMemory.offices.resolveContext(args.workSessionId,current);
+        current={...current,workSessionId:binding.workSessionId,assignmentId:binding.assignmentId,bindingRevision:binding.bindingRevision,
+          sessionId:officeMemorySession(current.principal,current.agentId!,binding.workSessionId)};
+      }
+      return await contextStorage.run(current,async()=>{
       // Zod omits absent optional keys. Preserve declared context slots for
       // handwritten tools too, so bound() applies the host's default scope.
       args = { ...args };
@@ -108,20 +122,21 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       }
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
-      await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(TRUST_SESSION?{kind:'session',id:TRUST_SESSION}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal}:{})})});
+      await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(trusted.sessionId?{kind:'session',id:trusted.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal,agentId:trusted.agentId,workSessionId:trusted.workSessionId}:{})})});
       if (name === 'memory_capabilities') {
         const entry = result.content?.find((c: any) => c.type === 'text');
         if (entry) {
           const payload = JSON.parse(entry.text);
           entry.text = JSON.stringify({ ...payload, mcpConnection: { toolProfile, availableTools: exposedTools,principal:trustBound?trusted.principal:null,
-            sessionId: TRUST_SESSION || null, domains: TRUST_DOMAINS,
+            agentId:trusted.agentId??null,workSessionId:trusted.workSessionId??null,sessionId: trusted.sessionId || null, domains: TRUST_DOMAINS,
             maintenance: toolProfile === 'work' ? 'Bulk requests, worker draining, legacy and destructive administration need a separate full-profile connection (MINDPOND_TOOL_PROFILE=full). The work profile supports scoped saves, edits, small organization jobs and collaboration tasks.' : 'All tools are exposed.' } });
         }
       }
       return result;
+      });
     } catch (err) {
       const e = toStructuredError(err);
-      await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!trusted.operator?(TRUST_SESSION?{kind:'session',id:TRUST_SESSION}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code,...(trustBound?{principal:trusted.principal}:{})})});
+      await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!trusted.operator?(trusted.sessionId?{kind:'session',id:trusted.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code,...(trustBound?{principal:trusted.principal,agentId:trusted.agentId,workSessionId:trusted.workSessionId}:{})})});
       return { content: [{ type: 'text' as const, text: JSON.stringify({ error: e }) }], isError: true };
     } finally {release();activeCalls.delete(active);}
   });

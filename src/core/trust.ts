@@ -18,6 +18,15 @@ import {
 export interface TrustedCallContext {
   v: 1;
   principal: string;
+  /** Network gateway bindings; model arguments cannot create them. */
+  agentId?: string;
+  transport?: 'http-mcp';
+  credentialId?: string;
+  connectionId?: string;
+  assignmentIds?: string[];
+  workSessionId?: string;
+  assignmentId?: string;
+  bindingRevision?: number;
   /** The only session this caller may touch; absent = no session access. */
   sessionId?: string;
   /** Host-configured readable personal/team domains (session rides on sessionId). */

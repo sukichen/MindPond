@@ -1,5 +1,9 @@
 # Cross-account collaboration
 
+Current v2 office setup and MCP-only session identities: [Task offices](collaboration-offices.md). The instructions below remain for legacy v1 account tasks.
+
+Product redesign proposal: [Agent onboarding and task offices](design/collaboration-office-2026-10-15.md). It specifies HTTP-MCP-only agent access, independent agent identities, guided setup, text-only material handoff and event-driven office views. These documents retain the original design goals; see the v2 guide above for implemented capabilities and remaining limitations. The operational instructions below describe the legacy v1 implementation.
+
 MindPond provides a durable handoff between authenticated accounts, including accounts on different machines. It does not access another account's files, run an LLM, or wake an agent process. Reports and discussions are operational records, separate from memory nodes, embedding indexes and organization queues.
 
 ## Explicit setup

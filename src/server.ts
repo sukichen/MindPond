@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {officeWorkbench} from './integrations/office-workbench.js';
 import { recallEntry } from './core/context-assembly.js';
 import { authorizeOrganizationAccess } from './core/organization-access.js';
 import { normalizeDomain } from './core/domain.js';
@@ -164,6 +165,8 @@ app.use('/assets', express.static(WEB_DIR));
 app.get('/vendor/vis-network.min.js', (_req, res) => res.type('application/javascript').sendFile(VIS_UMD));
 app.get('/licenses/third-party.txt', (_req, res) =>
   res.type('text/plain').sendFile(path.resolve(__dirname, '..', 'licenses', 'dependencies.txt')));
+
+app.use('/api/office-admin',officeWorkbench(graphMemory,{apiKey:API_KEY,operatorKey:OPERATOR_KEY,contextSecret:CONTEXT_SECRET,configFile:process.env.MINDPOND_MCP_ACCOUNTS}));
 
 // ---- auth middleware ----
 app.use('/api', (req, res, next) => {
@@ -955,6 +958,7 @@ async function main() {
   const shutdown = async () => {
     if (closing) return;
     closing = true;
+    await graphMemory.offices.close();
     await graphMemory.collaboration.closeWaits();
     for (const stream of actionStreams) stream.end();
     const deadline = setTimeout(() => listener.closeAllConnections(), 30_000);

@@ -86,4 +86,4 @@ function addLoopControls(box,d){
   form.append(action('停止页面等待',async()=>{state.waitAbort?.abort();}),action('重新读取全文与操作状态',()=>thread(d.task.id)));
   box.insertBefore(form,$('loopDetail')?.nextSibling??null);
 }
-run(connect);
+document.querySelector('.office-legacy').addEventListener('toggle',e=>{if(e.target.open&&!state.connected)run(connect);});
