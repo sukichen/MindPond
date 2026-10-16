@@ -66,7 +66,7 @@ const exchangeSchema = z.object({
 });
 const materialSchema = z.object({
   ...mutation,
-  action: z.enum(['begin', 'chunk', 'finalize', 'get']),
+  action: z.enum(['publish', 'begin', 'chunk', 'finalize', 'get']),
   materialId: id.optional(),
   label: text(200).optional(),
   version: text(256).optional(),
@@ -77,7 +77,7 @@ const materialSchema = z.object({
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
   number: z.number().int().min(0).max(63).optional(),
-  content: z.string().min(1).max(16000).optional()
+  content: z.string().min(1).max(128000).optional()
 });
 const itemSchema = z.object({
   ...mutation,
@@ -154,6 +154,8 @@ export function officeOperations(graph: GraphMemory) {
         offset: z.number().int().min(0).optional(),
         itemsAfterId: id.optional(),
         materialsAfterId: id.optional(),
+        itemIds: z.array(id).max(500).optional(),
+        materialIds: z.array(id).max(500).optional(),
         afterSeq: z.number().int().min(0).optional(),
         limit: z.number().int().min(1).max(100).optional()
       }),
@@ -182,12 +184,14 @@ export function officeOperations(graph: GraphMemory) {
     op(
       'work_material',
       'material',
-      'Text-only delivery: begin manifest → numbered UTF-8 chunks → finalize SHA256, or get one finalized chunk. No partial success/path-only evidence. Max 512KB/material, 16KB/chunk, 16MB/office. Stable key for writes.',
+      'Text-only delivery: prefer publish {label,version,content,key}; the server computes UTF-8 bytes/SHA256 and chunks atomically, no shell/hash tool needed. For precomputed large transfers use begin → chunk → finalize. get reads a finalized chunk. Max 128000 characters for publish, 512KB/material, 16KB/chunk, 16MB/office. Stable key for writes.',
       materialSchema,
       async (a, t) => {
         requireFields(
           a,
-          a.action === 'begin'
+          a.action === 'publish'
+            ? ['label', 'version', 'content']
+            : a.action === 'begin'
             ? ['label', 'version', 'bytes', 'chunks', 'sha256']
             : a.action === 'chunk'
               ? ['materialId', 'number', 'content']

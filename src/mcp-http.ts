@@ -21,6 +21,7 @@ try {
       principal: { type: 'string' },
       agent: { type: 'string' },
       assignments: { type: 'string' },
+      'unrestricted-assignments': { type: 'boolean' },
       personal: { type: 'string' },
       profile: { type: 'string' },
       'token-file': { type: 'string' },
@@ -39,6 +40,8 @@ try {
   if (command === 'grant') {
     if (!values.principal || !values['token-file'])
       throw new Error('grant requires --principal and --token-file');
+    if (values.assignments && values['unrestricted-assignments'])
+      throw new Error('Choose --assignments or --unrestricted-assignments, not both');
     const grantOptions = {
       configFile: config,
       tokenFile: values['token-file'],
@@ -47,7 +50,7 @@ try {
       rotate: values.rotate,
       toolProfile: values.profile as 'work' | 'full' | undefined,
       agentId: values.agent,
-      assignmentIds: values.assignments?.split(',')
+      assignmentIds: values['unrestricted-assignments'] ? null : values.assignments?.split(',')
     };
     let issued;
     if (values.agent) {

@@ -10,7 +10,7 @@
  * The docs/protocol-rules.json export and its --check keep generated files
  * drift-free (scripts/export-host-prompts.ts). */
 import { createHash } from 'node:crypto';
-import { HOST_POLICY, capabilities } from './host-contract.js';
+import { hostPolicy, capabilities, type CollaborationProfile } from './host-contract.js';
 import { MindPondError } from './errors.js';
 
 /** Semver of the host protocol. A major bump marks incompatible rule changes:
@@ -34,31 +34,31 @@ const SECTION_RULES: ReadonlyArray<{ id: string; title: string; rules: number[] 
   { id: 'safety', title: 'Honesty and safety', rules: [11] },
 ];
 
-function splitNumberedRules(): Map<number, string> {
+function splitNumberedRules(profile: CollaborationProfile): Map<number, string> {
   const map = new Map<number, string>();
-  for (const line of HOST_POLICY.split('\n')) {
+  for (const line of hostPolicy(profile).split('\n')) {
     const m = line.match(/^(\d+)\.\s+(.*)$/);
     if (m) map.set(Number(m[1]), m[2]);
   }
   return map;
 }
 
-export function protocolSections(): ProtocolSection[] {
-  const rules = splitNumberedRules();
+export function protocolSections(profile: CollaborationProfile = 'legacy'): ProtocolSection[] {
+  const rules = splitNumberedRules(profile);
   return SECTION_RULES.map(({ id, title, rules: ns }) => {
     const text = ns.map(n => `${n}. ${rules.get(n) ?? ''}`).join('\n');
     return { id, title, rules: ns, digest: createHash('sha1').update(text).digest('hex').slice(0, 12), text };
   });
 }
 
-export function protocolRulesPayload() {
-  const caps = capabilities();
+export function protocolRulesPayload(profile: CollaborationProfile = 'legacy') {
+  const caps = capabilities(profile);
   return {
-    version: PROTOCOL_VERSION,
+    version: profile === 'office' ? PROTOCOL_VERSION + '-office.2' : PROTOCOL_VERSION,
     capabilitiesVersion: caps.version,
     defaults: caps.defaults,
-    sections: protocolSections(),
-    full: HOST_POLICY,
+    sections: protocolSections(profile),
+    full: hostPolicy(profile),
   };
 }
 
@@ -72,7 +72,7 @@ export interface ProtocolRulesArgs {
   cacheDigests?: Record<string, string>;
 }
 
-export function protocolRulesResponse(args: ProtocolRulesArgs = {}) {
+export function protocolRulesResponse(args: ProtocolRulesArgs = {}, profile: CollaborationProfile = 'legacy') {
   if (args.clientVersion !== undefined) {
     const clientMajor = args.clientVersion.split('.', 1)[0];
     const serviceMajor = PROTOCOL_VERSION.split('.', 1)[0];
@@ -81,7 +81,7 @@ export function protocolRulesResponse(args: ProtocolRulesArgs = {}) {
         `client protocol v${clientMajor} is incompatible with service protocol v${PROTOCOL_VERSION}`,
         { retryable: false, nextAction: '旧客户端必须明确拒绝本次会话或协商降级，不能默默套用旧规则；升级到当前主版本后重新获取全量规则（省略全部参数）' });
   }
-  const payload = protocolRulesPayload();
+  const payload = protocolRulesPayload(profile);
   if (args.cacheDigests) {
     const changed = payload.sections.filter(s => args.cacheDigests![s.id] !== s.digest);
     return {
@@ -90,6 +90,6 @@ export function protocolRulesResponse(args: ProtocolRulesArgs = {}) {
       ...(changed.length ? { sections: changed.map(({ id, title, rules, digest, text }) => ({ id, title, rules, digest, text })) } : {}),
     };
   }
-  if (args.sinceVersion === PROTOCOL_VERSION) return { version: payload.version, upToDate: true as const };
+  if (args.sinceVersion === payload.version) return { version: payload.version, upToDate: true as const };
   return payload;
 }

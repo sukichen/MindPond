@@ -109,7 +109,8 @@ export async function issueNetworkGrant(options: {
   rotate?: boolean;
   toolProfile?: McpToolProfile;
   agentId?: string;
-  assignmentIds?: string[];
+  /** Omitted preserves existing policy; null explicitly removes restrictions. */
+  assignmentIds?: string[] | null;
 }) {
   const configFile = path.resolve(options.configFile),
     tokenFile = path.resolve(options.tokenFile);
@@ -166,6 +167,8 @@ export async function issueNetworkGrant(options: {
       options.personalId !== undefined
         ? [normalizeDomain({ kind: 'personal', id: options.personalId })]
         : (previous?.domains ?? [{ kind: 'personal' as const, id: 'default' }]);
+    const assignmentIds = options.assignmentIds === undefined
+      ? previous?.assignmentIds : options.assignmentIds ?? undefined;
     const token = randomBytes(32).toString('base64url');
     await fs.writeFile(tokenFile, token + '\n', { flag: 'wx', mode: 0o600 });
     wroteToken = true;
@@ -178,7 +181,7 @@ export async function issueNetworkGrant(options: {
         ? {
             agentId: options.agentId,
             credentialId: options.agentId,
-            ...(options.assignmentIds ? { assignmentIds: options.assignmentIds } : {})
+            ...(assignmentIds ? { assignmentIds } : {})
           }
         : {})
     };

@@ -19,6 +19,8 @@
     cursor: 0,
     events: [],
     loading: false,
+    generation: 0,
+    opening: false,
     logged: false,
     editing: null,
     editingProject: null,
@@ -210,10 +212,14 @@
     details.append(
       make('p', '模板按官方文档生成；实际宿主版本及逐聊天隔离仍需你所在环境验证。OAuth 尚未实现。')
     );
-    const personal = input(agent.principal, '明确允许访问的个人记忆范围');
+    const policy = state.data.credentialPolicies?.[agent.id];
+    const initialPersonal = policy?.domains.find(d => d.kind === 'personal')?.id ?? agent.principal;
+    const personal = input(initialPersonal, '明确允许访问的个人记忆范围');
     details.append(label('个人记忆范围 ID（填写已有范围，或创建独立范围）', personal));
-    const restrictions = input('', '留空：显式上下文；或只允许的工位 ID，逗号分隔');
+    const initialRestrictions = (policy?.assignmentIds ?? []).join(',');
+    const restrictions = input(initialRestrictions, '仅允许的工位 ID，逗号分隔；清空将解除工位限制');
     details.append(label('高级：限制可用分工', restrictions));
+    details.append(make('p', '重新签发默认保留现有记忆范围与工位限制。修改记忆范围将替换现有领域授权；清空已有工位列表将解除限制。'));
     const issue = button(
       agent.state === 'pending' ? '签发并下载一次性凭据' : '重新签发并下载（旧凭据失效）',
       async () => {
@@ -222,14 +228,17 @@
           !window.confirm('重新签发会撤销旧凭据。请在宿主中替换后重连；是否继续？')
         )
           return;
+        const assignmentIds = restrictions.value.split(',').map(s => s.trim()).filter(Boolean);
+        const restrictionsChanged = assignmentIds.join(',') !== initialRestrictions;
+        if (policy?.assignmentIds?.length && restrictionsChanged && !assignmentIds.length &&
+          !window.confirm('清空后此凭据可以选择该 agent 的所有已授权工位。确认解除工位限制？')) return;
+        if (policy && personal.value !== initialPersonal &&
+          !window.confirm('这会将原有记忆领域授权替换为指定的个人范围。确认修改？')) return;
         const response = await api('credential', {
           id: agent.id,
           expectedRevision: agent.revision,
-          personalId: personal.value,
-          assignmentIds: restrictions.value
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
+          ...(!policy || personal.value !== initialPersonal ? { personalId: personal.value } : {}),
+          ...(restrictionsChanged ? { assignmentIds: assignmentIds.length ? assignmentIds : null } : {})
         });
         download(response.token + '\n', agent.id + '.token');
         response.token = '';
@@ -239,7 +248,8 @@
         await refresh();
       }
     );
-    issue.disabled = !state.data.credentialIssuance;
+    issue.disabled = !state.data.credentialIssuance || state.data.credentialPolicyError;
+    if (state.data.credentialPolicyError) details.append(make('p', '当前权限配置读取失败，已暂停签发。请先检查服务配置，避免覆盖未知权限。'));
     details.append(issue);
     if (!state.data.credentialIssuance)
       details.append(
@@ -426,7 +436,13 @@
     el('officeSeatRows').append(row);
   }
   async function openOffice(id) {
-    const first = await api('view', { officeId: id });
+    const generation = ++state.generation;
+    state.opening = true;
+    state.loading = false;
+    let first;
+    try { first = await api('view', { officeId: id }); }
+    finally { if (generation === state.generation) state.opening = false; }
+    if (generation !== state.generation || !state.logged) return;
     state.office = first;
     state.itemsCursor = first.nextItemsAfterId;
     state.materialsCursor = first.nextMaterialsAfterId;
@@ -434,6 +450,7 @@
     state.materialsPaged = false;
     state.events = first.events;
     state.cursor = first.nextCursor;
+    el('officeDetail').hidden = true;
     renderOffice();
     el('officeView').hidden = false;
     el('officeView').scrollIntoView({
@@ -577,7 +594,9 @@
         n.append(make('p', '等待 ' + seatName(item.transfer_to) + ' 接受移交，原负责人继续负责'));
       n.append(
         button('查看工作项详情', async () => {
+          const generation = state.generation;
           const full = await api('view', { officeId: o.id, itemId: item.id });
+          if (generation !== state.generation || !state.logged) return;
           showDetail('工作项', full.item);
           if (full.item.round_id)
             el('officeDetail').append(
@@ -651,7 +670,9 @@
     detail.scrollIntoView({ block: 'nearest' });
   }
   async function showMaterial(id, number) {
+    const generation = state.generation;
     const r = await api('material', { materialId: id, number });
+    if (generation !== state.generation || !state.logged) return;
     const n = el('officeDetail');
     n.hidden = false;
     n.replaceChildren(
@@ -664,21 +685,25 @@
     n.scrollIntoView({ block: 'nearest' });
   }
   async function showRecord(query, title) {
-    let record = await api('view', { officeId: state.office.office.id, ...query, offset: 0 }),
-      text = record.content;
-    const digest = record.sha256;
-    while (record.nextOffset !== null) {
-      record = await api('view', {
-        officeId: state.office.office.id,
-        ...query,
-        offset: record.nextOffset
-      });
-      if (record.sha256 !== digest) throw Error('记录在分页中发生变化，请重新读取。');
+    const officeId = state.office.office.id, generation = state.generation;
+    let offset = 0, text = '', digest;
+    for (let page = 0; page < 128; page++) {
+      const record = await api('view', { officeId, ...query, offset });
+      if (generation !== state.generation || !state.logged) return;
+      if (digest && record.sha256 !== digest) throw Error('记录在分页中发生变化，请重新读取。');
+      digest = record.sha256;
+      if (record.offset !== offset || typeof record.content !== 'string' ||
+          (record.nextOffset !== null && (!Number.isInteger(record.nextOffset) ||
+            record.nextOffset !== offset + record.content.length || record.nextOffset <= offset)))
+        throw Error('记录分页未前进，已停止读取，请刷新后重试。');
       text += record.content;
+      if (record.nextOffset === null) { showDetail(title, JSON.parse(text)); return; }
+      offset = record.nextOffset;
     }
-    showDetail(title, JSON.parse(text));
+    throw Error('记录分页超出读取上限，已停止。');
   }
   async function more(kind) {
+    const generation = state.generation;
     const field = kind === 'items' ? 'itemsAfterId' : 'materialsAfterId',
       cursor = kind === 'items' ? state.itemsCursor : state.materialsCursor;
     const result = await api('view', {
@@ -686,9 +711,8 @@
       [field]: cursor,
       afterSeq: state.cursor
     });
-    state.office[kind] = [
-      ...new Map([...state.office[kind], ...result[kind]].map((r) => [r.id, r])).values()
-    ];
+    if (generation !== state.generation || !state.logged) return;
+    state.office[kind] = mergeRecords(state.office[kind], result[kind]);
     if (kind === 'items') {
       state.itemsCursor = result.nextItemsAfterId;
       state.itemsPaged = true;
@@ -702,6 +726,16 @@
     const n = el('officeDetail');
     n.hidden = false;
     n.replaceChildren(make('h3', title), make('pre', JSON.stringify(data, null, 2)));
+  }
+  function mergeRecords(previous, incoming) {
+    const records = new Map(previous.map(r => [r.id, r]));
+    for (const row of incoming) {
+      const old = records.get(row.id);
+      if (old && ((old.revision ?? 0) > (row.revision ?? 0) ||
+          (old.state === 'published' && row.state === 'draft'))) continue;
+      records.set(row.id, row);
+    }
+    return [...records.values()];
   }
   function renderEvents() {
     const box = el('officeTimeline');
@@ -761,18 +795,19 @@
     setTimeout(() => svg.replaceChildren(), 2200);
   }
   async function updateOffice() {
-    if (!state.office || state.loading) return;
+    if (!state.office || state.loading || state.opening) return;
+    const generation = state.generation;
     state.loading = true;
     try {
-      const data = await api('view', { officeId: state.office.office.id, afterSeq: state.cursor });
+      const data = await api('view', { officeId: state.office.office.id, afterSeq: state.cursor,
+        itemIds: state.office.items.map(t => t.id), materialIds: state.office.materials.map(m => m.id) });
+      if (generation !== state.generation || !state.logged) return;
       const isLive = !state.office.hasMore && !data.hasMore;
       const old = state.office;
       state.office = {
         ...data,
-        items: [...new Map([...old.items, ...data.items].map((r) => [r.id, r])).values()],
-        materials: [
-          ...new Map([...old.materials, ...data.materials].map((r) => [r.id, r])).values()
-        ]
+        items: mergeRecords(old.items, data.items),
+        materials: mergeRecords(old.materials, data.materials)
       };
       if (!state.itemsPaged) state.itemsCursor = data.nextItemsAfterId;
       if (!state.materialsPaged) state.materialsCursor = data.nextMaterialsAfterId;
@@ -781,7 +816,7 @@
       renderOffice();
       if (isLive) animate(data.events);
     } finally {
-      state.loading = false;
+      if (generation === state.generation) state.loading = false;
     }
   }
   function schedule() {
@@ -900,6 +935,7 @@
   el('officeLogout').onclick = () =>
     run(async () => {
       await api('logout');
+      state.generation++;
       state.logged = false;
       clearTimeout(state.poll);
       state.data = null;

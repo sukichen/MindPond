@@ -30,7 +30,7 @@ export class CollaborationWaiter {
   private active=new Map<string,number>();
   private pending=new Set<Promise<unknown>>();
   private generation=0;
-  constructor(private hooks:WaitHooks){}
+  constructor(private hooks:WaitHooks, private resumeTool = 'work_wait'){}
   notify(){this.generation++;for(const listener of [...this.listeners])listener();}
   async close(){this.stopping.abort();this.notify();await Promise.allSettled([...this.pending]);}
   private pause(ms:number,generation:number,signal:AbortSignal){
@@ -72,7 +72,7 @@ export class CollaborationWaiter {
           const generation=this.generation;
           const match=await this.hooks.inspect(resume,actor);
           if(match)result=match;
-          else if(performance.now()-started>=waitMs){result={status:'timeout',nextCursor:resume.afterSeq,resume,nextAction:'No matching result yet. While the user-authorized loop remains active, call work_wait again with resume. Timeout is not verification failure and must not trigger another edit.'};}
+          else if(performance.now()-started>=waitMs){result={status:'timeout',nextCursor:resume.afterSeq,resume,nextAction:`No matching result yet. While the user-authorized loop remains active, call ${this.resumeTool} again with resume. Timeout is not verification failure and must not trigger another edit.`};}
           else{await this.pause(Math.min(750,waitMs-(performance.now()-started)),generation,signal);continue;}
         }
         const receipt={...result,waitId:id,elapsedMs:Math.round(performance.now()-started)};

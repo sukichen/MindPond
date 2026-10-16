@@ -25,9 +25,9 @@ export const OFFICE_GUIDES: Record<string, string> = {
   workflow:
     'Use office_get to read seats, work items, events and material manifests. office_item create/delegate creates one bounded work item with designated worker/reviewer. claim returns a private lease; renew before expiry. submit requires the live lease, current revision, exact codeVersion and finalized materialId; it releases the lease. Reviewer reads the exact material and verifies the roundId/codeVersion with actual evidence. passed completes; changes_requested allows the next claim; blocked needs prerequisites. Do not edit a submitted round. office_exchange request requires final reply with matching requestId; inform does not require a reply. transfer proposes responsibility change; only the target accepts it, old owner remains until then. Respect office deadlines/round budgets; cancel stops submissions but cannot kill host processes.',
   materials:
-    'Paths and private memory IDs do not deliver files. Publish necessary UTF-8 text using work_material begin, chunk and finalize with SHA-256. Follow returned byte/chunk limits; retry the same key/payload. Receivers read all chunks and check the digest. Missing files, binaries or environment prerequisites mean blocked, not verified. Shared-files declarations are self-reports, not filesystem proof. Same commit with different dirty patches is a different code version. No automatic binary/base64 delivery.',
+    'Paths and private memory IDs do not deliver files. Prefer work_material publish with label, version, content and a stable key: the server computes UTF-8 size, SHA-256 and chunks, atomically publishing the exact supplied text. No local calculation tool is required. Limits: 128000 characters and 512KB per publish. If the host can compute a whole-document digest, begin/chunk/finalize supports precomputed manifests. Receivers read every chunk; use the published digest as identity and compare it locally when computation is available, never claim a calculation you did not perform. Missing files, binaries or environment prerequisites mean blocked, not verified. Shared-files declarations are self-reports, not filesystem proof. Same commit with different dirty patches is a different code version. No automatic binary/base64 delivery.',
   waiting:
-    'work_office_wait is bounded (25s default, 55s max), cancellable and checks revocation. It releases DB ownership while sleeping. afterSeq refers to consumed events; requestId waits only for that final reply and roundId/codeVersion only for that round. Timeout returns pending resume; continue only within user-authorized runtime budget. Inbox read does not acknowledge. Both hosts must already be running. Use progress for brief public action/reason, not private chain of thought.'
+    'work_office_wait is bounded (25s default, 55s max), cancellable and checks revocation. Without requestId/itemId it waits for incoming messages OR work-item changes addressed to this seat, so an idle reviewer can discover newly assigned work. Read returned itemId with work_office_get; reviewers then wait with itemId for submission. afterSeq is a consumed-event cursor; a requestId instead reads its durable final reply regardless of cursor, and workers wait for exact roundId/codeVersion. A completed reviewer item returns terminal. Timeout returns pending resume for work_office_wait; continue only within user-authorized runtime budget. Inbox read does not acknowledge. Both hosts must already be running. Use progress for brief public action/reason, not private chain of thought.'
 };
 function fail(
   message: string,
@@ -84,7 +84,7 @@ export class OfficeStore {
               w.seat_id
             );
         })
-    });
+    }, 'work_office_wait');
   }
   async init() {
     await this.db.exec(`
@@ -699,6 +699,28 @@ export class OfficeStore {
       'SELECT * FROM office_materials WHERE office_id=? AND id>? ORDER BY id LIMIT 50',
       [o.id, i.materialsAfterId ?? '']
     );
+    // Refresh previously paged records without replaying every page or serving
+    // stale status indefinitely. Explicit IDs never widen office visibility.
+    const nextItemsAfterId = items.length === 50 ? items.at(-1)!.id : null;
+    const nextMaterialsAfterId = materials.length === 50 ? (materials.at(-1) as Row).id : null;
+    const itemIds = [...new Set<string>([...(i.itemIds ?? []),
+      ...(i.afterSeq === undefined ? [] : events.flatMap(e => e.body.itemId ? [e.body.itemId] : []))])];
+    const materialIds = [...new Set<string>([...(i.materialIds ?? []),
+      ...(i.afterSeq === undefined ? [] : events.flatMap(e => e.body.materialId ? [e.body.materialId] : []))])];
+    if (itemIds.length) {
+      const rows = await this.db.all<Row[]>(
+        `SELECT id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch FROM office_items WHERE office_id=? AND id IN (${itemIds.map(() => '?').join(',')})`,
+        [o.id, ...itemIds]
+      );
+      for (const row of rows) if (!items.some(t => t.id === row.id)) items.push(row);
+    }
+    if (materialIds.length) {
+      const rows = await this.db.all<Row[]>(
+        `SELECT * FROM office_materials WHERE office_id=? AND id IN (${materialIds.map(() => '?').join(',')})`,
+        [o.id, ...materialIds]
+      );
+      for (const row of rows) if (!materials.some((m: Row) => m.id === row.id)) materials.push(row);
+    }
     const waits = await this.db.all(
       "SELECT w.*,s.seat_id FROM office_waits w JOIN office_sessions s ON s.id=w.session_id WHERE w.office_id=? AND w.state='waiting' AND w.expires_at>? ORDER BY w.started_at DESC LIMIT 64",
       [o.id, this.clock()]
@@ -723,8 +745,8 @@ export class OfficeStore {
       events,
       nextCursor: events.at(-1)?.seq ?? i.afterSeq ?? 0,
       hasMore: rawEvents.length > events.length,
-      nextItemsAfterId: items.length === 50 ? items.at(-1)!.id : null,
-      nextMaterialsAfterId: materials.length === 50 ? (materials.at(-1) as Row).id : null,
+      nextItemsAfterId,
+      nextMaterialsAfterId,
       limits: { items: 500, materials: 500 },
       nextAction:
         'Follow all event/items/materials cursors. Large events set detailAvailable: fetch eventSeq with offset until nextOffset=null; this returns complete JSON in chunks. itemId reads acceptance; roundId reads exact verification evidence. Publication/read is not verification. No private leases.'
@@ -882,33 +904,53 @@ export class OfficeStore {
       const old = await this.replay(b, actor, 'material', i);
       if (old) return old;
       let result: Row;
-      if (i.action === 'begin') {
+      if (i.action === 'begin' || i.action === 'publish') {
+        const contents: string[] = [];
+        if (i.action === 'publish') {
+          if (!i.content || i.content.length > 128000 || Buffer.byteLength(i.content) > 512000)
+            fail('Text exceeds publish limit', 'invalid_input');
+          let chunk = '', bytes = 0;
+          for (const point of i.content) {
+            const size = Buffer.byteLength(point);
+            if (bytes + size > 16000) { contents.push(chunk); chunk = ''; bytes = 0; }
+            chunk += point; bytes += size;
+          }
+          if (chunk) contents.push(chunk);
+        }
+        const published = i.action === 'publish';
+        const bytes = published ? Buffer.byteLength(i.content) : i.bytes;
+        const chunks = published ? contents.length : i.chunks;
+        const sha256 = published ? createHash('sha256').update(i.content).digest('hex') : i.sha256;
         const count = await this.db.get<Row>(
           'SELECT COUNT(*) n,COALESCE(SUM(bytes),0) bytes FROM office_materials WHERE office_id=?',
           [b.office_id]
         );
-        if (count!.n >= 500 || count!.bytes + i.bytes > 16000000)
+        if (count!.n >= 500 || count!.bytes + bytes > 16000000)
           fail('Office text material quota reached', 'invalid_input');
         const id = randomUUID();
-        await this.db.run("INSERT INTO office_materials VALUES(?,?,?,?,?,?,?,?,'draft')", [
+        await this.db.run('INSERT INTO office_materials VALUES(?,?,?,?,?,?,?,?,?)', [
           id,
           b.office_id,
           b.seat_id,
           i.label,
           i.version,
-          i.bytes,
-          i.chunks,
-          i.sha256
+          bytes,
+          chunks,
+          sha256,
+          published ? 'published' : 'draft'
         ]);
+        for (let number = 0; number < contents.length; number++)
+          await this.db.run('INSERT INTO office_chunks VALUES(?,?,?)', [id, number, contents[number]]);
         result = {
           materialId: id,
+          state: published ? 'published' : 'draft', bytes, chunks, sha256,
           maxChunkBytes: 16000,
           maxMaterialBytes: 512000,
           seq: await this.audit(
             b.office_id,
             { ...actor, workSessionId: b.id },
-            'material_draft',
-            { materialId: id, label: i.label, bytes: i.bytes, chunks: i.chunks },
+            published ? 'material_published' : 'material_draft',
+            { materialId: id, label: i.label, version: i.version, bytes, chunks },
             b.seat_id
           )
         };
@@ -1136,7 +1178,7 @@ export class OfficeStore {
               i.materialId
             ]);
             await this.db.run(
-              "UPDATE office_items SET status='submitted',revision=revision+1,round_id=?,round_number=round_number+1,code_version=?,material_id=?,lease_hash=NULL,lease_until=NULL,session_id=NULL WHERE id=?",
+              "UPDATE office_items SET status='submitted',revision=revision+1,round_id=?,round_number=round_number+1,code_version=?,material_id=?,lease_hash=NULL,lease_until=NULL,session_id=NULL,transfer_to=NULL,transfer_epoch=NULL WHERE id=?",
               [roundId, i.codeVersion, i.materialId, id]
             );
             result = { roundId, codeVersion: i.codeVersion };
@@ -1175,7 +1217,7 @@ export class OfficeStore {
             [i.target, id]
           );
         } else if (i.action === 'transfer_accept' || i.action === 'transfer_reject') {
-          if (t!.transfer_to !== b.seat_id || t!.transfer_epoch !== t!.epoch)
+          if (t!.status === 'submitted' || t!.transfer_to !== b.seat_id || t!.transfer_epoch !== t!.epoch)
             fail('Transfer is unavailable or superseded');
           if (i.action === 'transfer_accept')
             await this.db.run(
@@ -1239,13 +1281,13 @@ export class OfficeStore {
       );
       if (!q) fail('Only request sender may wait for its reply');
       const reply = await this.db.get<Row>(
-        'SELECT * FROM office_messages WHERE request_id=? AND final=1 AND seq>?',
-        [q!.id, i.afterSeq ?? 0]
+        'SELECT * FROM office_messages WHERE request_id=? AND final=1',
+        [q!.id]
       );
       if (reply)
         return {
           status: 'matched' as const,
-          nextCursor: reply.seq,
+          nextCursor: Math.max(reply.seq, i.afterSeq ?? 0),
           reply:
             reply.body.length > 4000
               ? {
@@ -1264,6 +1306,8 @@ export class OfficeStore {
         o.id
       ]);
       if (!t || ![t.owner, t.reviewer].includes(b.seat_id)) fail('Work item unavailable');
+      if (t.status === 'cancelled' || (t.status === 'completed' && b.seat_id === t.reviewer))
+        return { status: 'terminal' as const, nextCursor: i.afterSeq ?? 0, state: t.status };
       if (b.seat_id === t!.owner && !i.roundId)
         fail(
           'Worker must specify exact roundId/codeVersion when waiting for verification',
@@ -1299,6 +1343,24 @@ export class OfficeStore {
         'SELECT * FROM office_messages WHERE recipient=? AND office_id=? AND seq>? ORDER BY seq LIMIT 1',
         [b.seat_id, o.id, i.afterSeq ?? 0]
       );
+      // Task assignments/submissions are durable events even without a separate
+      // chat message. An idle reviewer does not yet know an itemId to wait on.
+      const event = await this.db.get<Row>(
+        `SELECT e.seq,e.kind,e.body FROM office_events e
+         JOIN office_items t ON t.id=json_extract(e.body,'$.itemId')
+         WHERE e.office_id=? AND e.seq>? AND (e.seat_id IS NULL OR e.seat_id!=?)
+           AND (t.owner=? OR t.reviewer=? OR t.transfer_to=?)
+         ORDER BY e.seq LIMIT 1`,
+        [o.id, i.afterSeq ?? 0, b.seat_id, b.seat_id, b.seat_id, b.seat_id]
+      );
+      if (event && (!m || event.seq < m.seq)) {
+        const body = JSON.parse(event.body);
+        return {
+          status: 'matched' as const, nextCursor: event.seq,
+          event: { seq: event.seq, kind: event.kind, itemId: body.itemId, detailAvailable: true },
+          nextAction: 'Read work_office_get itemId for current assignment/status and eventSeq for this event. Reviewer: wait with itemId for submission; worker: wait for the exact submitted roundId/codeVersion. Neither an event nor a timeout proves completion.'
+        };
+      }
       if (m)
         return {
           status: 'matched' as const,

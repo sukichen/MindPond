@@ -129,12 +129,25 @@ export function officeWorkbench(
     if (raw) sessions.delete(raw.trim().slice('mindpond_office_admin='.length));
     return { ok: true };
   });
-  route('/state', async () => ({
-    ...(await graph.offices.registry(operator)),
-    settings: await graph.offices.settings(operator),
-    credentialIssuance: !!options.configFile,
-    oauth: false
-  }));
+  route('/state', async () => {
+    let credentialPolicyError = false;
+    const credentialPolicies: Record<string, unknown> = {};
+    if (options.configFile) {
+      try {
+        const config = await readNetworkConfiguration(options.configFile);
+        for (const grant of config.grants) if (grant.agentId)
+          credentialPolicies[grant.agentId] = {
+            domains: grant.domains, assignmentIds: grant.assignmentIds ?? null
+          };
+      } catch (error) {
+        credentialPolicyError = (error as NodeJS.ErrnoException).code !== 'ENOENT';
+      }
+    }
+    return {
+      ...(await graph.offices.registry(operator)), settings: await graph.offices.settings(operator),
+      credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
+    };
+  });
   route('/settings', (req) => graph.offices.settings(operator, req.body.mcpUrl));
   route('/agent', (req) =>
     graph.offices.configureAgent(agentConfigurationSchema.parse(req.body), operator)
@@ -154,10 +167,12 @@ export function officeWorkbench(
             .filter((k) => req.body[k] !== undefined)
             .map((k) => [k, officeConfigurationSchema.shape.id.parse(req.body[k])])
         ),
+        offset: Math.max(0, Number(req.body.offset) || 0),
+        ...Object.fromEntries(['itemIds', 'materialIds'].filter(k => req.body[k] !== undefined)
+          .map(k => [k, officeConfigurationSchema.shape.id.array().max(500).parse(req.body[k])])),
         ...(req.body.eventSeq
           ? {
-              eventSeq: Number(req.body.eventSeq),
-              offset: Math.max(0, Number(req.body.offset) || 0)
+              eventSeq: Number(req.body.eventSeq)
             }
           : {}),
         afterSeq: Math.max(0, Number(req.body.afterSeq) || 0),
@@ -191,11 +206,11 @@ export function officeWorkbench(
     const input = agentConfigurationSchema
       .pick({ id: true, expectedRevision: true })
       .extend({
-        personalId: agentConfigurationSchema.shape.principal,
+        personalId: agentConfigurationSchema.shape.principal.optional(),
         assignmentIds: officeConfigurationSchema.shape.seats
           .unwrap()
           .element.shape.id.array()
-          .max(50)
+          .min(1).max(50).nullable()
           .optional()
       })
       .parse(req.body);
@@ -234,7 +249,7 @@ export function officeWorkbench(
         agentId: agent.id,
         personalId: input.personalId,
         rotate: config.grants.some((g) => g.agentId === agent.id),
-        assignmentIds: input.assignmentIds?.length ? input.assignmentIds : undefined
+        assignmentIds: input.assignmentIds
       });
       await graph.offices.configureAgent(
         { ...agent, expectedRevision: agent.revision + 1, state: 'active' },

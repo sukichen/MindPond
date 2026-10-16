@@ -1,7 +1,7 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {OFFICE_INSTRUCTIONS,officeMemorySession} from './core/office.js';
 import { recallEntry } from './core/context-assembly.js';
-import { MEMORY_BOOTSTRAP } from './core/bootstrap.js';
+import { MEMORY_BOOTSTRAP, OFFICE_MEMORY_BOOTSTRAP } from './core/bootstrap.js';
 import { parseMcpToolProfile, exposesMcpTool } from './core/mcp-tool-profile.js';
 import { authorizeOrganizationAccess } from './core/organization-access.js';
 import { normalizeDomain } from './core/domain.js';
@@ -75,7 +75,7 @@ const hostConsolidation = new MemoryConsolidation(graphMemory, undefined);
 const server = new McpServer({
   name: 'agent-memory',
   version: '0.1.0',
-}, { instructions: options.trusted?.agentId?OFFICE_INSTRUCTIONS+'\n'+MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP });
+}, { instructions: options.trusted?.agentId?OFFICE_INSTRUCTIONS+'\n'+OFFICE_MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP });
 
 const toolProfile = parseMcpToolProfile(options.toolProfile);
 const exposedTools: string[] = [];
@@ -160,7 +160,7 @@ server.registerResource('protocol-rules', 'mindpond://protocol/rules', {
   description: 'Host protocol version, section digests and short rules — equivalent to the memory_protocol_rules tool without arguments.',
   mimeType: 'application/json',
 }, async () => ({
-  contents: [{ uri: 'mindpond://protocol/rules', mimeType: 'application/json', text: JSON.stringify({...protocolRulesResponse(),...await graphMemory.dimensionPolicyDelta()}) }],
+  contents: [{ uri: 'mindpond://protocol/rules', mimeType: 'application/json', text: JSON.stringify({...protocolRulesResponse({},baseTrusted.agentId?'office':'legacy'),...await graphMemory.dimensionPolicyDelta()}) }],
 }));
 
 tool(

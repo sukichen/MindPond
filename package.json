@@ -77,7 +77,7 @@
     "verify:network-mcp": "tsx scripts/verify-network-mcp.ts",
     "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts",
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
-    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts"
+    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
