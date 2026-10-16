@@ -130,7 +130,7 @@ export function officeWorkbench(
     if (raw) sessions.delete(raw.trim().slice('mindpond_office_admin='.length));
     return { ok: true };
   });
-  route('/state', async () => {
+  route('/state', async (req) => {
     let credentialPolicyError = false;
     const credentialPolicies: Record<string, unknown> = {};
     if (options.configFile) {
@@ -146,7 +146,7 @@ export function officeWorkbench(
     }
     return {
       ...(await graph.offices.registry(operator)), settings: await graph.offices.settings(operator),
-      characters: await graph.roles.registry(operator),
+      characters: await graph.roles.state(operator, req.body.roleAfterSeq),
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
   });

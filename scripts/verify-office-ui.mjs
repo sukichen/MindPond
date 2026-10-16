@@ -11,12 +11,19 @@ function handler(name, next) {
 }
 const state = { logged: true, generation: 0, loading: false, opening: false, office: null };
 let fetcher, detail;
+let timer, renderedCharacters;
 const context = vm.createContext({
   state,
   api: (...args) => fetcher(...args),
   el: () => ({ scrollIntoView() {} }),
   renderOffice() {},
   animate() {},
+  document: { hidden: false },
+  setTimeout(fn) { timer = fn; return 1; },
+  clearTimeout() { timer = null; },
+  renderCharacters(data) { renderedCharacters = data; },
+  refreshSeatChoices() {},
+  notice() {},
   window: { matchMedia: () => ({ matches: true }) },
   showDetail: (title, value) => {
     detail = { title, value };
@@ -26,6 +33,7 @@ vm.runInContext(
   [
     handler('openOffice', 'function seatName'),
     handler('updateOffice', 'function schedule'),
+    source.slice(source.indexOf('  function schedule('),source.indexOf('  function submit(')),
     handler('showRecord', 'async function more'),
     source.slice(
       source.indexOf('  function mergeRecords('),
@@ -120,6 +128,32 @@ state.office = null;
 late.resolve(page('c'));
 await request;
 assert.equal(state.office, null);
+// One poll must BOTH advance the role cursor and render new applications.
+state.logged = true; state.authEpoch = 0;
+state.data = { characters: { revision: 1, pending: [] } };
+context.el = () => ({ querySelectorAll: () => [] });
+context.updateOffice = async () => {};
+fetcher = async () => ({ agents: [], characters: { revision: 2, pending: [{ id: 'new' }] } });
+context.schedule(); await timer();
+assert.equal(renderedCharacters?.pending[0]?.id, 'new', 'poll must render newly arrived applications');
+// An in-flight response must not overwrite edits or consume their revision.
+const editPoll = deferred(); fetcher = () => editPoll.promise;
+context.schedule(); const editing = timer(); state.roleEditing = true;
+editPoll.resolve({ agents: [], characters: { revision: 3, pending: [] } });
+await editing;
+assert.equal(state.data.characters.revision, 2, 'paused edits leave newer state available for refresh');
+state.roleEditing = false;
+fetcher = async () => ({ agents: [], characters: { unchanged: true, revision: 2 } });
+context.schedule(); await timer();
+assert.equal(state.data.characters.pending[0].id, 'new', 'unchanged snapshots preserve full prior data');
+// Logout invalidates the registry poll as well as the selected-office poll.
+const lateRegistry = deferred(); fetcher = () => lateRegistry.promise;
+context.schedule(); const pendingRegistry = timer();
+state.authEpoch++; state.logged = false; state.data = null; timer = null;
+lateRegistry.resolve({ agents: [], characters: { revision: 99, pending: [] } });
+await pendingRegistry;
+assert.equal(state.data, null);
+assert.equal(timer, null, 'an expired poll cannot restart a timer after logout');
 console.log(
   'PASS office UI: reversed opens, room-switch polling, loaded-page refresh, bounded detail pagination, logout fencing'
 );

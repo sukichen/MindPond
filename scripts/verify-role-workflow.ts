@@ -96,6 +96,7 @@ try {
   const login = await req('login', { operatorKey: 'fixture-operator' });assert.equal(login.status, 200);cookie = login.headers.get('set-cookie')!.split(';')[0];
   const firstState=await (await req('role/state')).json();assert.equal(firstState.pending.length, 3);
   assert.equal((await (await req('role/state',{afterSeq:firstState.revision})).json()).unchanged,true,'idle page polling should not reload entire message bodies');
+  assert.equal((await (await req('state',{roleAfterSeq:firstState.revision})).json()).characters.unchanged,true,'the single UI poll uses the role cursor');
   const approved: any[] = [];
   for (const p of [appA, appB, appC]) { const r = await req('role/review', { applicationId: p.applicationId, expectedRevision: 1, action: 'approve' });assert.equal(r.status, 200, await r.clone().text());approved.push(await r.json()); }
   assert.equal((await req('role/review', { applicationId: appA.applicationId, expectedRevision: 1, action: 'approve' })).status, 409);
@@ -150,6 +151,11 @@ try {
   const aSession = aOffice.sessions.find((s: any) => s.seat_id === 'role-worker').id;
   assert((await raw(b, 'work_material', { action: 'publish', workSessionId: aSession, label: 'Invalid', version: 'v1', content: 'Wrong role', key: 'bad-material' })).isError);
   assert.equal((await call(b, 'work_office_get', { officeId: 'role-room' })).office.id, 'role-room');
+  const officeRequest=await call(b,'work_office_exchange',{action:'send',officeId:'role-room',recipient:'role-worker',kind:'request',body:'Verify the synthetic office inbox path.',key:'office-request'});
+  const officeInbox=await call(a,'role_receive');
+  assert(officeInbox.officePending.some((x:any)=>x.messageId===officeRequest.messageId&&x.officeId==='role-room'),'the CLI inbox must expose legacy office messages over HTTP MCP');
+  await call(a,'work_office_exchange',{action:'send',officeId:'role-room',recipient:'role-reviewer',kind:'reply',requestId:officeRequest.messageId,final:true,body:'Synthetic office path checked.',key:'office-final'});
+  assert(!(await call(a,'role_receive')).officePending.some((x:any)=>x.messageId===officeRequest.messageId),'completed office requests leave the unified inbox');
   // Disable fences contexts and memory calls carrying an obsolete role.
   assert.equal((await req('role/configure', { roleId: roleA, expectedRevision: 2, name: '栗子', introduction: 'Disabled fixture role.', state: 'disabled' })).status, 200);
   assert((await raw(a, 'role_sync')).isError);assert((await raw(a, 'work_material', { action: 'publish', workSessionId: aSession, label: 'Late', version: 'v1', content: 'Rejected', key: 'late' })).isError);

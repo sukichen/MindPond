@@ -78,7 +78,7 @@
     "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts",
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
     "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs",
-    "verify:roles": "tsx scripts/verify-role-workflow.ts"
+    "verify:roles": "tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

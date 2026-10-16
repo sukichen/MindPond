@@ -280,6 +280,7 @@
     const epoch=state.authEpoch, next=await api('state');
     if(epoch!==state.authEpoch)return;
     state.data = next;
+    if(state.roleEditing)notice('角色列表已刷新，已恢复自动同步。');
     state.roleEditing = false;
     state.logged = true;
     el('officeLogin').hidden = true;
@@ -350,6 +351,14 @@
       );
     if (!state.data.offices.length)
       rooms.append(make('p', '还没有办公室。接入 agent 后，展开下面的创建表单。'));
+    refreshSeatChoices();
+    renderProjects();
+    if (!el('officeSeatRows').children.length) {
+      addSeat();
+      addSeat();
+    }
+  }
+  function refreshSeatChoices() {
     for (const row of el('officeSeatRows').children) {
       const select = row.querySelector('[name=agent]'),
         value = select.value;
@@ -360,11 +369,6 @@
         select.append(option);
       }
       if ([...select.options].some((o) => o.value === value)) select.value = value;
-    }
-    renderProjects();
-    if (!el('officeSeatRows').children.length) {
-      addSeat();
-      addSeat();
     }
   }
   function seatChoices() {
@@ -899,11 +903,21 @@
   }
   function schedule() {
     clearTimeout(state.poll);
+    const epoch = state.authEpoch;
     state.poll = setTimeout(async () => {
+      if (epoch !== state.authEpoch || !state.logged) return;
       if (state.logged && !document.hidden) {
         try {
-          const data = await api('state');
+          const owner = state.data;
+          const data = await api('state', { roleAfterSeq: owner?.characters?.revision });
+          if (epoch !== state.authEpoch || !state.logged) return;
+          // A manual refresh may have completed while this poll was in flight.
+          // Never replace it with a stale response, or erase profile form edits.
+          if (state.data !== owner) { schedule(); return; }
+          const changed = data.characters && !data.characters.unchanged && !state.roleEditing;
+          if (!changed) data.characters = owner?.characters;
           state.data = data;
+          if (changed) { renderCharacters(data.characters); refreshSeatChoices(); }
           for (const badge of el('officeAgentList').querySelectorAll('[data-agent]')) {
             const a = data.agents.find((a) => a.id === badge.dataset.agent);
             if (a)
@@ -924,11 +938,12 @@
             state.pollFailed = false;
           }
         } catch (error) {
+          if (epoch !== state.authEpoch || !state.logged) return;
           state.pollFailed = true;
           el('officeSync').textContent = '观察连接中断 · 正在重试，保留上次状态';
         }
       }
-      schedule();
+      if (epoch === state.authEpoch && state.logged) schedule();
     }, 2500);
   }
   function submit(id, fn) {
@@ -1015,12 +1030,10 @@
     await api('role/link', {sender:data.get('sender'),recipient:data.get('recipient'),enabled:data.get('enabled')==='true'});
     notice('通信权限已保存；记忆与文件权限不会扩大。');
   });
-  const rolePoll=setInterval(async()=>{
-    if (!state.logged || document.hidden || state.roleEditing) return;
-    const owner=state.data;
-    try { const data=await api('role/state',{afterSeq:owner.characters?.revision});if(!data.unchanged&&state.logged&&state.data===owner&&JSON.stringify(data)!==JSON.stringify(state.data.characters)){state.data.characters=data;renderCharacters(data);} } catch { /* Existing content remains; manual refresh reports errors. */ }
-  },5000);
-  el('officeCharacters').addEventListener('input',()=>{state.roleEditing=true;});
+  el('officeCharacters').addEventListener('input',()=>{
+    if (!state.roleEditing) notice('正在编辑角色，已暂停角色列表自动更新。保存或点击“刷新角色”后继续同步。');
+    state.roleEditing=true;
+  });
   el('officeRefresh').onclick = () =>
     run(async () => {
       await refresh();
@@ -1050,7 +1063,8 @@
   )
     .toISOString()
     .slice(0, 16);
-  window.addEventListener('pagehide', () => {clearTimeout(state.poll);clearInterval(rolePoll);});
+  window.addEventListener('pagehide', () => {state.authEpoch++;clearTimeout(state.poll);});
+  window.addEventListener('pageshow', event => {if(event.persisted && state.logged)schedule();});
   api('state')
     .then(async () => {
       await refresh();

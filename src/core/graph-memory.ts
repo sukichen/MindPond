@@ -1133,7 +1133,7 @@ export class GraphMemory {
     await this.organizationRequests.init();
     this.collaboration=this.coordinator.service(new CollaborationStore(this.db,work=>this.growthWrite(work),this.clock,work=>this.coordinator.exclusive(work)),['init','configure','workspaces','handoff','inbox','get','reply','ack','managedTask','taskList','taskMutation','submitIteration','verifyIteration','activity']);
     await this.collaboration.init();
-    this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','open','get','exchange','material','progress','item']);
+    this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
     await this.offices.init();
     this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['init','application','sync','identity','binding','review','configure','registry','state','configureOffice','officeContext','link','receive','exchange']);
     await this.roles.init();

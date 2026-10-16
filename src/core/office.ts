@@ -145,10 +145,18 @@ export class OfficeStore {
     return a!;
   }
   async agentAuthority(a: Actor) {
+    if (!a.principal || a.expiresAt <= this.clock()) return false;
     if (!a.agentId) return true; // Existing v1 accounts keep their existing tools only.
     const row = await this.db.get<Row>('SELECT * FROM office_agents WHERE id=?', [a.agentId]);
-    if (a.agentId.startsWith('legacy:') && !row) return true;
-    return !!row && row.principal === a.principal && row.state === 'active';
+    if (!(a.agentId.startsWith('legacy:') && !row) &&
+        (!row || row.principal !== a.principal || row.state !== 'active')) return false;
+    if (!a.roleId) return true;
+    // Revalidate inside each operation/wait inspection, not only at MCP entry.
+    // Restoring a role must never revive an old in-flight binding or lease.
+    return !!(await this.db.get(`SELECT 1 FROM role_bindings b JOIN character_roles r ON r.id=b.role_id
+      WHERE b.id=? AND b.role_id=? AND b.epoch=? AND b.principal=? AND b.connector_id=?
+        AND b.runtime_id=? AND b.state='active' AND r.state='active'`,
+      [a.roleBindingId, a.roleId, a.roleBindingEpoch, a.principal, a.agentId, a.runtimeId]));
   }
   async seen(a: Actor) {
     await this.db.run(
@@ -373,7 +381,7 @@ export class OfficeStore {
     if (!a.agentId || !(await this.agentAuthority(a)))
       fail('Register and activate an independent HTTP agent before using office tools');
     const rows = await this.db.all<Row[]>(
-      'SELECT s.*,o.title,o.state office_state FROM office_seats s JOIN offices o ON o.id=s.office_id WHERE s.agent_id=? AND s.enabled=1',
+      'SELECT s.*,o.title,o.state office_state,o.deadline FROM office_seats s JOIN offices o ON o.id=s.office_id WHERE s.agent_id=? AND s.enabled=1',
       [a.agentId]
     );
     const projects = await this.db.all<Row[]>(
@@ -391,6 +399,7 @@ export class OfficeStore {
         )
     );
   }
+  async authorizedSeats(a: Actor) { return this.seats(this.actor(a)); }
   async bootstrap(i: Row, a?: Actor) {
     const actor = this.actor(a),
       seats = await this.seats(actor);
@@ -421,6 +430,34 @@ export class OfficeStore {
       nextAction: i.workSessionId
         ? 'Read work_office_get and unread work_office_exchange inbox.'
         : 'Call work_session_open with the assignmentId supplied by the user. Never choose the last globally active session.'
+    };
+  }
+  /** Bounded, non-consuming summary across the caller's authorized offices.
+   * Office IDs/cursors are separate from role-mailbox cursors. */
+  async pending(a: Actor) {
+    const seats = (await this.seats(this.actor(a))).filter(s => s.office_state === 'active');
+    if (!seats.length) return { items: [], hasMore: false };
+    const ids = seats.map(s => s.id), placeholders = ids.map(() => '?').join(',');
+    const rows = await this.db.all<Row[]>(`
+      SELECT 'message' kind,m.id messageId,NULL itemId,m.office_id officeId,m.recipient assignmentId,
+        m.kind messageKind,substr(m.body,1,400) preview,m.seq,NULL status,NULL revision
+      FROM office_messages m JOIN offices o ON o.id=m.office_id
+      LEFT JOIN office_acks ack ON ack.message_id=m.id AND ack.seat_id=m.recipient
+      WHERE m.recipient IN (${placeholders}) AND o.deadline>?
+        AND ((m.kind='request' AND NOT EXISTS(SELECT 1 FROM office_messages reply WHERE reply.request_id=m.id AND reply.final=1))
+          OR (m.kind<>'request' AND COALESCE(ack.kind,'unread')='unread'))
+      UNION ALL
+      SELECT 'item',NULL,t.id,t.office_id,s.id,NULL,substr(t.title,1,400),NULL,t.status,t.revision
+      FROM office_items t JOIN offices o ON o.id=t.office_id JOIN office_seats s ON s.office_id=t.office_id
+      WHERE s.id IN (${placeholders}) AND o.deadline>? AND t.status NOT IN ('completed','cancelled')
+        AND ((t.owner=s.id AND t.status<>'submitted') OR (t.reviewer=s.id AND t.status='submitted') OR t.transfer_to=s.id)
+      ORDER BY kind,officeId,assignmentId,messageId,itemId LIMIT 21`, [...ids, this.clock(), ...ids, this.clock()]);
+    return {
+      items: rows.slice(0,20).map(r => ({ ...r, detailAvailable: true,
+        nextAction: r.kind === 'message'
+          ? 'Read work_office_get officeId,eventSeq=seq (all detail chunks); reply/ack via work_office_exchange in that office. role_exchange cannot resolve office messages.'
+          : 'Read work_office_get officeId,itemId; claim or review the exact current round with work_office_item.' })),
+      hasMore: rows.length > 20
     };
   }
   async open(i: Row, a?: Actor) {
