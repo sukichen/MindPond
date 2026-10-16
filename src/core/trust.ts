@@ -23,6 +23,13 @@ export interface TrustedCallContext {
   transport?: 'http-mcp';
   credentialId?: string;
   connectionId?: string;
+  /** Correlation supplied by authenticated host headers/native call metadata.
+   * Never read from model tool arguments, never treated as a secret. */
+  runtimeId?: string;
+  runtimeMode?: 'host_header' | 'opencode_metadata';
+  roleId?: string;
+  roleBindingId?: string;
+  roleBindingEpoch?: number;
   assignmentIds?: string[];
   workSessionId?: string;
   assignmentId?: string;

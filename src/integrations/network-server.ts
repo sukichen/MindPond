@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { GraphMemory } from '../core/graph-memory.js';
 import { MindPondError } from '../core/errors.js';
+import { roleRuntimeId } from '../core/roles.js';
 import { createMemoryMcpServer } from '../mcp-service.js';
 import {
   authenticateNetworkAccount,
@@ -211,6 +212,10 @@ export function createNetworkMcpApp(
             credentialId: grant.credentialId,
             assignmentIds: grant.assignmentIds,
             connectionId: id,
+            ...(logicalSession ? {
+              runtimeId: roleRuntimeId(grant.principal, agentId ?? grant.credentialId ?? 'legacy', 'header', logicalSession),
+              runtimeMode: 'host_header' as const
+            } : {}),
             sessionId,
             domains: grant.domains,
             issuedAt: Date.now(),

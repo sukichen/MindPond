@@ -1,8 +1,12 @@
+# 新角色入口
+
+Codex CLI / OpenCode CLI 现可在聊天中申请角色、由用户在页面批准，再以取信命令继续工作。配置生成、绑定边界和已实现能力见[CLI 角色说明](role-cli.md)。以下 v2 工位流程继续兼容；新角色调用办公室工具时可省略 workSessionId，由服务器解析其已授权分工。
+
 # Task offices: HTTP MCP agents and session roles
 
 The collaboration page (`/collaboration`) provides guided setup, independent agents, optional reusable collaboration projects, per-chat seats, text material delivery and an office timeline. Old account-to-account tasks remain in the collapsed legacy section. Operational records do not become memory graph nodes.
 
-The [role-centered successor design](design/role-offices-2026-10-16.md) describes persistent characters, session enrollment approval, portable role knowledge and cross-office messaging. Those proposed role tools and host continuation integrations are not current capabilities.
+The [role-centered successor design](design/role-offices-2026-10-16.md) describes persistent characters, session enrollment approval, portable role knowledge and cross-office messaging. The basic character application/sync/mailbox flow is now implemented; full knowledge portability, takeover and automatic host continuation remain planned.
 
 ## Setup in the UI
 

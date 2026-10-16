@@ -6,6 +6,7 @@ export function parseMcpToolProfile(value: string | undefined): McpToolProfile {
   return profile;
 }
 const WORK_TOOLS = new Set([
+  'role_application','role_sync','role_receive','role_exchange',
   'memory_export', 'memory_finish', 'memory_directory', 'memory_history', 'memory_event_search',
   'memory_brief', 'memory_search', 'memory_get', 'memory_expand', 'memory_connections', 'memory_spaces',
   'memory_protocol_rules', 'memory_capabilities', 'memory_dimension_policy', 'memory_retrieval_status',

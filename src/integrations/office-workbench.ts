@@ -14,6 +14,7 @@ import {
 } from '../core/office-tools.js';
 import { issueNetworkGrant, readNetworkConfiguration } from './network-config.js';
 import { toStructuredError } from '../core/errors.js';
+import { roleReviewSchema, roleConfigureSchema, roleLinkSchema } from '../core/role-tools.js';
 
 export function officeWorkbench(
   graph: GraphMemory,
@@ -145,6 +146,7 @@ export function officeWorkbench(
     }
     return {
       ...(await graph.offices.registry(operator)), settings: await graph.offices.settings(operator),
+      characters: await graph.roles.registry(operator),
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
   });
@@ -156,8 +158,12 @@ export function officeWorkbench(
     graph.offices.configureProject(projectConfigurationSchema.parse(req.body), operator)
   );
   route('/office', (req) =>
-    graph.offices.configureOffice(officeConfigurationSchema.parse(req.body), operator)
+    graph.roles.configureOffice(officeConfigurationSchema.parse(req.body), operator)
   );
+  route('/role/review', req => graph.roles.review(roleReviewSchema.parse(req.body), operator));
+  route('/role/state', req => graph.roles.state(operator,req.body.afterSeq));
+  route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
+  route('/role/link', req => graph.roles.link(roleLinkSchema.parse(req.body), operator));
   route('/view', (req) =>
     graph.offices.get(
       {

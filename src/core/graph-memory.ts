@@ -47,6 +47,7 @@ import { OrganizationRequestStore } from './organization-request.js';
 import { MemoryRevisions } from './memory-revisions.js';
 import { CollaborationStore } from './collaboration.js';
 import {OfficeStore} from './office.js';
+import {RoleStore} from './roles.js';
 
 export interface MemoryEditPatch {
   dimensions?:KnowledgeDimension[]; replaceMembershipIds?:string[]; anchors?:MemoryAnchor[]; content?:string; importance?:number;
@@ -418,6 +419,7 @@ export class GraphMemory {
   organizationRequests!: OrganizationRequestStore;
   collaboration!: CollaborationStore;
   offices!: OfficeStore;
+  roles!: RoleStore;
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
   private readonly materialBudgetChars = Math.max(1000, Number(process.env.ORGANIZATION_MATERIAL_BUDGET_CHARS ?? 48000));
@@ -1133,6 +1135,8 @@ export class GraphMemory {
     await this.collaboration.init();
     this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','open','get','exchange','material','progress','item']);
     await this.offices.init();
+    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['init','application','sync','identity','binding','review','configure','registry','state','configureOffice','officeContext','link','receive','exchange']);
+    await this.roles.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');

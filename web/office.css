@@ -585,3 +585,9 @@
     animation: none;
   }
 }
+/* Character management stays legible on phones; text messages never overflow. */
+.office-role-messages { display:grid; gap:12px; }
+.office-role-messages details { border:1px solid var(--line, #29404d); border-radius:12px; padding:12px; min-width:0; }
+.office-role-messages pre, #officeCharacters pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.7; }
+#officeCharacters .office-agent input, #officeCharacters .office-agent textarea { box-sizing:border-box; width:100%; }
+#officeCharacters .office-agent { min-width:0; overflow-wrap:anywhere; }

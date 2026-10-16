@@ -6,7 +6,9 @@ import type { WorkCallRuntime } from './collaboration-wait.js';
 import { OFFICE_GUIDES } from './office.js';
 const id = z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/);
 const text = (max: number) => z.string().trim().min(1).max(max);
-const context = { workSessionId: id };
+// Approved role runtimes can resolve the current user-assigned office on the
+// server. Legacy clients still receive context_required without an explicit id.
+const context = { workSessionId: id.optional(), officeId: id.optional() };
 const mutation = { ...context, key: text(256) };
 const fileAccess = z.object({
   mode: z.enum(['shared_worktree', 'separate_clone', 'text_only', 'unknown']),
@@ -45,6 +47,7 @@ export const officeConfigurationSchema = z.object({
       z.object({
         id,
         agentId: id,
+        roleId: id.optional(),
         label: text(120),
         role: z.enum(['reporter', 'worker', 'reviewer', 'coordinator', 'observer'])
       })
@@ -164,7 +167,7 @@ export function officeOperations(graph: GraphMemory) {
     op(
       'work_office_exchange',
       'exchange',
-      'Send inform/request/reply, read seat inbox or explicitly ack read/accepted. Requests unlock only by designated final reply with requestId; immutable key retries. queued/read is not completion. Always use this chat workSessionId.',
+      'Send inform/request/reply, read seat inbox or explicitly ack read/accepted. Requests unlock only by designated final reply with requestId; immutable key retries. queued/read is not completion. Approved character sessions can omit workSessionId and use their primary assigned office; legacy clients supply their explicit context.',
       exchangeSchema,
       async (a, t) => {
         if (a.action === 'send') {
@@ -236,7 +239,7 @@ export function officeOperations(graph: GraphMemory) {
     op(
       'work_office_wait',
       'wait',
-      'Bounded HTTP-MCP wait: inbox, final reply requestId, or work item round result. Keep workSessionId; default25s/max55s. Timeout is pending; resume only while user-authorized. No agent wakeup or autoack. Cancel/revoke/office termination stop waiting.',
+      'Bounded HTTP-MCP wait: inbox, final reply requestId, or work item round result. Approved characters may omit workSessionId for their primary office; legacy callers keep it. default25s/max55s. Timeout is pending; resume only while user-authorized. No agent wakeup or autoack. Cancel/revoke/office termination stop waiting.',
       z.object({
         ...context,
         afterSeq: z.number().int().min(0).optional(),
