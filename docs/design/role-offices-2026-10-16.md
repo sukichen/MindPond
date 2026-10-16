@@ -2,6 +2,8 @@
 
 日期：2026-10-16。状态：下一版实施设计。本文的 `role_*`、申请审批和宿主继续执行协议尚未实现，不能作为现有 MCP 工具使用。现有 v2 接口继续按[当前说明](../collaboration-offices.md)运行。
 
+首批接入范围按用户选择收敛为 **Codex CLI、OpenCode CLI**。桌面应用、IDE 和其它客户端暂不作为自动身份绑定/自动继续的验收对象；通用 HTTP MCP 协议仍保持兼容。CLI 的具体接入与证据边界见 3.4、7.3。
+
 ## 1. 本次改变
 
 协作的主体是一个长期角色人物。Codex、OpenCode、Claude Code 是承载它的宿主，不是人物的名字，也不决定它在办公室的职务。
@@ -90,6 +92,18 @@ role-workspace/
 
 截至本次文档核查，Codex 的公开 MCP 配置文档说明了 Bearer/headers 与项目配置，但未据此建立它向任意第三方 HTTP MCP 自动提供可信逐聊天标识的保证。先验收显式上下文模式；能实际证明其逐聊天元数据或受控运行端的，再启用自动绑定。不要要求用户设置一个静态 `SESSION_ID` 环境变量后，就宣称同一宿主中的所有聊天已自动区分。
 
+### 3.4 首批 CLI 使用方式与身份策略
+
+基础模式保留用户原来的 CLI：终端 A 启动 Codex，终端 B 启动另一个 Codex/OpenCode，分别在当前聊天中申请人物。用户在 MindPond 页面批准后，两边同步得到各自人物，之后用户安排办公室。连接凭据由 CLI 的 MCP 配置读取；申请、同步、消息中只有公开引用，不要求模型找到 token 或读取中心服务的文档。
+
+**先以显式工作上下文保证可用，再按实测能力省去编号。** Codex CLI 的默认路径暂不依赖未经验证的逐聊天 MCP 元数据。OpenCode 若实际发出 session 元数据，服务端采用 `(认证 connector, 运行端实例, 原始 session ID)` 关联，不能只用裸 session ID；未验证或缺失时退回显式上下文。相同 connector 的恶意客户端仍可伪造相关性标识，页面不得因此宣称强认证隔离。
+
+可选的本地继续组件负责获知真实 CLI thread/session，而不是让 LLM 编造它。该组件自身也是中心服务的 HTTP MCP 客户端，不直连 MindPond DB，也不通过管理 REST API冒充用户审批。CLI 运行接口只是它与本地宿主之间的接口，不改变 agent 只能通过 HTTP MCP 访问 MindPond 的约束。
+
+用户启用该组件时，明确选定原 session 与人物绑定；组件记录宿主类型、运行端 instanceId、原生 thread/session ID、bindingEpoch 和有效授权。只记录可公开的绑定引用；认证来源另由宿主保管。切换机器需要重新确认运行端与会话恢复能力，不能因用户名、工作目录或会话标题相同就抢占绑定。fork 是新会话，先申请新人物或明确申请接管，不继承旧会话的可写身份。
+
+目录模板只是便捷入口：同一仓库可以有多个角色，不强迫为每个人复制工程。角色启动目录不自动加入源码版本控制，公开角色引用不替代宿主认证。只有 MCP 的客户端仍可完成申请、同步和通信；自动继续是另外显示、另外启用的能力。
+
 ## 4. 用户期望的申请与审核流程
 
 前提：用户已把通用 HTTP MCP 服务接入宿主。尚未认证的模型不能先调用一个工具领取 token 来认证自己。
@@ -150,13 +164,38 @@ MindPond 保持无 LLM 的中心服务。可选、薄的宿主继续组件在模
   → 模型读取完整材料并继续任务
 ```
 
-Codex 可研究并验收 App Server 的 thread/resume、turn/start；OpenCode 可研究并验收 SDK 的 session.prompt / session.command 与 session 状态事件。它们是宿主集成能力，不能宣称仅凭标准 MCP 即可远程控制任意已有桌面聊天。必须拥有实际运行端点及该 session 的合法控制权；不创建“同名新聊天”假冒恢复原聊天。
+Codex CLI 优先验证原生 `codex queue --thread <UUID> --message <最小通知>`；使用固定 UUID，不用显示名字、不用 `--last`。它是向现有会话排入消息的入口，命令成功不等于模型已开始运行。必须分别验证空闲、忙碌、终端退出、人工停止、共享后台服务和 `--no-daemon` 场景；不满足条件就显示等待手动继续，不偷偷另起 `exec resume` 并发写同一会话。若需要 App Server 的 thread/resume、turn/start 和状态流，单独作为实验接入；截至本次查询，官方仍将 App Server 命令/相应传输标为 experimental，不把它设为生产协作的强制依赖。
+
+OpenCode CLI 优先验证 `serve` 运行端与 `attach --session <ID>` 的终端界面共用同一个 session，再通过官方 SDK 的 session.prompt / session.command 与状态事件继续原会话。用户已经使用普通 TUI 时，不能假定任意本地服务端点就是该 TUI 的后端；应由安装检查确认或引导以明确的运行端重新接入。不要创建同名会话充当原会话，也不同时使用两个不同后端修改同一份会话。
+
+以上都是宿主集成能力，不能宣称仅凭标准 MCP 即可远程控制任意已有聊天。必须拥有实际运行端点及该 session 的合法控制权。宿主本地 API 应限制到本机且有适当访问控制，中心 MindPond 不接收远程执行宿主命令的权力；外发给宿主的通知只含事件/请求引用，正文仍由角色通过 HTTP MCP 按权限领取。
 
 用户必须按角色会话启用持续协作，限定哪些办公室/请求可以唤醒、有效期、轮数/费用预算。人工停止、审批等待和授权问题优先于自动继续，不能被新消息覆盖。宿主不支持时显示“已送达，等待手动继续”，不能用打字动画伪装。
 
 每个 session 最多一轮在执行，批量合并同时到达的事件。wakeId + bindingEpoch + 宿主 runId 做持久投递与去重；宿主忙时排队。启动下一轮的应答丢失时先查询真实 run 状态，无法确认则标记 delivery_unknown 并停止重复触发，不能声称跨两个系统严格 exactly-once。恢复已有记录、续传游标、取消和退避均不依赖模型记住 token。
 
 跨角色消息是工作材料，不因唤醒而变为用户的高优先级指令；自动继续不扩大执行/文件/网络权限。
+
+### 7.3 CLI 第一批实施与验收
+
+2026-10-16 在开发机仅进行了版本与 `--help` 检查，没有向现有用户聊天发送探测消息，没有调用模型，也没有修改用户的全局 MCP 配置。帮助中出现接口仅证明入口存在，不证明行为正确。
+
+| 客户端 | 本机版本 | 已确认入口 | 尚需真实验收 |
+|---|---|---|---|
+| Codex CLI | 0.159.2 | HTTP MCP 配置有官方说明；本机有 queue、resume、--remote、--no-daemon | HTTP MCP 是否附带可用逐聊天关联；原生队列的执行与停止语义；跨重连绑定 |
+| OpenCode CLI | 1.18.34 | 本机有 serve、attach --session、run --session；官方 SDK 有定向 session 请求 | 实际版本是否发出新版文档的 session 元数据；TUI/SDK 共用 session；忙碌、断线与停止语义 |
+
+按以下顺序交付，每一步都有独立的可用状态：
+
+1. **服务端角色闭环**：申请→前端批准→同步身份→安排办公室→跨办公室通信。用标准 HTTP MCP 测试，显式上下文可工作；模型不接触凭据。先完成本文第 10 节的角色数据层与权限，而不是用 CLI 脚本掩盖缺少角色协议。
+2. **手动入口包**：Codex Skill 与 OpenCode command 提供申请、查看自己/收件箱、继续的快捷指引，内容引用 MCP 指南而不重复堆积长系统提示词。模板无秘密、可检查、可卸载；不覆盖已有用户命令或全局配置。
+3. **真实 CLI 能力探测**：临时合成 HTTP MCP 服务，仅记录经过白名单处理的 clientInfo、会话关联键、连接变化与调用序号；不记录 Authorization、Cookie、完整 headers 或用户上下文。两个真实 session 同目录交替调用，覆盖重连、压缩、fork；不能用测试客户端手工加元数据来代替原生 CLI 验证。
+4. **本地继续组件**：按 7.2 分别接原生 queue 和 OpenCode 运行端。默认关闭，用户按绑定启用；组件离线只影响自动继续，不影响角色收件箱持久保存。用户停止同时暂停本地投递并撤销中心继续授权；已入宿主队列的通知不能视为自动撤回，下一轮应先校验授权，再处理材料。宿主无法保证已排队通知不触发一次模型执行时，必须明确这一限制，不能宣称零消耗停止。
+5. **办公室真实状态**：显示未接入、等待审批、可达、执行中、等待回复、需要手动继续、状态未知、离线。`queued`、`turn_started`、`processed` 分开；只有宿主确认运行才播放工作动画，读取预览不消掉待处理文件。
+
+首批发布门槛：两个 Codex CLI session 分别申请不同人物，第三个 OpenCode CLI session 验证；同目录、不同目录、重启、角色改名、办公室移动、fork 和接管都不串身份。至少完成一次 Codex→OpenCode→Codex 的请求/最终回复闭环，并分别记录「人工触发」与「宿主自动继续」结果。未通过自动继续的版本仍可发布手动模式，但不能标记该能力已支持。
+
+恢复测试还需包含：回复先到、事件重复、投递后应答丢失、宿主正忙、正在等用户审批、用户停止后消息到达、预算到期与进程崩溃。自动继续测试使用无副作用合成任务和明确预算，保留版本、运行端、原生会话 ID 的脱敏证据、事件序号和实际 turn 状态。不要对用户现有工作聊天发探测提示。
 
 ## 8. 办公室界面
 
@@ -206,7 +245,7 @@ Codex 可研究并验收 App Server 的 thread/resume、turn/start；OpenCode �
 4. **职务映射**：旧 office_seats 逐步指向 roleId；原 role 字段改为 duty。先由用户显式映射旧工位到人物，不能只按 agentId 合并：同一 Codex 的两个工位可能本来就是两个人。
 5. **用户控制面与界面**：先做角色目录、待审核、调配、介绍变更、消息，再做房间场景与人物状态；任何动画必须能从事件快照完整恢复。
 6. **手动命令包**：分别验证 OpenCode commands 和 Codex Skill；不向宿主秘密路径写入公开资料。
-7. **可选宿主继续组件**：由用户选定第一批宿主；不绕过已有权限、人工停止或会话归属。MindPond 仍只通过 HTTP MCP 与 agent/组件交互。
+7. **可选宿主继续组件**：首批只做 Codex CLI / OpenCode CLI，按 7.3 的真实版本探测和验收门槛推进；不绕过已有权限、人工停止或会话归属。MindPond 仍只通过 HTTP MCP 与 agent/组件交互。
 8. **验收后默认切换**：旧 v1/v2 工具与历史保留只读/兼容入口，明确迁移状态；不能只把 agent 字样替换为角色却继续使用旧身份边界。
 
 当前入口对应：src/core/office.ts、office-tools.ts、trust.ts、integrations/network-server.ts、office-workbench.ts、mcp-service.ts、web/office.*。角色、路由投递与宿主继续应分成独立模块，避免办公室展示层负责认证或直接调模型。
@@ -226,8 +265,10 @@ Codex 可研究并验收 App Server 的 thread/resume、turn/start；OpenCode �
 
 - [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp)：项目级配置、宿主附加 Bearer 与环境变量/headers 配置。文档未证明任意共享连接天然带可信逐聊天 ID。
 - [Codex developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli)：/skills 可选择 Skill；不据此承诺任意 MCP server 可新增原生 slash command。
-- [Codex App Server](https://learn.chatgpt.com/docs/app-server)：对受控 thread 恢复和启动新 turn 的集成能力；不等于任何第三方程序均能控制正在使用的桌面聊天。
+- [Codex CLI command reference](https://learn.chatgpt.com/docs/cli/reference)：原生 queue 按会话 UUID/精确名字排入消息；实施时只用 UUID，执行回执另验收。
+- [Codex App Server](https://learn.chatgpt.com/docs/app-server)：对受控 thread 恢复和启动新 turn 的集成能力，以及 CLI terminal UI 连接方式；当前实验状态不作为生产默认依赖。
 - [OpenCode commands](https://docs.opencode.ai/docs/commands/)：自定义命令文件和配置模板。
 - [OpenCode SDK](https://docs.opencode.ai/docs/sdk/) 与 [plugins](https://docs.opencode.ai/docs/plugins/)：定向 session 请求、事件与集成接口；具体宿主版本与权限仍需端到端验证。
+- [OpenCode CLI](https://docs.opencode.ai/docs/cli/)：serve、attach、明确的 session 恢复入口；[新版 MCP context](https://dev.opencode.ai/v2/docs/mcp-servers/#context)说明非模型参数中的 session 关联元数据，不能据此推断本机旧版行为。
 
 以上为 2026-10-16 查询结果。集成实施时记录实际宿主版本与测试结果。
