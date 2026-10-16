@@ -2,6 +2,8 @@
 
 The collaboration page (`/collaboration`) provides guided setup, independent agents, optional reusable collaboration projects, per-chat seats, text material delivery and an office timeline. Old account-to-account tasks remain in the collapsed legacy section. Operational records do not become memory graph nodes.
 
+The [role-centered successor design](design/role-offices-2026-10-16.md) describes persistent characters, session enrollment approval, portable role knowledge and cross-office messaging. Those proposed role tools and host continuation integrations are not current capabilities.
+
 ## Setup in the UI
 
 1. Log into **user management**. On protected deployments use the operator credential and, if configured, API key. Agent MCP tokens cannot log in here. The browser uses an HttpOnly, SameSite=Strict session; secrets are not saved in localStorage.

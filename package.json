@@ -145,7 +145,8 @@
     "web/office.css",
     "docs/collaboration-offices.md",
     "docs/design/collaboration-office-2026-10-15.md",
-    "docs/design/collaboration-auth-sessions-2026-10-15.md"
+    "docs/design/collaboration-auth-sessions-2026-10-15.md",
+    "docs/design/role-offices-2026-10-16.md"
   ],
   "license": "MIT",
   "repository": {
