@@ -48,6 +48,7 @@ import { MemoryRevisions } from './memory-revisions.js';
 import { CollaborationStore } from './collaboration.js';
 import {OfficeStore} from './office.js';
 import {RoleStore} from './roles.js';
+import {OfficeBuilding} from './office-building.js';
 
 export interface MemoryEditPatch {
   dimensions?:KnowledgeDimension[]; replaceMembershipIds?:string[]; anchors?:MemoryAnchor[]; content?:string; importance?:number;
@@ -420,6 +421,7 @@ export class GraphMemory {
   collaboration!: CollaborationStore;
   offices!: OfficeStore;
   roles!: RoleStore;
+  building!: OfficeBuilding;
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
   private readonly materialBudgetChars = Math.max(1000, Number(process.env.ORGANIZATION_MATERIAL_BUDGET_CHARS ?? 48000));
@@ -1137,6 +1139,8 @@ export class GraphMemory {
     await this.offices.init();
     this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['init','application','sync','identity','binding','review','configure','registry','state','configureOffice','officeContext','link','receive','exchange']);
     await this.roles.init();
+    this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material']);
+    await this.building.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');
@@ -5180,6 +5184,7 @@ export class GraphMemory {
     for (const timer of this.backgroundTimers) clearTimeout(timer);
     this.backgroundTimers.clear();
     this.closePromise = (async () => {
+      await this.building?.close();
       await this.offices?.close();
       await this.collaboration?.closeWaits();
       await this.profileRetrieval?.close();

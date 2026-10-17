@@ -54,7 +54,7 @@ export function protocolSections(profile: CollaborationProfile = 'legacy'): Prot
 export function protocolRulesPayload(profile: CollaborationProfile = 'legacy') {
   const caps = capabilities(profile);
   return {
-    version: profile === 'office' ? PROTOCOL_VERSION + '-office.2' : PROTOCOL_VERSION,
+    version: profile === 'office' ? PROTOCOL_VERSION + '-office.3' : PROTOCOL_VERSION,
     capabilitiesVersion: caps.version,
     defaults: caps.defaults,
     sections: protocolSections(profile),

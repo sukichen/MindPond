@@ -26,7 +26,9 @@ export interface TrustedCallContext {
   /** Correlation supplied by authenticated host headers/native call metadata.
    * Never read from model tool arguments, never treated as a secret. */
   runtimeId?: string;
-  runtimeMode?: 'host_header' | 'opencode_metadata';
+  runtimeMode?: 'host_header' | 'opencode_metadata' | 'explicit_context';
+  /** Public correlation reference for MCP-only hosts without session metadata. */
+  roleContext?: string;
   roleId?: string;
   roleBindingId?: string;
   roleBindingEpoch?: number;

@@ -59,7 +59,7 @@ try {
   for (const [id, principal] of [['codex', 'owner'], ['opencode', 'other']]) {
     await graph.offices.configureAgent({ id, principal, name: id, host: id, state: 'active', expectedRevision: 0 }, admin);
     const tokenFile = path.join(dir, id + '.token');
-    await issueNetworkGrant({ configFile, tokenFile, principal, agentId: id });
+    await issueNetworkGrant({ configFile, tokenFile, principal, agentId: id, toolProfile:'full' });
     tokens[id] = (await fs.readFile(tokenFile, 'utf8')).trim();
   }
   const allowedHosts: string[] = ['127.0.0.1'];
@@ -176,7 +176,7 @@ try {
     assert(!JSON.stringify({ args: launch.args }).includes(tokens.codex));
     if (client === 'codex') {
       assert(launch.args.includes('--no-daemon'));
-      const skill = await fs.readFile(path.join(directory, '.agents/skills/mindpond-inbox/SKILL.md'), 'utf8');assert(skill.includes('role_receive'));
+      const skill = await fs.readFile(path.join(directory, '.agents/skills/mindpond-inbox/SKILL.md'), 'utf8');assert(skill.includes('office_receive'));
       if(process.env.MINDPOND_TEST_CODEX_BIN) {
         const cli=await promisify(execFile)(process.env.MINDPOND_TEST_CODEX_BIN,[...launch.args,'mcp','get','mindpond_office','--json'],{cwd:launch.cwd,timeout:15000,maxBuffer:1000000,env:{...process.env,...launch.env}});
         const parsed=JSON.parse(cli.stdout);

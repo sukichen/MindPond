@@ -174,3 +174,7 @@ npm run check 覆盖规范化写入、上下文依据、复核停用/恢复、�
 ## 开源与许可
 
 本项目采用 [MIT](LICENSE)。第三方代码、依赖和模型的许可各自独立，见 [第三方声明](THIRD_PARTY_NOTICES.md)。公开仓库只含程序、通用文档和合成测试夹具，不含用户记忆、运行日志、模型权重或私人评估报告。
+
+### Collaboration infrastructure
+
+Start with empty offices and user-approved characters. HTTP MCP provides plain correspondence, text materials, and optional user-defined JSON/text containers. Users and agents define their own work; no deadlines, worker/reviewer roles, or verification workflow are required. See [office building](docs/office-building.md).

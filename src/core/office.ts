@@ -320,12 +320,12 @@ export class OfficeStore {
         [
           i.id,
           i.title,
-          i.goal,
-          i.acceptance,
+          i.goal ?? old?.goal ?? '',
+          i.acceptance ?? old?.acceptance ?? '',
           i.state ?? 'active',
           i.expectedRevision + 1,
-          i.deadline,
-          i.maxRounds ?? 10,
+          i.deadline === null ? Number.MAX_SAFE_INTEGER : i.deadline ?? old?.deadline ?? Number.MAX_SAFE_INTEGER,
+          i.maxRounds ?? old?.max_rounds ?? 10,
           this.clock()
         ]
       );
@@ -359,7 +359,7 @@ export class OfficeStore {
         for (const s of i.seats)
           await this.db.run(
             'INSERT INTO office_seats VALUES(?,?,?,?,?,1,1) ON CONFLICT(id) DO UPDATE SET agent_id=excluded.agent_id,label=excluded.label,role=excluded.role,enabled=1',
-            [s.id, i.id, s.agentId, s.label, s.role]
+            [s.id, i.id, s.agentId, s.label, s.role ?? 'member']
           );
         await this.db.run(
           "UPDATE office_items SET lease_hash=NULL,lease_until=NULL,session_id=NULL,epoch=epoch+1,revision=revision+1,status=CASE WHEN status IN ('claimed','submitted') THEN 'open' ELSE status END WHERE office_id=?",

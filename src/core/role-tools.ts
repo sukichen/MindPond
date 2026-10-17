@@ -8,7 +8,7 @@ export const roleReviewSchema = z.object({ applicationId: id, expectedRevision: 
 export const roleConfigureSchema = z.object({ roleId: id, expectedRevision: z.number().int().min(1), name: text(120), introduction: text(4000), state: z.enum(['active', 'disabled']) });
 export const roleLinkSchema = z.object({ sender: id, recipient: id, enabled: z.boolean() });
 export function roleOperations(graph: GraphMemory) {
-  const op = (name: string, description: string, schema: z.ZodObject<any>, run: (i: any, a?: TrustedCallContext) => Promise<unknown>) => ({ name, description, schema, run });
+  const op = (name: string, description: string, schema: z.ZodObject<any>, run: (i: any, a?: TrustedCallContext, runtime?: import('./collaboration-wait.js').WorkCallRuntime) => Promise<unknown>) => ({ name, description, schema, run });
   return [
     op('role_application', 'Apply for a character when the user asks, e.g. choose your name and describe your programming ability. action=submit requires name,introduction,reason,key; status reads approval; cancel requires applicationId,key. User approves in MindPond frontend. Session identity comes from HTTP MCP host configuration, never pass/read tokens. Do not loop while pending.', z.object({ action: z.enum(['submit', 'status', 'cancel']), name: text(120).optional(), introduction: text(4000).optional(), reason: text(2000).optional(), key: text(256).optional(), applicationId: id.optional() }), async (i, a) => {
       const required = i.action === 'submit' ? ['name', 'introduction', 'reason', 'key'] : i.action === 'cancel' ? ['applicationId', 'key'] : [];

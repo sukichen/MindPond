@@ -1,0 +1,168 @@
+/** Real HTTP MCP, clean initialization, neutral messages and arbitrary containers. */
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import express from 'express';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { GraphMemory } from '../src/core/graph-memory.js';
+import { roleRuntimeId } from '../src/core/roles.js';
+import { createNetworkMcpApp } from '../src/integrations/network-server.js';
+import { officeWorkbench } from '../src/integrations/office-workbench.js';
+import { issueNetworkGrant, readNetworkConfiguration } from '../src/integrations/network-config.js';
+const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-building-'));
+const graph = new GraphMemory('.', { dbPath: path.join(dir, 'test.db') });
+const admin = { v: 1 as const, principal: 'operator', operator: true, issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
+const clients: Client[] = [];
+const servers: import('node:http').Server[] = [];
+let network: ReturnType<typeof createNetworkMcpApp> | undefined;
+try {
+    await graph.init();
+    assert.equal((await graph.offices.registry(admin)).offices.length, 0, 'no rooms or workflow seeded');
+    assert.equal((await graph.roles.registry(admin)).roles.length, 0, 'no predefined people');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/office-admin', officeWorkbench(graph, { apiKey: '', operatorKey: 'fixture-user', contextSecret: '' }));
+    const web = app.listen(0, '127.0.0.1');
+    servers.push(web);
+    await new Promise<void>(r => web.once('listening', r));
+    const base = `http://127.0.0.1:${(web.address() as any).port}/api/office-admin/`;
+    let cookie = '';
+    const post = (route: string, body: any) => fetch(base + route, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(body) });
+    const login = await post('login', { operatorKey: 'fixture-user' });
+    cookie = login.headers.get('set-cookie')!.split(';')[0];
+    const empty = await post('office', { id: 'empty', title: 'An empty room', expectedRevision: 0, state: 'active', seats: [] });
+    assert.equal(empty.status, 200, await empty.clone().text());
+    const emptyRoom = await graph.offices.get({ officeId: 'empty' }, admin);
+    assert.equal(emptyRoom.seats.length, 0);
+    assert.equal(emptyRoom.office.goal, '');
+    assert.equal(emptyRoom.office.acceptance, '');
+    assert.equal(emptyRoom.office.deadline, Number.MAX_SAFE_INTEGER);
+    const configFile = path.join(dir, 'accounts.json');
+    const tokens: Record<string, string> = {};
+    for (const [id, principal] of [['cli', 'owner'], ['other', 'other-owner']]) {
+        await graph.offices.configureAgent({ id, principal, name: id, host: 'generic-http-mcp', state: 'active', expectedRevision: 0 }, admin);
+        const tokenFile = path.join(dir, id + '.token');
+        await issueNetworkGrant({ configFile, tokenFile, principal, agentId: id });
+        tokens[id] = (await fs.readFile(tokenFile, 'utf8')).trim();
+    }
+    const allowedHosts = ['127.0.0.1'];
+    network = createNetworkMcpApp(graph, { configuration: () => readNetworkConfiguration(configFile), allowedHosts });
+    const server = network.app.listen(0, '127.0.0.1');
+    servers.push(server);
+    await new Promise<void>(r => server.once('listening', r));
+    const port = (server.address() as any).port;
+    allowedHosts.push('127.0.0.1:' + port);
+    async function connect(id: string) { const c = new Client({ name: 'generic-fixture', version: '1' }); clients.push(c); await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer ' + tokens[id] } } })); return c; }
+    const a = await connect('cli'), b = await connect('cli'), c = await connect('other');
+    const raw = (client: Client, name: string, input: any = {}) => client.callTool({ name, arguments: input });
+    const call = async (client: Client, name: string, input: any = {}) => { const result = await raw(client, name, input); assert(!result.isError, JSON.stringify(result)); return JSON.parse((result.content[0] as any).text); };
+    const tools = (await a.listTools()).tools.map(t => t.name);
+    for (const tool of ['office_receive', 'office_message', 'office_wait', 'office_container'])
+        assert(tools.includes(tool));
+    assert(!tools.includes('work_office_item'), 'fixed development/verification workflow is outside the default catalog');
+    const assigned: any[] = [];
+    for (const [client, key] of [[a, 'one'], [b, 'two'], [c, 'three']] as const) {
+        const input = { action: 'submit', name: key, introduction: 'User-defined character', reason: 'Fixture application', key: 'apply' };
+        const application = await call(client, 'role_application', input);
+        assert(application.roleContext, 'MCP-only application must supply a public continuation reference');
+        assert.equal((await call(client, 'role_application', input)).applicationId, application.applicationId);
+        const approved = await graph.roles.review({ applicationId: application.applicationId, expectedRevision: 1, action: 'approve' }, admin);
+        assigned.push({ ...approved, roleContext: application.roleContext });
+    }
+    const [ra, rb, rc] = assigned;
+    assert.notEqual(ra.roleContext, rb.roleContext);
+    assert((await raw(b, 'role_sync')).isError, 'missing correlation must never choose another session implicitly');
+    assert.equal((await call(a, 'role_sync', { roleContext: ra.roleContext })).identity.roleId, ra.roleId);
+    assert.equal((await call(b, 'role_sync', { roleContext: rb.roleContext })).identity.roleId, rb.roleId);
+    const ca = (name: string, input: any = {}) => call(a, name, { ...input, roleContext: ra.roleContext });
+    const cb = (name: string, input: any = {}) => call(b, name, { ...input, roleContext: rb.roleContext });
+    const cc = (name: string, input: any = {}) => call(c, name, { ...input, roleContext: rc.roleContext });
+    assert(Array.isArray(await ca('memory_spaces')), 'public correlation must not alter array-shaped memory responses');
+    const seats = [{ id: 'a-seat', agentId: 'cli', roleId: ra.roleId, label: 'Whatever A does', role:'observer' }, { id: 'b-seat', agentId: 'cli', roleId: rb.roleId, label: 'Whatever B does' }];
+    const room = await post('office', { id: 'empty', title: 'Our room', expectedRevision: 1, state: 'active', seats });
+    assert.equal(room.status, 200, await room.clone().text());
+    assert.equal((await ca('office_directory')).offices.length, 1);
+    assert.equal((await ca('office_directory', { officeId: 'empty' })).members[0].description, 'observer');
+    const input = { action: 'send', recipient: rb.roleId, officeId: 'empty', body: 'A normal message, no workflow implied.', metadata: { customLabel: 'question', status: 'whatever' }, key: 'send-one' };
+    const sent = await ca('office_message', input);
+    assert.equal((await ca('office_message', input)).messageId, sent.messageId);
+    assert((await raw(a, 'office_message', { ...input, body: 'changed', roleContext: ra.roleContext })).isError);
+    let received = await cb('office_receive', { limit: 1 });
+    assert.equal(received.messages[0].body, input.body);
+    assert.equal(received.messages[0].metadata.status, 'whatever');
+    assert.equal(received.officePending, undefined, 'no task recommendation or recovery package');
+    await cb('office_message', { action: 'read', messageId: sent.messageId, key: 'read' });
+    assert.equal((await cb('office_receive')).messages[0].state, 'read', 'reading does not consume');
+    await cb('office_message', { action: 'archive', messageId: sent.messageId, key: 'archive' });
+    assert.equal((await cb('office_message', { action: 'read', messageId: sent.messageId, key: 'late-read' })).state, 'archived', 'read never resurrects archived mail');
+    assert.equal((await cb('office_receive')).messages.length, 0, 'archive needs no final reply');
+    assert.equal((await ca('office_receive', { direction: 'sent' })).messages[0].id, sent.messageId);
+    const reply = await cb('office_message', { action: 'send', replyTo: sent.messageId, body: 'A normal reply.', key: 'reply' });
+    assert.equal((await ca('office_receive')).messages[0].id, reply.messageId);
+    const waiting = await ca('office_wait', { replyTo: sent.messageId, waitMs: 100 });
+    assert.equal(waiting.status, 'matched', 'reply before wait remains observable');
+    assert.equal((await cb('office_wait', { waitMs: 100 })).status, 'timeout');
+    assert((await raw(c, 'office_message', { action: 'get', messageId: sent.messageId, roleContext: rc.roleContext })).isError);
+    assert((await raw(a, 'office_message', { action: 'send', recipient: rc.roleId, body: 'not permitted', key: 'cross', roleContext: ra.roleContext })).isError);
+    await graph.roles.link({ sender: ra.roleId, recipient: rc.roleId, enabled: true }, admin);
+    const cross = await ca('office_message', { action: 'send', recipient: rc.roleId, body: 'Explicitly permitted', key: 'cross' });
+    await cc('office_message', { action: 'send', replyTo: cross.messageId, body: 'Exact return channel', key: 'return' });
+    assert((await raw(c, 'office_message', { action: 'send', recipient: ra.roleId, body: 'New unsolicited conversation', key: 'reverse', roleContext: rc.roleContext })).isError);
+    const material = await ca('office_material', { action: 'publish', officeId: 'empty', title: 'Any text', content: 'Notes without a task or reviewer.', key: 'shelf' });
+    assert.equal((await cb('office_material', { action: 'get', officeId: 'empty', materialId: material.materialId })).chunk.content, 'Notes without a task or reviewer.');
+    const verbatim='  Exact whitespace\n'+'🌱'.repeat(5000)+'\n';
+    const unicode=await ca('office_material',{action:'publish',officeId:'empty',title:'Verbatim',content:verbatim,key:'verbatim'});
+    let restored='';for(let number=0;number<unicode.chunks;number++)restored+=(await cb('office_material',{action:'get',officeId:'empty',materialId:unicode.materialId,number})).chunk.content;
+    assert.equal(restored,verbatim,'text storage must preserve whitespace and Unicode across chunks');
+    assert.equal((await (graph as any).db.get('SELECT COUNT(*) n FROM office_sessions')).n,0,'neutral facilities never open a workflow session');
+    const data = { anything: ['notes', { customState: 'NOT_A_PREDEFINED_STATE' }], text: '<script>not executable</script>' };
+    const save = { action: 'save', officeId: 'empty', id: 'custom-board', title: 'My own container', content: data, expectedRevision: 0, key: 'new-container' };
+    assert.equal((await ca('office_container', save)).revision, 1);
+    assert.equal((await ca('office_container', save)).revision, 1);
+    assert.deepEqual((await cb('office_container', { action: 'get', officeId: 'empty', id: 'custom-board' })).content, data);
+    const changes = await Promise.all([a, b].map((client, n) => raw(client, 'office_container', { ...save, content: { changedBy: n }, expectedRevision: 1, key: 'edit-' + n, roleContext: n ? rb.roleContext : ra.roleContext })));
+    assert.equal(changes.filter(r => !r.isError).length, 1, 'concurrent edits cannot silently overwrite');
+    assert((await raw(c, 'office_container', { action: 'get', officeId: 'empty', id: 'custom-board', roleContext: rc.roleContext })).isError);
+    const other = await post('office', { id: 'another', title: 'Another room', expectedRevision: 0, state: 'active', seats: [{ id: 'another-a', agentId: 'cli', roleId: ra.roleId, label: 'A' }] });
+    assert.equal(other.status, 200);
+    assert((await raw(a, 'office_container', { ...save, officeId: 'another', key: 'collision', roleContext: ra.roleContext })).isError, 'global ID collision cannot mutate another room');
+    const userView = await (await post('view', { officeId: 'empty' })).json();
+    assert.equal(userView.facilities.containers.length, 1);
+    assert.equal(userView.facilities.messages.length, 2);
+    assert.equal((await (await post('view',{officeId:'empty',facilityRevision:userView.facilities.revision})).json()).facilities.unchanged,true);
+    // The neutral inbox also routes replies to historical office messages.
+    const actorB={v:1 as const,principal:'owner',agentId:'cli',transport:'http-mcp' as const,runtimeId:roleRuntimeId('owner','cli','explicit',rb.roleContext),roleId:rb.roleId,roleBindingId:rb.bindingId,roleBindingEpoch:1,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+    const contextB=await graph.roles.officeContext(actorB,'empty');
+    const legacy=await graph.offices.exchange({action:'send',workSessionId:contextB.workSessionId,recipient:'a-seat',kind:'inform',body:'Historical office correspondence',key:'legacy'},actorB);
+    const legacyId='office:'+legacy.messageId;
+    assert((await ca('office_receive')).messages.some((m:any)=>m.id===legacyId));
+    const routed=await ca('office_message',{action:'send',replyTo:legacyId,body:'Reply keeps the historical reference',key:'legacy-return'});
+    assert.equal((await cb('office_message',{action:'get',messageId:routed.messageId})).message.replyTo,legacyId);
+    const collected:string[]=[];let cursor={roleAfterSeq:0,officeAfterSeq:0};
+    for(let n=0;n<30;n++){
+      const page=await ca('office_receive',{includeArchived:true,limit:1,afterSeq:cursor.roleAfterSeq,officeAfterSeq:cursor.officeAfterSeq});
+      collected.push(...page.messages.map((m:any)=>m.id));cursor=page.nextCursor;if(!page.hasMore)break;
+    }
+    assert(collected.includes(legacyId));assert.equal(new Set(collected).size,collected.length,'mixed-source paging cannot repeat or skip messages');
+    assert.equal((await post('office',{id:'empty',title:'Our room',expectedRevision:2,state:'paused'})).status,200);
+    assert.equal((await cb('office_material',{action:'get',officeId:'empty',materialId:material.materialId})).chunk.content,'Notes without a task or reviewer.');
+    assert((await raw(a,'office_material',{action:'publish',officeId:'empty',title:'Denied',content:'Paused',key:'paused',roleContext:ra.roleContext})).isError);
+    const directReply=await cb('office_message',{action:'send',replyTo:sent.messageId,officeId:null,body:'Continue correspondence outside the room',key:'outside'});
+    assert.equal((await ca('office_message',{action:'get',messageId:directReply.messageId})).message.officeId,null);
+    const body = (await ca('office_message', { action: 'get', messageId: sent.messageId })).message;
+    assert.equal(body.replyTo, null);
+    const all = JSON.stringify(await (graph as any).db.all('SELECT * FROM role_events'));
+    for (const token of Object.values(tokens))
+        assert(!all.includes(token));
+    console.log('PASS neutral building: clean rooms, MCP-only identities, same-connector separation, free messages/replies/archive/wait, directional permissions, arbitrary containers/CAS/collision isolation, browser facilities, no workflow recommendations.');
+}
+finally {
+    await Promise.allSettled(clients.map(c => c.close()));
+    if (network)
+        await network.close();
+    await Promise.all(servers.map(s => new Promise<void>(r => s.close(() => r()))));
+    await graph.close();
+    await fs.rm(dir, { recursive: true, force: true });
+}

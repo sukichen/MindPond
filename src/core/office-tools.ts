@@ -36,12 +36,12 @@ export const officeConfigurationSchema = z.object({
   id,
   projectId: id.optional(),
   title: text(200),
-  goal: text(4000),
-  acceptance: text(4000),
+  goal: z.string().trim().max(4000).optional(),
+  acceptance: z.string().trim().max(4000).optional(),
   state: z.enum(['active', 'paused', 'completed', 'cancelled']),
   expectedRevision: z.number().int().min(0),
-  deadline: z.number().int().positive(),
-  maxRounds: z.number().int().min(1).max(100),
+  deadline: z.number().int().positive().nullable().optional(),
+  maxRounds: z.number().int().min(1).max(100).optional(),
   seats: z
     .array(
       z.object({
@@ -49,10 +49,10 @@ export const officeConfigurationSchema = z.object({
         agentId: id,
         roleId: id.optional(),
         label: text(120),
-        role: z.enum(['reporter', 'worker', 'reviewer', 'coordinator', 'observer'])
+        role: z.string().trim().min(1).max(120).optional()
       })
     )
-    .min(1)
+    .min(0)
     .max(50)
     .optional()
 });

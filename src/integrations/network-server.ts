@@ -279,7 +279,7 @@ export function createNetworkMcpApp(
       for (const message of Array.isArray(req.body) ? req.body : [req.body]) {
         if (
           message?.method === 'tools/call' &&
-          ['work_wait', 'work_office_wait'].includes(message.params?.name) &&
+          ['work_wait', 'work_office_wait', 'office_wait'].includes(message.params?.name) &&
           (typeof message.id === 'string' || typeof message.id === 'number')
         ) {
           const controller = new AbortController();

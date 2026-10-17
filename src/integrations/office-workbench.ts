@@ -14,6 +14,7 @@ import {
 } from '../core/office-tools.js';
 import { issueNetworkGrant, readNetworkConfiguration } from './network-config.js';
 import { toStructuredError } from '../core/errors.js';
+import { parseContainerInput } from '../core/building-tools.js';
 import { roleReviewSchema, roleConfigureSchema, roleLinkSchema } from '../core/role-tools.js';
 
 export function officeWorkbench(
@@ -164,8 +165,9 @@ export function officeWorkbench(
   route('/role/state', req => graph.roles.state(operator,req.body.afterSeq));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
   route('/role/link', req => graph.roles.link(roleLinkSchema.parse(req.body), operator));
-  route('/view', (req) =>
-    graph.offices.get(
+  route('/containers', req => graph.building.container(parseContainerInput(req.body),operator));
+  route('/view', async (req) => ({
+    ...(await graph.offices.get(
       {
         officeId: officeConfigurationSchema.shape.id.parse(req.body.officeId),
         ...Object.fromEntries(
@@ -185,14 +187,15 @@ export function officeWorkbench(
         limit: 100
       },
       operator
-    )
-  );
+    )),
+    facilities: await graph.building.snapshot(officeConfigurationSchema.shape.id.parse(req.body.officeId),operator,req.body.facilityRevision)
+  }));
   route('/item/cancel', (req) => {
     const itemId = officeConfigurationSchema.shape.id.parse(req.body.itemId),
       expectedRevision = agentConfigurationSchema.shape.expectedRevision.parse(
         req.body.expectedRevision
       ),
-      reason = officeConfigurationSchema.shape.goal.parse(req.body.reason);
+      reason = officeConfigurationSchema.shape.goal.unwrap().min(1).parse(req.body.reason);
     return graph.offices.cancelItem({ itemId, expectedRevision, reason }, operator);
   });
   route('/material', (req) =>

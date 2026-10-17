@@ -2,6 +2,9 @@ import {AsyncLocalStorage} from 'node:async_hooks';
 import {OFFICE_INSTRUCTIONS,officeMemorySession} from './core/office.js';
 import { ROLE_INSTRUCTIONS, roleRuntimeId } from './core/roles.js';
 import { roleOperations } from './core/role-tools.js';
+import { buildingOperations } from './core/building-tools.js';
+import { BUILDING_INSTRUCTIONS } from './core/office-building.js';
+import { createHash } from 'node:crypto';
 import { recallEntry } from './core/context-assembly.js';
 import { MEMORY_BOOTSTRAP, OFFICE_MEMORY_BOOTSTRAP } from './core/bootstrap.js';
 import { parseMcpToolProfile, exposesMcpTool } from './core/mcp-tool-profile.js';
@@ -77,7 +80,7 @@ const hostConsolidation = new MemoryConsolidation(graphMemory, undefined);
 const server = new McpServer({
   name: 'agent-memory',
   version: '0.1.0',
-}, { instructions: options.trusted?.agentId?ROLE_INSTRUCTIONS+'\n'+OFFICE_INSTRUCTIONS+'\n'+OFFICE_MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP });
+}, { instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+'\n'+OFFICE_MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP });
 
 const toolProfile = parseMcpToolProfile(options.toolProfile);
 const exposedTools: string[] = [];
@@ -91,6 +94,7 @@ const seenRoleProfiles=new Map<string,string>();
 function tool(name: string, description: string, shape: any, handler: (args: any,runtime?:WorkCallRuntime) => Promise<any>) {
   if (!exposesMcpTool(toolProfile, name)) return;
   if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))return;
+  if(baseTrusted.agentId)shape={...shape,roleContext:z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional()};
   if(options.trusted?.agentId&&name.startsWith('memory_'))shape={...shape,workSessionId:z.string().min(1).max(128).optional()};
   exposedTools.push(name);
   server.tool(name, description, shape, async (args: any,extra:{signal:AbortSignal;requestId:string|number;_meta?:Record<string,unknown>}) => {
@@ -104,9 +108,16 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       const nativeSession = extra._meta?.['ai.opencode/sessionID'];
       // A fixed host header wins over optional native metadata. Never use
       // model arguments, transport IDs, or the globally latest role here.
-      if (!current.runtimeId && current.transport === 'http-mcp' && current.agentId && typeof nativeSession === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(nativeSession)) {
+      if (!current.runtimeId && !args.roleContext && current.transport === 'http-mcp' && current.agentId && typeof nativeSession === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(nativeSession)) {
         current.runtimeId=roleRuntimeId(current.principal,current.agentId,'opencode',nativeSession);
         current.runtimeMode='opencode_metadata';
+      }
+      if(current.runtimeId && args.roleContext)throw new MindPondError('invalid_input','This host already supplies session correlation; omit roleContext instead of selecting another identity.');
+      if(!current.runtimeId && current.agentId && current.transport==='http-mcp') {
+        let roleContext=args.roleContext;
+        if(!roleContext && name==='role_application' && args.action==='submit' && typeof args.key==='string')
+          roleContext='ctx-'+createHash('sha256').update(JSON.stringify([current.connectionId,args.key])).digest('hex').slice(0,40);
+        if(roleContext){current={...current,roleContext,runtimeId:roleRuntimeId(current.principal,current.agentId,'explicit',roleContext),runtimeMode:'explicit_context',sessionId:'net-explicit:'+roleRuntimeId(current.principal,current.agentId,'explicit',roleContext)};}
       }
       // Keep the pre-existing header-derived session namespace so previously
       // saved session memory remains readable after this additive rollout.
@@ -148,6 +159,10 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       }
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
+      if(current.roleContext && (name==='role_application'||name==='role_sync'||name.startsWith('office_'))) {
+        const entry=result.content?.find((c:any)=>c.type==='text');
+        if(entry){const payload=JSON.parse(entry.text);entry.text=JSON.stringify({...payload,roleContext:current.roleContext,contextMode:'public_correlation'});}
+      }
       if(roleIdentity) {
         const revision=String(roleIdentity.profileRevision)+':'+String(roleIdentity.bindingEpoch);
         const changed=seenRoleProfiles.get(roleIdentity.bindingId)!==revision;
@@ -155,7 +170,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         seenRoleProfiles.set(roleIdentity.bindingId,revision);
         // Keep routine tool calls cheap; explicit sync/receive always include
         // the full profile in their normal result. Cache is NOT authorization.
-        const badge=changed?roleIdentity:{roleId:roleIdentity.roleId,bindingId:roleIdentity.bindingId,bindingEpoch:roleIdentity.bindingEpoch,name:roleIdentity.name,profileRevision:roleIdentity.profileRevision,primaryAssignmentId:roleIdentity.primaryAssignmentId};
+        const badge={...(changed?roleIdentity:{roleId:roleIdentity.roleId,bindingId:roleIdentity.bindingId,bindingEpoch:roleIdentity.bindingEpoch,name:roleIdentity.name,profileRevision:roleIdentity.profileRevision,primaryAssignmentId:roleIdentity.primaryAssignmentId}),...(current.roleContext?{roleContext:current.roleContext}:{})};
         result.content.push({type:'text' as const,text:JSON.stringify({mindpondIdentity:badge,profileChanged:changed,notice:changed?'Use this updated server profile. role_sync restores the full introduction after context loss.':'role_sync restores your full introduction if needed.'})});
       }
       await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(trusted.sessionId?{kind:'session',id:trusted.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal,agentId:trusted.agentId,workSessionId:trusted.workSessionId,roleId:trusted.roleId,roleBindingEpoch:trusted.roleBindingEpoch}:{})})});
@@ -178,8 +193,8 @@ function tool(name: string, description: string, shape: any, handler: (args: any
   });
 }
 
-for (const op of roleOperations(graphMemory)) {
-  tool(op.name,op.description,op.schema.shape,async(args:any)=>({content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(args),trustBound?(contextStorage.getStore()??baseTrusted):undefined))}]}));
+for (const op of [...roleOperations(graphMemory),...buildingOperations(graphMemory)]) {
+  tool(op.name,op.description,op.schema.shape,async(args:any,runtime)=>({content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(args),trustBound?(contextStorage.getStore()??baseTrusted):undefined,runtime))}]}));
 }
 
 for (const op of hostOperations(graphMemory)) {

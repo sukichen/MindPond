@@ -6,7 +6,8 @@ export function parseMcpToolProfile(value: string | undefined): McpToolProfile {
   return profile;
 }
 const WORK_TOOLS = new Set([
-  'role_application','role_sync','role_receive','role_exchange',
+  'office_directory','office_receive','office_message','office_wait','office_container','office_material',
+  'role_application','role_sync',
   'memory_export', 'memory_finish', 'memory_directory', 'memory_history', 'memory_event_search',
   'memory_brief', 'memory_search', 'memory_get', 'memory_expand', 'memory_connections', 'memory_spaces',
   'memory_protocol_rules', 'memory_capabilities', 'memory_dimension_policy', 'memory_retrieval_status',
@@ -21,7 +22,6 @@ const WORK_TOOLS = new Set([
   'memory_organization_commit', 'memory_organization_renew', 'memory_organization_release',
   'work_context_create', 'work_context_list', 'work_task_create', 'work_task_list',
   'work_task_claim', 'work_task_renew', 'work_task_transition',
-  'work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait',
   'work_wait','work_activity','work_iteration_submit','work_verification_report',
   'work_workspaces','work_handoff','work_inbox','work_thread_get','work_reply','work_ack',
 ]);

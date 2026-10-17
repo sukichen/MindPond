@@ -39,7 +39,7 @@ try {
       admin
     );
     const tokenFile = path.join(dir, id + '.token');
-    await issueNetworkGrant({ configFile, tokenFile, principal: 'account', agentId: id });
+    await issueNetworkGrant({ toolProfile: 'full', configFile, tokenFile, principal: 'account', agentId: id });
     tokens[id] = (await fs.readFile(tokenFile, 'utf8')).trim();
   }
   await graph.offices.configureOffice(
@@ -98,7 +98,7 @@ try {
     true
   );
   const caps = await call(cs.dev, 'memory_capabilities');
-  assert.equal(caps.collaborationVersion, 'task-office.v2');
+  assert.equal(caps.collaborationVersion, 'office-building.v1');
   assert(!JSON.stringify(caps).includes('work_inbox'));
   const resource = await cs.dev.readResource({ uri: 'mindpond://protocol/rules' });
   assert(!JSON.stringify(resource).includes('work_inbox'));
@@ -312,7 +312,7 @@ try {
     samePage: false
   });
   // Plain rotation expands a restricted credential.
-  await issueNetworkGrant({
+  await issueNetworkGrant({ toolProfile: 'full',
     configFile,
     tokenFile: path.join(dir, 'restricted.token'),
     principal: 'account',
@@ -323,7 +323,7 @@ try {
   const before = (await readNetworkConfiguration(configFile)).grants.find(
     (g) => g.agentId === 'target'
   );
-  await issueNetworkGrant({
+  await issueNetworkGrant({ toolProfile: 'full',
     configFile,
     tokenFile: path.join(dir, 'rotated.token'),
     principal: 'account',
@@ -340,7 +340,7 @@ try {
     after: after!.assignmentIds ?? 'unrestricted'
   });
   // Explicit null is the only way to remove assignment restrictions on rotation.
-  await issueNetworkGrant({
+  await issueNetworkGrant({ toolProfile: 'full',
     configFile,
     tokenFile: path.join(dir, 'unrestricted.token'),
     principal: 'account',
@@ -355,7 +355,7 @@ try {
   );
   // The real workbench preserves existing policy when rotating without edits.
   const state = await (await req('state', {})).json();
-  await issueNetworkGrant({
+  await issueNetworkGrant({ toolProfile: 'full',
     configFile,
     tokenFile: path.join(dir, 'restricted-again.token'),
     principal: 'account',

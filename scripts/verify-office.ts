@@ -39,7 +39,7 @@ const denied = async (c: Client, name: string, args: any = {}) => {
 try {
   await graph.init();
   const legacyFile = path.join(dir, 'legacy.token');
-  await issueNetworkGrant({ configFile, tokenFile: legacyFile, principal: 'legacy-account' });
+  await issueNetworkGrant({ toolProfile: 'full', configFile, tokenFile: legacyFile, principal: 'legacy-account' });
   tokens.legacy = (await fs.readFile(legacyFile, 'utf8')).trim();
   for (const id of ['codex', 'opencode', 'restricted']) {
     await graph.offices.configureAgent(
@@ -47,7 +47,7 @@ try {
       admin
     );
     const tokenFile = path.join(dir, id + '.token');
-    await issueNetworkGrant({
+    await issueNetworkGrant({ toolProfile: 'full',
       configFile,
       tokenFile,
       principal: 'same-account',
@@ -108,7 +108,7 @@ try {
     restricted = await connect('restricted');
   await denied(a, 'work_workspaces');
   const brief=await call(a,'memory_brief',{task:'Check independent office collaboration'});assert.equal(brief.collaboration.identity.agentId,'codex');assert(!('updates' in brief.collaboration));
-  assert(a.getInstructions()?.includes('work_bootstrap'));
+  assert(a.getInstructions()?.includes('office_receive'));
   assert((await a.listTools()).tools.some((t) => t.name === 'work_guide_get'));
   assert.equal((await call(a, 'work_bootstrap')).context, null);
   const dev = (await call(a, 'work_session_open', { assignmentId: 'seat-dev' })).context,
