@@ -9,7 +9,7 @@ function handler(name, next) {
   assert(start >= 0 && end > start);
   return source.slice(start, end);
 }
-const state = { logged: true, generation: 0, loading: false, opening: false, office: null };
+const state = { logged: true, generation: 0, loading: false, opening: false, office: null, scene: {} };
 let fetcher, detail;
 let timer, renderedCharacters;
 const context = vm.createContext({
@@ -17,6 +17,10 @@ const context = vm.createContext({
   api: (...args) => fetcher(...args),
   el: () => ({ scrollIntoView() {} }),
   renderOffice() {},
+  renderRoomChoices() {},
+  async closeOfficeDetail() {},
+  requestAnimationFrame() {},
+  fitScene() {},
   animate() {},
   document: { hidden: false },
   setTimeout(fn) { timer = fn; return 1; },
@@ -136,16 +140,19 @@ context.updateOffice = async () => {};
 fetcher = async () => ({ agents: [], characters: { revision: 2, pending: [{ id: 'new' }] } });
 context.schedule(); await timer();
 assert.equal(renderedCharacters?.pending[0]?.id, 'new', 'poll must render newly arrived applications');
-// An in-flight response must not overwrite edits or consume their revision.
+// Directory changes continue during editing; a separate draft must remain untouched.
+state.roleDraft = {id: 'draft-role', name: 'unsaved'};
+const draft = state.roleDraft;
 const editPoll = deferred(); fetcher = () => editPoll.promise;
 context.schedule(); const editing = timer(); state.roleEditing = true;
 editPoll.resolve({ agents: [], characters: { revision: 3, pending: [] } });
 await editing;
-assert.equal(state.data.characters.revision, 2, 'paused edits leave newer state available for refresh');
+assert.equal(state.data.characters.revision, 3, 'new applications are visible even with an open draft');
+assert.equal(state.roleDraft, draft, 'polling must not replace the separate editor draft');
 state.roleEditing = false;
-fetcher = async () => ({ agents: [], characters: { unchanged: true, revision: 2 } });
+fetcher = async () => ({ agents: [], characters: { unchanged: true, revision: 3 } });
 context.schedule(); await timer();
-assert.equal(state.data.characters.pending[0].id, 'new', 'unchanged snapshots preserve full prior data');
+assert.equal(state.data.characters.pending.length, 0, 'unchanged snapshots preserve the latest directory');
 // Logout invalidates the registry poll as well as the selected-office poll.
 const lateRegistry = deferred(); fetcher = () => lateRegistry.promise;
 context.schedule(); const pendingRegistry = timer();
@@ -154,6 +161,33 @@ lateRegistry.resolve({ agents: [], characters: { revision: 99, pending: [] } });
 await pendingRegistry;
 assert.equal(state.data, null);
 assert.equal(timer, null, 'an expired poll cannot restart a timer after logout');
+// Fit-to-all must include all desks on a narrow screen, not clamp at 20% and clip them.
+const sceneState = {scene: {scale: 1, x: 0, y: 0, autoFit: true}};
+const elements = {
+  officeStage: {clientWidth: 264, clientHeight: 370},
+  officeScene: {offsetWidth: 1872, offsetHeight: 1200, style: {}},
+  officeSceneZoomValue: {}, officeSceneZoomOut: {}, officeSceneZoomIn: {}
+};
+const sceneContext = vm.createContext({state: sceneState, el: id => elements[id], Math});
+vm.runInContext(source.slice(source.indexOf('  function applyScene('), source.indexOf("  document.querySelector('.office-header nav')")), sceneContext);
+sceneContext.fitScene();
+const fitted = sceneState.scene;
+assert(fitted.scale < .2, 'mobile fit permits smaller than 20%');
+assert(fitted.x >= 0 && fitted.y >= 0);
+assert(fitted.x + 1872 * fitted.scale <= 264);
+assert(fitted.y + 1200 * fitted.scale <= 370);
+// Zoom about the pointer must keep its world coordinate stationary.
+const point = {x: 100, y: 150};
+const worldX = (point.x - fitted.x) / fitted.scale;
+const worldY = (point.y - fitted.y) / fitted.scale;
+sceneContext.zoomScene(1.2, point);
+assert(Math.abs((point.x - fitted.x) / fitted.scale - worldX) < 1e-8);
+assert(Math.abs((point.y - fitted.y) / fitted.scale - worldY) < 1e-8);
+assert.equal(fitted.autoFit, false, 'user navigation must survive subsequent polls');
+sceneContext.zoomScene(99);assert.equal(fitted.scale, 2);
+sceneContext.zoomScene(.001);assert.equal(fitted.scale, .1);
+const previous = {...fitted};elements.officeStage.clientWidth = 0;
+sceneContext.fitScene();assert.deepEqual(fitted, previous, 'hidden scenes must not reset the viewport');
 console.log(
-  'PASS office UI: reversed opens, room-switch polling, loaded-page refresh, bounded detail pagination, logout fencing'
+  'PASS office UI: reversed opens, room-switch polling, loaded-page refresh, bounded detail pagination, logout fencing, draft isolation and mobile viewport geometry'
 );

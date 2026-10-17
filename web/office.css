@@ -591,3 +591,113 @@
 .office-role-messages pre, #officeCharacters pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.7; }
 #officeCharacters .office-agent input, #officeCharacters .office-agent textarea { box-sizing:border-box; width:100%; }
 #officeCharacters .office-agent { min-width:0; overflow-wrap:anywhere; }
+/* Compact directory, focused editing and a separate navigable scene. */
+.office-header { position:sticky; top:0; z-index:20; background:#fafbf6f5; backdrop-filter:blur(12px); padding-top:16px; padding-bottom:16px; }
+.office-header nav a:hover { color:var(--o-green); }
+.office-main { max-width:1680px; padding-left:3vw; padding-right:3vw; }
+.office-hero { padding:34px 0 28px; gap:28px; }
+.office-hero h1 { font-size:clamp(28px,3vw,42px); margin-bottom:12px; }
+.office-hero-note { padding:22px 28px; border-radius:20px; }
+.office-orbit { font-size:30px; }
+.office-panel { padding:24px; }
+.office-subhead h3 { display:flex; align-items:center; gap:10px; }
+.office-roster { border:1px solid var(--o-line); border-radius:16px; background:#f6f8f2; padding:16px; margin:18px 0 24px; min-width:0; }
+.office-roster-tools { display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; }
+.office-roster-tools > label { min-width:128px; }
+.office-roster-tools .office-search { flex:1; min-width:180px; }
+.office-zoom-controls { display:flex; align-items:center; gap:6px; }
+.office-zoom-controls label { gap:3px; font-size:10px; }
+.office-zoom-controls input[type=range] { width:104px; padding:0; accent-color:var(--o-green); min-height:24px; }
+.office-zoom-controls output { min-width:40px; text-align:center; font:12px ui-monospace,monospace; color:var(--o-muted); }
+.office-zoom-controls button { min-width:36px; min-height:36px; padding:6px 10px; }
+.office-roster-meta { display:flex; justify-content:space-between; gap:12px; margin:14px 0; font-size:12px; color:var(--o-muted); }
+.office-character-grid { --role-card-width:224px; display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,var(--role-card-width)),1fr)); gap:12px; max-height:560px; overflow:auto; overscroll-behavior:contain; padding:4px; align-content:start; }
+.office-main button.office-character-card { position:relative; display:flex; flex-direction:column; align-items:flex-start; gap:10px; padding:16px; text-align:left; background:#fff; border-radius:14px; box-shadow:0 3px 10px #233d2d04; min-width:0; transition:box-shadow .15s,border-color .15s; }
+.office-main button.office-character-card:hover { border-color:#7b9e85; box-shadow:0 6px 18px #233d2d0d; }
+.office-character-heading { display:flex; align-items:center; gap:10px; width:100%; min-width:0; }
+.office-character-heading strong { overflow-wrap:anywhere; font-size:15px; }
+.office-avatar { display:grid; place-items:center; width:36px; height:36px; flex-shrink:0; background:hsl(var(--avatar-hue) 34% 91%); color:hsl(var(--avatar-hue) 30% 32%); border-radius:12px; font-size:17px; font-weight:650; }
+.office-character-card p { color:var(--o-muted); margin:0; line-height:1.7; font-size:12px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.office-character-card small { margin-top:auto; color:var(--o-muted); font-size:11px; overflow-wrap:anywhere; }
+.office-character-status { font-size:10px; border-radius:20px; padding:3px 7px; color:#42634d; background:#eef5ec; }
+.office-character-card[data-state=disabled] { opacity:.72; }
+.office-character-card[data-state=disabled] .office-character-status { color:#7d6558; background:#f6eee8; }
+.office-character-grid[data-compact=true] { gap:8px; }
+.office-character-grid[data-compact=true] .office-character-card { padding:12px; gap:8px; }
+.office-character-grid[data-compact=true] .office-character-heading strong { font-size:13px; }
+.office-character-grid[data-compact=true] .office-avatar { width:28px; height:28px; border-radius:9px; font-size:14px; }
+.office-character-grid[data-compact=true] .office-character-card p { -webkit-line-clamp:1; }
+.office-main button.office-application-card { display:grid; gap:8px; text-align:left; padding:16px; background:#fffcf3; border-color:#e9dfc5; border-radius:12px; }
+.office-application-card span,.office-application-card small { font-size:11px; color:#8e7547; }
+.office-application-card p { margin:0; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; font-size:12px; line-height:1.7; }
+.office-role-dialog { box-sizing:border-box; color:#263a36; background:#fcfdf8; border:1px solid #dce3da; border-radius:20px; width:min(600px,calc(100vw - 24px)); max-height:calc(100dvh - 32px); padding:24px; overflow:auto; box-shadow:0 24px 120px #122f2b33; }
+.office-role-dialog::backdrop { background:#142e2a55; backdrop-filter:blur(3px); }
+.office-role-dialog header { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.office-role-dialog h2 { margin:0; font-size:22px; }
+.office-role-dialog .office-eyebrow { color:#7b8f7e; }
+.office-role-dialog form { display:grid; gap:16px; }
+.office-role-dialog label { display:grid; gap:8px; font-size:12px; color:#6a7771; }
+.office-role-dialog input,.office-role-dialog textarea { width:100%; box-sizing:border-box; border:1px solid #dce3da; background:#fff; color:#263a36; border-radius:9px; padding:10px 12px; font:14px/1.8 system-ui,sans-serif; }
+.office-role-dialog textarea { resize:vertical; min-height:120px; max-height:40dvh; }
+.office-role-dialog button { cursor:pointer; border:1px solid #dce3da; background:#f0f4ee; color:#263a36; border-radius:8px; padding:10px 14px; font:13px/1.5 system-ui,sans-serif; min-height:40px; }
+.office-role-dialog button.office-primary { background:#325f4f; color:white; border-color:#325f4f; }
+.office-role-dialog button.office-danger { color:#975443; background:transparent; margin-left:auto; }
+.office-role-dialog button:disabled { opacity:.5; cursor:wait; }
+.office-role-dialog details { margin-top:18px; font-size:12px; overflow-wrap:anywhere; }
+.office-role-dialog summary { cursor:pointer; padding:8px 0; }
+.office-role-dialog :focus-visible { outline:3px solid #829c64; outline-offset:3px; }
+.office-dialog-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; position:sticky; bottom:-24px; padding:16px 0; background:#fcfdf8; border-top:1px solid #dce3da; }
+.office-room-choice { display:flex; gap:16px; align-items:center; }
+.office-room-choice span { color:var(--o-muted); font-size:11px; }
+.office-main button.office-room-choice[aria-pressed=true] { background:#e0ecdf; border-color:#739178; box-shadow:inset 0 0 0 1px #739178; }
+.office-canvas { border:1px solid var(--o-line); border-radius:18px; background:#f2f6ed; margin:20px 0; overflow:hidden; }
+.office-canvas-tools { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--o-line); }
+.office-canvas-tools > span { font-size:13px; font-weight:600; }
+.office-stage { height:440px; min-height:0; border-radius:0; margin:0; padding:0; touch-action:none; cursor:grab; background-color:#f3f6ec; background-image:radial-gradient(#96aa8d44 .8px,transparent .8px); background-size:20px 20px; }
+.office-stage.is-dragging { cursor:grabbing; user-select:none; }
+.office-stage:before { content:none; }
+.office-scene { position:absolute; left:0; top:0; transform-origin:0 0; padding:32px 30px; box-sizing:border-box; will-change:transform; }
+.office-desks { gap:22px; }
+.office-canvas-help { margin:0; padding:10px 16px; font-size:11px; color:var(--o-muted); border-top:1px solid var(--o-line); }
+.office-roster.is-expanded,.office-canvas.is-expanded { position:fixed; inset:12px; z-index:100; margin:0; box-sizing:border-box; box-shadow:0 0 0 100vmax #1d332d66; display:flex; flex-direction:column; background:#f6f8f2; }
+.office-roster.is-expanded .office-character-grid { max-height:none; flex:1; min-height:0; }
+.office-canvas.is-expanded .office-stage { flex:1; min-height:0; height:auto; }
+.office-main #officeNotice { position:sticky; top:75px; z-index:21; box-shadow:0 8px 30px #293c2522; }
+@media(max-width:680px) {
+  .office-main { padding-left:12px; padding-right:12px; }
+  .office-header { padding:12px 16px; gap:12px; flex-wrap:wrap; }
+  .office-header nav { gap:14px; overflow:auto; flex:1; white-space:nowrap; }
+  .office-header nav a { font-size:12px; }
+  .office-hero { padding-top:24px; grid-template-columns:1fr; }
+  .office-hero-note { display:none; }
+  .office-panel { padding:16px; }
+  .office-roster { padding:10px; }
+  .office-roster-tools { gap:8px; }
+  .office-roster-tools .office-search { flex-basis:100%; }
+  .office-roster-tools > label { min-width:110px; flex:1; }
+  .office-roster-meta { font-size:11px; flex-wrap:wrap; }
+  .office-main button { min-height:40px; }
+  .office-role-dialog { padding:18px; }
+  .office-dialog-actions { bottom:-18px; }
+  .office-stage { height:370px; }
+  .office-canvas-tools { padding:10px; }
+  .office-canvas-tools .office-zoom-controls { flex-wrap:wrap; }
+  .office-roster.is-expanded,.office-canvas.is-expanded { inset:6px; }
+  .office-main #officeNotice { top:92px; }
+}
+@media(prefers-reduced-motion:reduce) { .office-main button.office-character-card { transition:none; } }
+.office-inspector-error { background:#fae9db; color:#985c32; padding:12px; border-radius:8px; font-size:13px; line-height:1.7; }
+.office-panel > summary { color:var(--o-green); font-size:15px; }
+.office-panel[open] > summary { border-bottom:1px solid var(--o-line); padding-bottom:16px; margin-bottom:20px; }
+.office-character-grid[data-compact=true] .office-character-card p { display:none; }
+.office-character-grid[data-compact=true] .office-character-card small { width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.office-character-grid[data-compact=true] .office-character-card { padding:10px; gap:6px; }
+
+.office-room-search { max-width:420px; margin:0 0 16px; }
+.office-confirm { max-width:440px; }
+.office-confirm p { font-size:14px; line-height:1.8; margin:6px 0; }
+
+.office-role-dialog .office-detail { border:0; padding:0; margin-top:18px; overflow-wrap:anywhere; }
+.office-role-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#eef2e9; border-radius:8px; padding:12px; font:12px/1.8 ui-monospace,monospace; }
+.office-main button.office-character-card { min-height:180px; }
+.office-character-grid[data-compact=true] .office-character-card { min-height:100px; }

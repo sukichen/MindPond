@@ -27,7 +27,10 @@
     poll: null,
     authEpoch: 0,
     roleEditing: false,
-    renderedFacilities: null
+    renderedFacilities: null,
+    roleQuery: '', roleFilter: 'all', roleZoom: 100, roomQuery: '',
+    roleDraft: null, expanded: null,
+    scene: { scale: 1, x: 0, y: 0, autoFit: true, room: null }
   };
   const officeStates = {
     active: '开放',
@@ -81,6 +84,8 @@
     el('officeNotice').hidden = false;
     el('officeNotice').textContent = text;
     el('officeNotice').className = error ? 'is-error' : '';
+    if (error && el('officeDetailDialog').open) {el('officeDetailStatus').hidden = false;el('officeDetailStatus').textContent = text;}
+    if (error && el('officeRoleInspector').open) {el('officeRoleInspectorStatus').hidden = false;el('officeRoleInspectorStatus').textContent = text;}
   };
   async function api(route, body = {}) {
     const r = await fetch('./api/office-admin/' + route, {
@@ -90,8 +95,17 @@
       body: JSON.stringify(body)
     });
     const data = await r.json();
-    if (!r.ok) throw Error(data.error ?? '操作失败');
+    if (!r.ok) throw Error(data.code === 'stale_version' ? '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。' : data.error ?? '操作失败');
     return data;
+  }
+  function confirmAction(message) {
+    const dialog = el('officeConfirm');
+    if (dialog.open) return Promise.resolve(false);
+    el('officeConfirmText').textContent = message;dialog.returnValue = '';
+    return new Promise(resolve => {
+      dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), {once: true});
+      dialog.showModal();el('officeConfirmCancel').focus();
+    });
   }
   async function run(fn, button) {
     if (button?.disabled) return;
@@ -231,15 +245,15 @@
       async () => {
         if (
           agent.state !== 'pending' &&
-          !window.confirm('重新签发会撤销旧凭据。请在宿主中替换后重连；是否继续？')
+          !(await confirmAction('重新签发会撤销旧凭据。请在宿主中替换后重连；是否继续？'))
         )
           return;
         const assignmentIds = restrictions.value.split(',').map(s => s.trim()).filter(Boolean);
         const restrictionsChanged = assignmentIds.join(',') !== initialRestrictions;
         if (policy?.assignmentIds?.length && restrictionsChanged && !assignmentIds.length &&
-          !window.confirm('清空后此凭据可以选择该 agent 的所有已授权工位。确认解除工位限制？')) return;
+          !(await confirmAction('清空后此凭据可以选择该 agent 的所有已授权工位。确认解除工位限制？'))) return;
         if (policy && personal.value !== initialPersonal &&
-          !window.confirm('这会将原有记忆领域授权替换为指定的个人范围。确认修改？')) return;
+          !(await confirmAction('这会将原有记忆领域授权替换为指定的个人范围。确认修改？'))) return;
         const response = await api('credential', {
           id: agent.id,
           expectedRevision: agent.revision,
@@ -276,11 +290,11 @@
     const epoch=state.authEpoch, next=await api('state');
     if(epoch!==state.authEpoch)return;
     state.data = next;
-    if(state.roleEditing)notice('角色列表已刷新，已恢复自动同步。');
-    state.roleEditing = false;
+    // A refresh can update the directory without replacing an open profile draft.
     state.logged = true;
     el('officeLogin').hidden = true;
     el('officeSettings').hidden = false;
+    if (!state.initializedView) {el('officeSetup').open = !state.data.agents.length;state.initializedView = true;}
     el('officeLoginStatus').textContent = '已登录用户管理';
     el('officeEndpoint').elements.mcpUrl.value = state.data.settings.mcpUrl ?? '';
     el('officeInstance').textContent =
@@ -337,19 +351,23 @@
     }
     if (!state.data.agents.length)
       box.append(make('p', '还没有宿主连接。填写名称、账户和宿主即可登记。'));
-    const rooms = el('officeRoomList');
-    rooms.replaceChildren();
-    for (const room of state.data.offices)
-      rooms.append(
-        button(`${room.title} · ${room.state==='active'&&room.deadline<=Date.now()?'已到截止':officeStates[room.state]??room.state}`, () =>
-          openOffice(room.id)
-        )
-      );
-    if (!state.data.offices.length)
-      rooms.append(make('p', '还没有办公室。可以直接创建一个空房间。'));
+    renderRoomChoices();
     refreshSeatChoices();
     renderProjects();
 
+  }
+  function renderRoomChoices() {
+    const box = el('officeRoomList'); box.replaceChildren();
+    const rooms = state.data?.offices ?? [], query = state.roomQuery.trim().toLocaleLowerCase();
+    const matches = rooms.filter(room => !query || [room.title, room.goal, room.id].join(' ').toLocaleLowerCase().includes(query));
+    for (const room of matches) {
+      const pick = button('', () => openOffice(room.id));
+      pick.append(make('strong', room.title), make('span', officeStates[room.state] ?? room.state));
+      pick.className = 'office-room-choice';
+      pick.setAttribute('aria-pressed', String(state.office?.office.id === room.id));
+      box.append(pick);
+    }
+    if (!matches.length) box.append(make('p', rooms.length ? '没有匹配的办公室。' : '还没有办公室。可以直接创建一个空房间。'));
   }
   function refreshSeatChoices() {
     for (const row of el('officeSeatRows').children) {
@@ -374,31 +392,15 @@
     if (!data) return;
     const pending = el('officeApplications'), list = el('officeCharacterList');
     pending.replaceChildren(); list.replaceChildren();
+    el('officePendingCount').textContent = data.pending.length;
     for (const app of data.pending) {
-      const card = make('article');card.className = 'office-agent';
-      const name = input(app.name), intro = make('textarea');intro.value = app.introduction;intro.rows = 3;intro.maxLength = 4000;
-      name.maxLength = 120;
-      card.append(make('h4', app.name + ' · 待审核'), make('p', '账户 ' + app.principal + ' · 连接 ' + app.connector_id), make('p', '会话关联：' + app.mode + '（共用凭据不是安全隔离）'), label('人物名字', name), label('能力与介绍', intro), make('p', app.reason),make('p','申请编号：'+app.id));
-      for (const [action, title] of [['approve', '批准这个角色'], ['reject', '拒绝']]) card.append(button(title, async () => {
-        await api('role/review', { applicationId: app.id, expectedRevision: app.revision, action, name: name.value, introduction: intro.value });
-        await refresh();notice(action === 'approve' ? '已批准。原聊天下次调用 MCP 或取信命令时自动同步身份；不会自动唤醒。' : '已拒绝申请。');
-      }));
+      const card = button('', () => openRoleInspector(app, true));
+      card.className = 'office-application-card';
+      card.append(make('strong', app.name), make('span', '待审核 · ' + app.principal), make('p', app.introduction), make('small', '查看申请 →'));
       pending.append(card);
     }
-    if (!data.pending.length) pending.append(make('p', '没有待审核申请。请在已连接的聊天里让它申请角色。'));
-    for (const role of data.roles) {
-      const card = make('article');card.className = 'office-agent';
-      const name = input(role.name), intro = make('textarea');intro.value = role.introduction;intro.rows = 3;intro.maxLength = 4000;name.maxLength = 120;
-      const rooms = data.mappings.filter(m => m.role_id === role.id).map(m => m.seat_id);
-      card.append(make('h4', role.name), make('p', role.state === 'active' ? '身份已批准 · 运行状态未知' : '角色已停用'), make('p', '角色 ID：' + role.id), make('p', '资料版本 ' + role.revision + ' · 已安排 ' + rooms.length + ' 个工位'), label('名字', name), label('能力与介绍', intro));
-      const save = async (nextState) => {
-        await api('role/configure', { roleId: role.id, expectedRevision: role.revision, name: name.value, introduction: intro.value, state: nextState });
-        await refresh();notice('人物资料已保存，后续 MCP 调用会自动携带新版介绍。');
-      };
-      card.append(button('保存名字与介绍', () => save(role.state)), button(role.state === 'active' ? '停用角色' : '重新启用', () => save(role.state === 'active' ? 'disabled' : 'active')));
-      list.append(card);
-    }
-    if (!data.roles.length) list.append(make('p', '批准第一份申请后，人物会出现在这里，再到办公室安排分工。'));
+    if (!data.pending.length) pending.append(make('p', '没有待审核申请。'));
+    renderRoleDirectory();
     const form = el('officeRoleLink');
     for (const name of ['sender', 'recipient']) {
       const select = form.elements[name], old = select.value;select.replaceChildren();
@@ -418,11 +420,226 @@
     }
     const messages = el('officeRoleMessages');messages.replaceChildren();
     for (const m of data.messages) {
-      const card = make('details'), summary = make('summary', `${m.sender_name} → ${m.recipient_name} · ${m.kind} · ${m.state === 'queued' ? '未读' : m.state === 'read' ? '已读' : '已归档'}`);
+      const card = make('details'), summary = make('summary', `${m.sender_name ?? nameOf(m.sender)} → ${m.recipient_name ?? nameOf(m.recipient)} · ${m.kind} · ${m.state === 'queued' ? '未读' : m.state === 'read' ? '已读' : '已归档'}`);
       card.append(summary, make('p', new Date(m.created_at).toLocaleString() + ' · ' + m.id), make('pre', m.body));messages.append(card);
     }
     if (!data.messages.length) messages.append(make('p', '尚无角色消息。'));
   }
+  function filteredRoles() {
+    const roles = state.data?.characters?.roles ?? [];
+    const query = state.roleQuery.trim().toLocaleLowerCase();
+    return roles.filter(role => {
+      const assigned = state.data.characters.mappings.some(m => m.role_id === role.id);
+      return (!query || [role.name, role.introduction, role.principal, role.id].join(' ').toLocaleLowerCase().includes(query)) &&
+        (state.roleFilter === 'all' || (state.roleFilter === 'unassigned' ? role.state === 'active' && !assigned : role.state === state.roleFilter));
+    });
+  }
+  function renderRoleDirectory() {
+    const list = el('officeCharacterList'), scrollTop = list.scrollTop;
+    const focused = document.activeElement?.closest('.office-character-card')?.dataset.roleId;
+    list.replaceChildren();
+    const roles = filteredRoles();
+    el('officeRoleCount').textContent = `${roles.length} / ${state.data?.characters?.roles.length ?? 0} 个角色`;
+    for (const role of roles) {
+      const card = button('', () => openRoleInspector(role));
+      card.className = 'office-character-card';
+      card.dataset.state = role.state;card.dataset.roleId = role.id;card.title = role.introduction;
+      card.setAttribute('aria-label', '查看角色 ' + role.name);
+      const avatar = make('span', Array.from(role.name)[0] ?? '◉'); avatar.className = 'office-avatar';avatar.setAttribute('aria-hidden', 'true');
+      let hash = 0; for (const c of role.id) hash = (hash * 31 + c.charCodeAt(0)) | 0;
+      avatar.style.setProperty('--avatar-hue', Math.abs(hash) % 360);
+      const heading = make('div'); heading.className = 'office-character-heading';
+      heading.append(avatar, make('strong', role.name));
+      const places = state.data.characters.mappings.filter(m => m.role_id === role.id).length;
+      const status = make('span', role.state === 'active' ? '已批准' : '已停用');status.className = 'office-character-status';
+      card.append(heading, status, make('p', role.introduction), make('small', `${role.principal} · ${places ? places + ' 个工位' : '未安排办公室'}`));
+      list.append(card);
+    }
+    list.scrollTop = scrollTop;
+    if (focused) [...list.children].find(n => n.dataset.roleId === focused)?.focus({preventScroll: true});
+    if (!roles.length) {
+      const empty = make('p', state.data?.characters?.roles.length ? '没有匹配的角色，试试其他关键词或筛选条件。' : '批准第一份申请后，角色会出现在这里。');
+      empty.className = 'office-empty';list.append(empty);
+    }
+  }
+  function setRoleZoom(value) {
+    state.roleZoom = Math.max(60, Math.min(140, Number(value) || 100));
+    el('officeRoleZoom').value = state.roleZoom;
+    el('officeRoleZoomValue').textContent = state.roleZoom + '%';
+    el('officeCharacterList').style.setProperty('--role-card-width', Math.round(224 * state.roleZoom / 100) + 'px');
+    el('officeCharacterList').dataset.compact = String(state.roleZoom < 90);
+    el('officeRoleZoomOut').disabled = state.roleZoom <= 60;
+    el('officeRoleZoomIn').disabled = state.roleZoom >= 140;
+    try { localStorage.setItem('mindpond.office.roleZoom', String(state.roleZoom)); } catch {}
+  }
+  async function closeRoleInspector(force = false) {
+    if (!force && state.roleDraft?.saving) return false;
+    if (!force && state.roleDraft?.dirty && !(await confirmAction('有尚未保存的角色修改，放弃修改并关闭？'))) return false;
+    el('officeRoleInspector').close();state.roleDraft = null;state.roleEditing = false;
+    return true;
+  }
+  async function openRoleInspector(record, application = false) {
+    if (state.roleDraft && !(await closeRoleInspector())) return;
+    const dialog = el('officeRoleInspector'), body = el('officeRoleInspectorBody');body.replaceChildren();
+    el('officeRoleInspectorStatus').hidden = true;
+    el('officeRoleInspectorTitle').textContent = application ? '审核角色申请' : record.name;
+    state.roleDraft = { id: record.id, dirty: false };
+    const draft = state.roleDraft;
+    const form = make('form'), name = input(record.name), intro = make('textarea');
+    name.required = true;name.maxLength = 120;intro.required = true;intro.rows = 5;intro.maxLength = 4000;
+    intro.value = record.introduction;
+    form.append(label('名字', name), label('能力与介绍', intro));
+    const meta = make('p', `账户 ${record.principal} · ${application ? '待审核' : record.state === 'active' ? '已批准 · 运行状态未知' : '已停用'}`);meta.className = 'office-hint';
+    body.append(meta, form);
+    const info = make('details');info.append(make('summary', '身份与连接信息'), make('p', `编号：${record.id}`), make('p', '连接：' + record.connector_id));
+    if (application) info.append(make('p', record.reason), make('p', '会话关联：' + record.mode));
+    else {
+      info.append(make('p', '资料版本 ' + record.revision));
+      const count = state.data.characters.mappings.filter(m => m.role_id === record.id).length;
+      info.append(make('p', `已安排 ${count} 个工位`), button('前往办公室', async () => {if (await closeRoleInspector()) {setExpanded(null);el('officeRooms').scrollIntoView({block: 'start'});}}));
+    }
+    body.append(info);
+    form.addEventListener('input', () => {draft.dirty = true;state.roleEditing = true;save.textContent = application ? '批准这个角色' : '保存修改';});
+    const actions = make('div');actions.className = 'office-dialog-actions';
+    let saving = false;
+    async function saveProfile(action) {
+      if (saving || !form.reportValidity()) return;
+      const draft = state.roleDraft, epoch = state.authEpoch;
+      const payload = {expectedRevision: record.revision, name: name.value.trim(), introduction: intro.value.trim()};
+      if (!payload.name || !payload.introduction) throw Error('名字与介绍不能为空。');
+      saving = true;draft.saving = true;el('officeRoleInspectorClose').disabled = true;
+      const fields = [...form.querySelectorAll('input,textarea,button')];fields.forEach(n => n.disabled = true);
+      try {
+        await api(application ? 'role/review' : 'role/configure', application ? {...payload, applicationId: record.id, action} : {...payload, roleId: record.id, state: action});
+        if (epoch !== state.authEpoch) return;
+        if (state.roleDraft === draft) await closeRoleInspector(true);
+        await refresh();
+        notice(application ? (action === 'approve' ? '已批准，下次 MCP 调用即可同步身份。' : '已拒绝申请。') : '角色资料已保存，后续 MCP 调用会自动返回新版介绍。');
+      } finally {saving = false;draft.saving = false;el('officeRoleInspectorClose').disabled = false;fields.forEach(n => n.disabled = false);}
+    }
+
+    const save = button(application ? '批准这个角色' : '保存修改', () => saveProfile(application ? 'approve' : record.state));save.className = 'office-primary';
+    form.addEventListener('submit', e => {e.preventDefault();run(() => saveProfile(application ? 'approve' : record.state), save);});
+    actions.append(save, button('取消', () => closeRoleInspector()));
+    const secondary = button(application ? '拒绝申请' : record.state === 'active' ? '停用角色' : '重新启用', async () => {
+      if (!(await confirmAction(application ? '确认拒绝这份申请？' : record.state === 'active' ? '确认停用这个角色？现有会话将失去角色权限。' : '确认重新启用这个角色？'))) return;
+      await saveProfile(application ? 'reject' : record.state === 'active' ? 'disabled' : 'active');
+    });secondary.className = 'office-danger';actions.append(secondary);form.append(actions);
+    dialog.showModal();name.focus();
+  }
+  function setExpanded(id) {
+    if (state.expanded === id) id = null;
+    const wasExpanded = state.expanded;
+    if (state.expanded) {el(state.expanded).classList.remove('is-expanded');el(state.expanded).removeAttribute('role');el(state.expanded).removeAttribute('aria-modal');}
+    if (!state.expanded && id) state.previousOverflow = document.body.style.overflow;
+    state.expanded = id;
+    document.body.style.overflow = id ? 'hidden' : state.previousOverflow ?? '';
+    if (id) {el(id).setAttribute('role', 'dialog');el(id).setAttribute('aria-modal', 'true');el(id).classList.add('is-expanded');el(id).querySelector('input,button')?.focus();}
+    else if (wasExpanded) el(wasExpanded === 'officeRoster' ? 'officeRoleExpand' : 'officeSceneExpand').focus();
+    el('officeRoleExpand').textContent = id === 'officeRoster' ? '收起总览' : '展开总览';
+    el('officeSceneExpand').textContent = id === 'officeCanvas' ? '收起场景' : '展开场景';
+    el('officeRoleExpand').setAttribute('aria-expanded', String(id === 'officeRoster'));
+    el('officeSceneExpand').setAttribute('aria-expanded', String(id === 'officeCanvas'));
+    if (state.scene.autoFit) requestAnimationFrame(fitScene);
+  }
+  function layoutScene(count) {
+    const cols = Math.max(1, Math.min(7, Math.ceil(Math.sqrt(count || 1))));
+    el('officeDesks').style.gridTemplateColumns = `repeat(${cols}, 240px)`;
+    el('officeScene').style.width = (cols * 262 + 38) + 'px';
+  }
+  function applyScene() {
+    const {x, y, scale} = state.scene;
+    el('officeScene').style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    el('officeSceneZoomValue').textContent = Math.round(scale * 100) + '%';
+    el('officeSceneZoomOut').disabled = scale <= .1;
+    el('officeSceneZoomIn').disabled = scale >= 2;
+  }
+  function fitScene() {
+    const viewport = el('officeStage'), world = el('officeScene');
+    if (!viewport.clientWidth || !viewport.clientHeight) return;
+    const scale = Math.max(.1, Math.min(1.25, (viewport.clientWidth - 40) / world.offsetWidth, (viewport.clientHeight - 40) / world.offsetHeight));
+    Object.assign(state.scene, {scale, x: (viewport.clientWidth - world.offsetWidth * scale) / 2, y: (viewport.clientHeight - world.offsetHeight * scale) / 2, autoFit: true});
+    applyScene();
+  }
+  function zoomScene(scale, point) {
+    const viewport = el('officeStage');
+    const cx = point?.x ?? viewport.clientWidth / 2, cy = point?.y ?? viewport.clientHeight / 2;
+    const next = Math.max(.1, Math.min(2, scale)), ratio = next / state.scene.scale;
+    Object.assign(state.scene, {x: cx - (cx - state.scene.x) * ratio, y: cy - (cy - state.scene.y) * ratio, scale: next, autoFit: false});
+    applyScene();
+  }
+  document.querySelector('.office-header nav').addEventListener('click', e => {
+    const anchor = e.target.closest('a[href^="#"]');
+    if (!anchor) return;
+    const target = document.getElementById(anchor.hash.slice(1));if (target?.tagName === 'DETAILS') target.open = true;
+  });
+  el('officeRoomSearch').addEventListener('input', e => {state.roomQuery = e.target.value;renderRoomChoices();});
+  el('officeRoleSearch').addEventListener('input', e => {state.roleQuery = e.target.value;renderRoleDirectory();});
+  el('officeRoleFilter').addEventListener('change', e => {state.roleFilter = e.target.value;renderRoleDirectory();});
+  el('officeRoleZoom').addEventListener('input', e => setRoleZoom(e.target.value));
+  el('officeRoleZoomOut').onclick = () => setRoleZoom(state.roleZoom - 10);
+  el('officeRoleZoomIn').onclick = () => setRoleZoom(state.roleZoom + 10);
+  el('officeRoleFit').onclick = () => setRoleZoom(60);
+  el('officeRoleExpand').onclick = () => setExpanded('officeRoster');
+  el('officeRoleInspectorClose').onclick = () => closeRoleInspector();
+  el('officeRoleInspector').addEventListener('cancel', e => {e.preventDefault();void closeRoleInspector();});
+  el('officeSceneExpand').onclick = () => setExpanded('officeCanvas');
+  el('officeSceneFit').onclick = fitScene;
+  el('officeSceneZoomOut').onclick = () => zoomScene(state.scene.scale / 1.2);
+  el('officeSceneZoomIn').onclick = () => zoomScene(state.scene.scale * 1.2);
+  el('officeSceneReset').onclick = () => {Object.assign(state.scene, {scale: 1, x: 20, y: 20, autoFit: false});applyScene();};
+  el('officeCancelEdit').onclick = () => {state.editing = null;el('officeCreate').querySelector('summary').textContent = '＋ 创建空办公室';el('officeRoomForm').reset();el('officeSeatRows').replaceChildren();el('officeCreate').open = false;};
+  try {setRoleZoom(localStorage.getItem('mindpond.office.roleZoom') ?? 100);} catch {setRoleZoom(100);}
+  const stage = el('officeStage'), pointers = new Map();
+  let gesture;
+  const midpoint = () => {const p = [...pointers.values()];return {x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2, distance: Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y)};};
+  stage.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    stage.setPointerCapture(e.pointerId);pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    if (pointers.size === 2) gesture = midpoint();
+    stage.classList.add('is-dragging');
+  });
+  stage.addEventListener('pointermove', e => {
+    const previous = pointers.get(e.pointerId);if (!previous) return;
+    pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+    if (pointers.size === 2) {
+      const next = midpoint(), rect = stage.getBoundingClientRect();
+      if (gesture?.distance > 0) zoomScene(state.scene.scale * next.distance / gesture.distance, {x: gesture.x - rect.left, y: gesture.y - rect.top});
+      if (gesture) {state.scene.x += next.x - gesture.x;state.scene.y += next.y - gesture.y;}
+      gesture = next;
+    } else {state.scene.x += e.clientX - previous.x;state.scene.y += e.clientY - previous.y;}
+    state.scene.autoFit = false;applyScene();
+  });
+  const releasePointer = e => {pointers.delete(e.pointerId);gesture = null;if (!pointers.size) stage.classList.remove('is-dragging');};
+  for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) stage.addEventListener(name, releasePointer);
+  stage.addEventListener('wheel', e => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();const rect = stage.getBoundingClientRect();zoomScene(state.scene.scale * Math.exp(-e.deltaY * .008), {x: e.clientX - rect.left, y: e.clientY - rect.top});
+  }, {passive: false});
+  stage.addEventListener('keydown', e => {
+    if (e.target !== stage) return;
+    if (e.key === '0') fitScene();
+    else if (e.key === '+' || e.key === '=') zoomScene(state.scene.scale * 1.2);
+    else if (e.key === '-') zoomScene(state.scene.scale / 1.2);
+    else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      state.scene.x += e.key === 'ArrowLeft' ? 30 : e.key === 'ArrowRight' ? -30 : 0;
+      state.scene.y += e.key === 'ArrowUp' ? 30 : e.key === 'ArrowDown' ? -30 : 0;
+      state.scene.autoFit = false;applyScene();
+    } else return;
+    e.preventDefault();
+  });
+  document.addEventListener('keydown', e => {
+    if (!state.expanded || el('officeRoleInspector').open || el('officeDetailDialog').open || el('officeConfirm').open) return;
+    if (e.key === 'Escape') {setExpanded(null);return;}
+    if (e.key === 'Tab') {
+      const focusable = [...el(state.expanded).querySelectorAll('button:not(:disabled),input,select,[tabindex="0"]')].filter(n => n.getClientRects().length);
+      const first = focusable[0], last = focusable.at(-1);
+      if (e.shiftKey && document.activeElement === first) {e.preventDefault();last?.focus();}
+      else if (!e.shiftKey && document.activeElement === last) {e.preventDefault();first?.focus();}
+    }
+  });
+  window.addEventListener('beforeunload', e => {if (state.roleDraft?.dirty || state.containerDirty) {e.preventDefault();e.returnValue = '';}});
+  new ResizeObserver(() => {if (state.scene.autoFit) requestAnimationFrame(fitScene);}).observe(stage);
   function renderProjects() {
     const members = el('officeProjectMembers'),
       selected = [...members.selectedOptions].map((o) => o.value);
@@ -504,6 +721,8 @@
     el('officeSeatRows').append(row);
   }
   async function openOffice(id) {
+    if (state.containerDirty && !(await confirmAction('容器有尚未保存的修改，仍要切换办公室？'))) return;
+    state.containerDirty = false;
     const generation = ++state.generation;
     state.opening = true;
     state.loading = false;
@@ -512,15 +731,19 @@
     finally { if (generation === state.generation) state.opening = false; }
     if (generation !== state.generation || !state.logged) return;
     state.office = first;
+    state.scene.autoFit = true;
+    state.scene.room = id;
     state.itemsCursor = first.nextItemsAfterId;
     state.materialsCursor = first.nextMaterialsAfterId;
     state.itemsPaged = false;
     state.materialsPaged = false;
     state.events = first.events;
     state.cursor = first.nextCursor;
-    el('officeDetail').hidden = true;
+    await closeOfficeDetail(true);
     renderOffice();
     el('officeView').hidden = false;
+    renderRoomChoices();
+    requestAnimationFrame(fitScene);
     el('officeView').scrollIntoView({
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
         ? 'instant'
@@ -540,25 +763,56 @@
     const mapping=state.data?.characters?.mappings.find(m=>m.seat_id===seat.id);
     return state.data?.characters?.roles.find(r=>r.id===mapping?.role_id);
   }
-  function editContainer(record) {
-    const room=state.office.office.id, box=el('officeDetail');box.hidden=false;box.replaceChildren();
+  function openOfficeDetail() {
+    const dialog = el('officeDetailDialog');
+    el('officeDetail').hidden = false;el('officeDetailStatus').hidden = true;
+    if (!dialog.open) dialog.showModal();
+    return el('officeDetail');
+  }
+  async function closeOfficeDetail(force = false) {
+    if (!force && state.detailSaving) return false;
+    if (!force && state.containerDirty && !(await confirmAction('放弃尚未保存的容器修改？'))) return false;
+    state.containerDirty = false;el('officeDetailDialog').close();el('officeDetail').hidden = true;
+    return true;
+  }
+  el('officeDetailClose').onclick = () => closeOfficeDetail();
+  el('officeDetailDialog').addEventListener('cancel', e => {e.preventDefault();void closeOfficeDetail();});
+  async function editContainer(record) {
+    if (state.containerDirty && !(await confirmAction('放弃尚未保存的容器修改？'))) return;
+    state.containerDirty = false;
+    const room=state.office.office.id, box=openOfficeDetail();box.replaceChildren();
     const title=input(record.title??'', '容器名字'), content=make('textarea'), format=make('select');
     title.maxLength=200;content.rows=12;content.maxLength=65536;
     for(const [value,name] of [['text','文本'],['json','JSON']]){const o=make('option',name);o.value=value;format.append(o);}
     format.value=typeof record.content==='string'?'text':'json';
     content.value=typeof record.content==='string'?record.content:JSON.stringify(record.content??{},null,2);
+    content.addEventListener('input', () => {state.containerDirty = true;});
+    title.addEventListener('input', () => {state.containerDirty = true;});
+    format.addEventListener('change', () => {state.containerDirty = true;});
     let attempt;
     const save=button('保存容器',async()=>{
+      if(state.detailSaving)return;
       if(state.office?.office.id!==room)throw Error('办公室已切换，请重新打开容器。');
       const value=format.value==='json'?JSON.parse(content.value):content.value;
       if(!title.value.trim())throw Error('请填写容器名字。');
       const payload={action:'save',officeId:room,id:record.id,title:title.value.trim(),content:value,expectedRevision:record.revision??0};
       const raw=JSON.stringify(payload);if(attempt?.raw!==raw)attempt={raw,key:uuid()};
-      await api('containers',{...payload,key:attempt.key});box.hidden=true;await updateOffice();notice('容器已保存。');
+      state.detailSaving = true;el('officeDetailClose').disabled = true;
+      const fields = [title, content, format];fields.forEach(n => n.disabled = true);
+      try {
+        await api('containers',{...payload,key:attempt.key});state.containerDirty=false;await closeOfficeDetail(true);await updateOffice();notice('容器已保存。');
+      } finally {state.detailSaving = false;el('officeDetailClose').disabled = false;fields.forEach(n => n.disabled = false);}
     });
-    box.append(make('h3','自定义容器'),label('名字',title),label('内容格式',format),content,save);
-    if(record.revision)box.append(button('归档容器',async()=>{if(state.office?.office.id!==room)throw Error('办公室已切换。');await api('containers',{action:'archive',officeId:room,id:record.id,expectedRevision:record.revision,key:uuid()});box.hidden=true;await updateOffice();}));
-    box.append(button('关闭',()=>{box.hidden=true;}));
+    box.append(make('h3','自定义容器'),label('名字',title),label('内容格式',format),label('内容',content),save);
+    if(record.revision)box.append(button('归档容器',async()=>{
+      if(state.detailSaving)return;
+      if(state.office?.office.id!==room)throw Error('办公室已切换。');
+      if(!(await confirmAction('归档这个容器？尚未保存的编辑不会写入，历史内容仍保留。')))return;
+      state.detailSaving=true;el('officeDetailClose').disabled=true;
+      try{await api('containers',{action:'archive',officeId:room,id:record.id,expectedRevision:record.revision,key:uuid()});await closeOfficeDetail(true);await updateOffice();}
+      finally{state.detailSaving=false;el('officeDetailClose').disabled=false;}
+    }));
+    box.append(button('关闭',()=>closeOfficeDetail()));
     box.scrollIntoView({block:'nearest'});
   }
   function renderFacilities(data) {
@@ -595,7 +849,7 @@
           button(title, async () => {
             if (
               value === 'cancelled' &&
-              !window.confirm('归档后停止写入，历史内容保留；远端宿主不会被关闭。继续？')
+              !(await confirmAction('归档后停止写入，历史内容保留；远端宿主不会被关闭。继续？'))
             )
               return;
             await api('office', {
@@ -613,10 +867,11 @@
         );
     if (!['completed', 'cancelled'].includes(o.state))
       controls.append(
-        button('编辑办公室与参与者', () => {
-          if (!window.confirm('保存分工会使旧会话绑定和租约失效，agent 需要重新绑定。继续编辑？'))
+        button('编辑办公室与参与者', async () => {
+          if (!(await confirmAction('保存分工会使旧会话绑定和租约失效，agent 需要重新绑定。继续编辑？')))
             return;
-          state.editing = { id: o.id, revision: o.revision };
+          state.editing = { id: o.id, revision: o.revision, state: o.state };
+          el('officeCreate').querySelector('summary').textContent = '编辑办公室：' + o.title;
           const f = el('officeRoomForm');
           f.elements.projectId.value = o.projectId ?? '';
           f.elements.title.value = o.title;
@@ -627,6 +882,10 @@
           el('officeCreate').scrollIntoView();
         })
       );
+    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), state.data.characters?.roles.map(r => [r.id, r.name])]);
+    if (state.deskSnapshot !== deskSnapshot) {
+      state.deskSnapshot = deskSnapshot;
+      const focusedSeat = document.activeElement?.closest('[data-seat]')?.dataset.seat;
     const desks = el('officeDesks');
     desks.replaceChildren();
     for (const seat of data.seats.filter((s) => s.enabled)) {
@@ -678,6 +937,10 @@
       desks.append(node);
     }
     if(!data.seats.some(s=>s.enabled))desks.append(make('p','这是一个空办公室，可以随时邀请角色加入。'));
+      if (focusedSeat) [...desks.children].find(n => n.dataset.seat === focusedSeat)?.focus({preventScroll: true});
+    }
+    layoutScene(data.seats.filter(s => s.enabled).length);
+    if (state.scene.autoFit) requestAnimationFrame(fitScene);
     const items = el('officeItems');
     items.replaceChildren();
     for (const item of data.items) {
@@ -711,7 +974,7 @@
       if (!['completed', 'cancelled'].includes(item.status))
         n.append(
           button('用户取消此工作项', async () => {
-            if (!window.confirm('取消此工作项并撤销旧租约？历史证据仍保留。')) return;
+            if (!(await confirmAction('取消此工作项并撤销旧租约？历史证据仍保留。'))) return;
             await api('item/cancel', {
               itemId: item.id,
               expectedRevision: item.revision,
@@ -748,8 +1011,7 @@
     renderEvents();
   }
   function showSeat(seat) {
-    const detail = el('officeDetail');
-    detail.hidden = false;
+    const detail = openOfficeDetail();
     detail.replaceChildren(
       make('h3', seat.label),
       make('p', `${characterForSeat(seat)?.name??seat.name} · ${roles[seat.role]??seat.role}`)
@@ -775,8 +1037,7 @@
     const generation = state.generation;
     const r = await api('material', { materialId: id, number });
     if (generation !== state.generation || !state.logged) return;
-    const n = el('officeDetail');
-    n.hidden = false;
+    const n = openOfficeDetail();
     n.replaceChildren(
       make('h3', r.manifest.label),
       make('p', `第 ${number + 1} / ${r.manifest.chunks} 段 · 用户观察读取，不替 agent 确认已读`),
@@ -825,8 +1086,7 @@
     renderOffice();
   }
   function showDetail(title, data) {
-    const n = el('officeDetail');
-    n.hidden = false;
+    const n = openOfficeDetail();
     n.replaceChildren(make('h3', title), make('pre', JSON.stringify(data, null, 2)));
   }
   function mergeRecords(previous, incoming) {
@@ -878,7 +1138,7 @@
     const svg = el('officeWires');
     svg.replaceChildren();
     const ns = 'http://www.w3.org/2000/svg',
-      stage = el('officeStage').getBoundingClientRect();
+      stage = el('officeScene').getBoundingClientRect(), scale = state.scene.scale;
     for (const e of events.slice(-8)) {
       const from = [...el('officeDesks').children].find((n) => n.dataset.seat === e.seat_id || n.dataset.role === (e.body.sender??e.actor?.roleId)),
         to = [...el('officeDesks').children].find((n) => n.dataset.seat === e.body.recipient || n.dataset.role === e.body.recipient);
@@ -886,10 +1146,10 @@
       if (!from || !to) continue;
       const a = from.getBoundingClientRect(),
         b = to.getBoundingClientRect(),
-        x = a.left + a.width / 2 - stage.left,
-        y = a.top - stage.top,
-        xx = b.left + b.width / 2 - stage.left,
-        yy = b.top - stage.top;
+        x = (a.left + a.width / 2 - stage.left) / scale,
+        y = (a.top - stage.top) / scale,
+        xx = (b.left + b.width / 2 - stage.left) / scale,
+        yy = (b.top - stage.top) / scale;
       const path = document.createElementNS(ns, 'path');
       path.setAttribute('d', `M ${x} ${y} C ${x} ${y - 35}, ${xx} ${yy - 35}, ${xx} ${yy}`);
       svg.append(path);
@@ -935,7 +1195,7 @@
           // A manual refresh may have completed while this poll was in flight.
           // Never replace it with a stale response, or erase profile form edits.
           if (state.data !== owner) { schedule(); return; }
-          const changed = data.characters && !data.characters.unchanged && !state.roleEditing;
+          const changed = data.characters && !data.characters.unchanged;
           if (!changed) data.characters = owner?.characters;
           state.data = data;
           if (changed) { renderCharacters(data.characters); refreshSeatChoices(); }
@@ -1032,10 +1292,11 @@
       title: data.get('title'),
       goal: data.get('goal'),
       expectedRevision: state.editing?.revision ?? 0,
-      state: 'active',
+      state: state.editing?.state ?? 'active',
       seats
     });
     state.editing = null;
+    el('officeCreate').querySelector('summary').textContent = '＋ 创建空办公室';
     el('officeRoomForm').reset();
     el('officeSeatRows').replaceChildren();
     await refresh();
@@ -1043,14 +1304,10 @@
     notice('办公室已保存。如何使用这个空间由你和参与者决定。');
   });
   el('officeAddSeat').onclick = () => addSeat();
-  el('officeRoleRefresh').onclick = () => run(() => refresh());
+  el('officeRoleRefresh').onclick = () => run(() => refresh(), el('officeRoleRefresh'));
   submit('officeRoleLink', async data => {
     await api('role/link', {sender:data.get('sender'),recipient:data.get('recipient'),enabled:data.get('enabled')==='true'});
     notice('通信权限已保存；记忆与文件权限不会扩大。');
-  });
-  el('officeCharacters').addEventListener('input',()=>{
-    if (!state.roleEditing) notice('正在编辑角色，已暂停角色列表自动更新。保存或点击“刷新角色”后继续同步。');
-    state.roleEditing=true;
   });
   el('officeRefresh').onclick = () =>
     run(async () => {
@@ -1059,6 +1316,11 @@
     });
   el('officeLogout').onclick = () =>
     run(async () => {
+      if (state.containerDirty && !(await confirmAction('容器有尚未保存的修改，仍要退出管理？'))) return;
+      if (!(await closeRoleInspector())) return;
+      await closeOfficeDetail(true);
+      state.containerDirty = false;
+      setExpanded(null);
       state.authEpoch++;
       await api('logout');
       state.generation++;
@@ -1083,5 +1345,5 @@
       await refresh();
       schedule();
     })
-    .catch(() => {});
+    .catch(() => {el('officeSetup').open = true;});
 })();
