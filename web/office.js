@@ -29,9 +29,10 @@
     roleEditing: false,
     renderedFacilities: null,
     roleQuery: '', roleFilter: 'all', roleZoom: 100, roomQuery: '',
-    roleDraft: null, expanded: null,
+    roleDraft: null, expanded: null, appView: 'officeRooms', roomTab: 'officeCanvas',
     scene: { scale: 1, x: 0, y: 0, autoFit: true, room: null }
   };
+  const scenePlayer = new window.MindPondOfficeScene.Scene(el('officeScene'),el('officeWires'),el('officeSceneStatus'),()=>state.scene.scale);
   const officeStates = {
     active: '开放',
     paused: '已暂停',
@@ -58,7 +59,7 @@
     submitted: '等待验收',
     blocked: '条件不足'
   };
-  const kinds = {
+  const kinds = {message:'消息',message_read:'阅读消息',message_archive:'归档消息',container:'更新容器',
     inform: '通知',
     request: '请求答复',
     reply: '回复',
@@ -80,7 +81,10 @@
     item_transfer_reject: '拒绝移交',
     item_cancel: '取消工作项'
   };
+  let noticeTimer;
   const notice = (text, error = false) => {
+    clearTimeout(noticeTimer);
+    if(!error)noticeTimer=setTimeout(()=>{el('officeNotice').hidden=true;},5000);
     el('officeNotice').hidden = false;
     el('officeNotice').textContent = text;
     el('officeNotice').className = error ? 'is-error' : '';
@@ -95,12 +99,18 @@
       body: JSON.stringify(body)
     });
     const data = await r.json();
-    if (!r.ok) throw Error(data.code === 'stale_version' ? '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。' : data.error ?? '操作失败');
+    if (!r.ok) throw Error(data.code === 'stale_version'
+      ? route.endsWith('/delete') ? '资料已被其他操作更新或删除。请重新打开角色或办公室，核对最新内容后再决定是否删除。' : '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。'
+      : data.error ?? '操作失败');
     return data;
   }
-  function confirmAction(message) {
+  function confirmAction(message, {destructive=false,title='确认操作'} = {}) {
     const dialog = el('officeConfirm');
     if (dialog.open) return Promise.resolve(false);
+    el('officeConfirmTitle').textContent=title;
+    const accept=dialog.querySelector('button[value="confirm"]');
+    accept.textContent=destructive?'确认永久删除':'确认';
+    accept.className=destructive?'office-danger':'office-primary';
     el('officeConfirmText').textContent = message;dialog.returnValue = '';
     return new Promise(resolve => {
       dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), {once: true});
@@ -294,7 +304,9 @@
     state.logged = true;
     el('officeLogin').hidden = true;
     el('officeSettings').hidden = false;
-    if (!state.initializedView) {el('officeSetup').open = !state.data.agents.length;state.initializedView = true;}
+    state.initializedView = true;
+    el('officeShellStatus').textContent='管理已连接';
+    el('officeNavRoomCount').textContent=String(state.data.offices.length);
     el('officeLoginStatus').textContent = '已登录用户管理';
     el('officeEndpoint').elements.mcpUrl.value = state.data.settings.mcpUrl ?? '';
     el('officeInstance').textContent =
@@ -351,6 +363,10 @@
     }
     if (!state.data.agents.length)
       box.append(make('p', '还没有宿主连接。填写名称、账户和宿主即可登记。'));
+    if (state.office && !state.data.offices.some(room=>room.id===state.office.office.id)) {
+      await clearDeletedRoom(state.office.office.id);
+      notice('当前办公室已被删除。');
+    }
     renderRoomChoices();
     refreshSeatChoices();
     renderProjects();
@@ -358,6 +374,7 @@
   }
   function renderRoomChoices() {
     const box = el('officeRoomList'); box.replaceChildren();
+    el('officeNavRoomCount').textContent=String(state.data?.offices.length??0);
     const rooms = state.data?.offices ?? [], query = state.roomQuery.trim().toLocaleLowerCase();
     const matches = rooms.filter(room => !query || [room.title, room.goal, room.id].join(' ').toLocaleLowerCase().includes(query));
     for (const room of matches) {
@@ -393,6 +410,7 @@
     const pending = el('officeApplications'), list = el('officeCharacterList');
     pending.replaceChildren(); list.replaceChildren();
     el('officePendingCount').textContent = data.pending.length;
+    el('officeNavPending').textContent=String(data.pending.length);el('officeNavPending').hidden=!data.pending.length;
     for (const app of data.pending) {
       const card = button('', () => openRoleInspector(app, true));
       card.className = 'office-application-card';
@@ -472,6 +490,42 @@
     el('officeRoleZoomIn').disabled = state.roleZoom >= 140;
     try { localStorage.setItem('mindpond.office.roleZoom', String(state.roleZoom)); } catch {}
   }
+  async function deleteCharacter(record) {
+    const draft=state.roleDraft, epoch=state.authEpoch;
+    if (!draft || draft.saving) return;
+    if (!(await confirmAction(`永久删除角色「${record.name}」？这会删除角色资料、会话绑定和角色收发的私信，撤销所有工位权限，并取消该角色参与的未完成任务。办公室历史材料与操作审计保留。删除后无法恢复。`,{destructive:true,title:'永久删除角色'}))) return;
+    if (epoch!==state.authEpoch || !state.logged || state.roleDraft!==draft) return;
+    draft.saving=true;
+    const fields=[...el('officeRoleInspectorBody').querySelectorAll('input,textarea,button')];
+    fields.forEach(n=>n.disabled=true);el('officeRoleInspectorClose').disabled=true;
+    try {
+      await api('role/delete',{id:record.id,expectedRevision:record.revision});
+      if (epoch!==state.authEpoch) return;
+      if (state.roleDraft===draft) await closeRoleInspector(true);
+      await refresh();await updateOffice();
+      notice('角色已永久删除；原会话已失去角色权限。');
+    } finally {draft.saving=false;fields.forEach(n=>n.disabled=false);el('officeRoleInspectorClose').disabled=false;}
+  }
+  async function deleteRoom(record) {
+    const epoch=state.authEpoch;
+    if (!(await confirmAction(`永久删除办公室「${record.title}」？该办公室的消息、文本材料、容器、任务及历史记录会一并删除，所有工位访问立即失效。角色本身、其他办公室和个人记忆保留。此操作无法撤销。`,{destructive:true,title:'永久删除办公室'}))) return;
+    if (epoch!==state.authEpoch || !state.logged) return;
+    await api('office/delete',{id:record.id,expectedRevision:record.revision});
+    if (epoch!==state.authEpoch) return;
+    await clearDeletedRoom(record.id);
+    if (state.editing?.id===record.id) el('officeCancelEdit').onclick();
+    await refresh();notice('办公室及其中的内容已永久删除。');
+  }
+  async function clearDeletedRoom(id) {
+    if (state.office?.office.id===id) {
+      replayController.close();state.replayIndexRoom=null;
+      scenePlayer.reset();
+      state.generation++;state.office=null;state.loading=false;state.opening=false;
+      state.events=[];state.cursor=0;state.renderedFacilities=null;state.deskSnapshot=null;
+      if (state.expanded==='officeCanvas') setExpanded(null);
+      await closeOfficeDetail(true);el('officeView').hidden=true;el('officeWorkspaceEmpty').hidden=false;
+    }
+  }
   async function closeRoleInspector(force = false) {
     if (!force && state.roleDraft?.saving) return false;
     if (!force && state.roleDraft?.dirty && !(await confirmAction('有尚未保存的角色修改，放弃修改并关闭？'))) return false;
@@ -496,7 +550,7 @@
     else {
       info.append(make('p', '资料版本 ' + record.revision));
       const count = state.data.characters.mappings.filter(m => m.role_id === record.id).length;
-      info.append(make('p', `已安排 ${count} 个工位`), button('前往办公室', async () => {if (await closeRoleInspector()) {setExpanded(null);el('officeRooms').scrollIntoView({block: 'start'});}}));
+      info.append(make('p', `已安排 ${count} 个工位`), button('前往办公室', async () => {if (await closeRoleInspector()) {setExpanded(null);showAppView('officeRooms');}}));
     }
     body.append(info);
     form.addEventListener('input', () => {draft.dirty = true;state.roleEditing = true;save.textContent = application ? '批准这个角色' : '保存修改';});
@@ -525,12 +579,16 @@
       if (!(await confirmAction(application ? '确认拒绝这份申请？' : record.state === 'active' ? '确认停用这个角色？现有会话将失去角色权限。' : '确认重新启用这个角色？'))) return;
       await saveProfile(application ? 'reject' : record.state === 'active' ? 'disabled' : 'active');
     });secondary.className = 'office-danger';actions.append(secondary);form.append(actions);
+    if (!application) {
+      const remove=button('永久删除角色',()=>deleteCharacter(record));remove.className='office-danger';
+      actions.append(remove);
+    }
     dialog.showModal();name.focus();
   }
   function setExpanded(id) {
     if (state.expanded === id) id = null;
     const wasExpanded = state.expanded;
-    if (state.expanded) {el(state.expanded).classList.remove('is-expanded');el(state.expanded).removeAttribute('role');el(state.expanded).removeAttribute('aria-modal');}
+    if (state.expanded) {el(state.expanded).classList.remove('is-expanded');if(state.expanded==='officeCanvas')el(state.expanded).setAttribute('role','tabpanel');else el(state.expanded).removeAttribute('role');el(state.expanded).removeAttribute('aria-modal');}
     if (!state.expanded && id) state.previousOverflow = document.body.style.overflow;
     state.expanded = id;
     document.body.style.overflow = id ? 'hidden' : state.previousOverflow ?? '';
@@ -540,12 +598,19 @@
     el('officeSceneExpand').textContent = id === 'officeCanvas' ? '收起场景' : '展开场景';
     el('officeRoleExpand').setAttribute('aria-expanded', String(id === 'officeRoster'));
     el('officeSceneExpand').setAttribute('aria-expanded', String(id === 'officeCanvas'));
-    if (state.scene.autoFit) requestAnimationFrame(fitScene);
+    if (state.scene.autoFit) requestAnimationFrame(()=>fitScene());
   }
   function layoutScene(count) {
-    const cols = Math.max(1, Math.min(7, Math.ceil(Math.sqrt(count || 1))));
-    el('officeDesks').style.gridTemplateColumns = `repeat(${cols}, 240px)`;
-    el('officeScene').style.width = (cols * 262 + 38) + 'px';
+    const viewport=el('officeStage');
+    let cols=1,best=0;
+    for(let candidate=1;candidate<=Math.min(count||1,7);candidate++){
+      const score=Math.min((Math.max(viewport.clientWidth,300)-40)/(candidate*312+100),(Math.max(viewport.clientHeight,260)-40)/(Math.ceil((count||1)/candidate)*308+207));
+      if(score>best){best=score;cols=candidate;}
+    }
+    const columns=`repeat(${cols}, 280px)`;
+    if(el('officeDesks').style.gridTemplateColumns!==columns)scenePlayer.stop();
+    el('officeDesks').style.gridTemplateColumns = columns;
+    el('officeScene').style.width = (cols * 312 + 100) + 'px';
   }
   function applyScene() {
     const {x, y, scale} = state.scene;
@@ -554,11 +619,12 @@
     el('officeSceneZoomOut').disabled = scale <= .1;
     el('officeSceneZoomIn').disabled = scale >= 2;
   }
-  function fitScene() {
+  function fitScene(all = true) {
     const viewport = el('officeStage'), world = el('officeScene');
     if (!viewport.clientWidth || !viewport.clientHeight) return;
-    const scale = Math.max(.1, Math.min(1.25, (viewport.clientWidth - 40) / world.offsetWidth, (viewport.clientHeight - 40) / world.offsetHeight));
-    Object.assign(state.scene, {scale, x: (viewport.clientWidth - world.offsetWidth * scale) / 2, y: (viewport.clientHeight - world.offsetHeight * scale) / 2, autoFit: true});
+    const scale = Math.max(all ? .1 : .8, Math.min(1.25, (viewport.clientWidth - 40) / world.offsetWidth, (viewport.clientHeight - 40) / world.offsetHeight));
+    const x=(viewport.clientWidth-world.offsetWidth*scale)/2,y=(viewport.clientHeight-world.offsetHeight*scale)/2;
+    Object.assign(state.scene, {scale, x:all?x:Math.max(20,x), y:all?y:Math.max(20,y), autoFit: true});
     applyScene();
   }
   function zoomScene(scale, point) {
@@ -568,11 +634,54 @@
     Object.assign(state.scene, {x: cx - (cx - state.scene.x) * ratio, y: cy - (cy - state.scene.y) * ratio, scale: next, autoFit: false});
     applyScene();
   }
-  document.querySelector('.office-header nav').addEventListener('click', e => {
-    const anchor = e.target.closest('a[href^="#"]');
-    if (!anchor) return;
-    const target = document.getElementById(anchor.hash.slice(1));if (target?.tagName === 'DETAILS') target.open = true;
+  // Application navigation keeps management views separate from the room workspace.
+  const appViews = {officeRooms:'办公室',officeCharacters:'角色与申请',officeProjects:'协作项目',officeAgents:'宿主连接',officeSetup:'连接设置'};
+  function showAppView(id, updateHash = true) {
+    if (!Object.hasOwn(appViews,id)) id='officeRooms';
+    if(state.expanded)setExpanded(null);
+    state.appView=id;
+    for(const panel of document.querySelectorAll('[data-app-view]'))panel.hidden=panel.dataset.appView!==id;
+    for(const link of document.querySelectorAll('[data-app-route]')){
+      if(link.dataset.appRoute===id)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');
+    }
+    el('officePageTitle').textContent=appViews[id];
+    if(updateHash && location.hash!=='#'+id)history.pushState(null,'','#'+id);
+    if(id!=='officeRooms'){if(state.opening){state.generation++;state.opening=false;}replayController.pause();scenePlayer.stop();}
+    else if(state.office && state.roomTab==='officeCanvas')requestAnimationFrame(()=>{layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
+    el('officeWorkspaceEmpty').hidden=Boolean(state.office);
+  }
+  function setRoomTab(id, focus = false) {
+    const tabs=[...document.querySelectorAll('[data-room-tab]')];
+    if(!tabs.some(tab=>tab.dataset.roomTab===id))return;
+    state.roomTab=id;
+    for(const tab of tabs){const selected=tab.dataset.roomTab===id;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;if(selected&&focus)tab.focus();}
+    for(const panel of document.querySelectorAll('[data-room-panel]'))panel.hidden=panel.id!==id;
+    if(id!=='officeCanvas'){replayController.pause();scenePlayer.stop();}
+    else requestAnimationFrame(()=>{layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
+  }
+  function syncAppRoute(){showAppView(location.hash.slice(1)||'officeRooms',false);}
+  document.querySelector('.office-sidebar nav').addEventListener('click',event=>{
+    const link=event.target.closest('[data-app-route]');if(!link)return;
+    event.preventDefault();showAppView(link.dataset.appRoute);
   });
+  window.addEventListener('popstate',syncAppRoute);
+  window.addEventListener('hashchange',syncAppRoute);
+  document.querySelector('.office-workspace-tabs').addEventListener('click',event=>{const tab=event.target.closest('[data-room-tab]');if(tab)setRoomTab(tab.dataset.roomTab);});
+  document.querySelector('.office-workspace-tabs').addEventListener('keydown',event=>{
+    const tab=event.target.closest('[data-room-tab]');if(!tab||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    const tabs=[...document.querySelectorAll('[data-room-tab]')],index=tabs.indexOf(tab);
+    const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
+    event.preventDefault();setRoomTab(tabs[next].dataset.roomTab,true);
+  });
+  el('officeReplayOpen').onclick=()=>{setRoomTab('officeCanvas');el('officeReplay').open=true;el('officeReplay').scrollIntoView({block:'nearest'});};
+  function createOffice(){if(!state.logged){showAppView('officeSetup');el('officeLogin').elements.operatorKey.focus();return;}el('officeCreate').open=true;}
+  el('officeCreateButton').onclick=createOffice;el('officeEmptyCreate').onclick=createOffice;
+  el('officeCreate').addEventListener('toggle',()=>{
+    const dialog=el('officeRoomEditor');
+    if(el('officeCreate').open&&!dialog.open)dialog.showModal();else if(!el('officeCreate').open&&dialog.open)dialog.close();
+  });
+  el('officeRoomEditorClose').onclick=()=>el('officeCancelEdit').onclick();
+  el('officeRoomEditor').addEventListener('cancel',event=>{event.preventDefault();el('officeCancelEdit').onclick();});
   el('officeRoomSearch').addEventListener('input', e => {state.roomQuery = e.target.value;renderRoomChoices();});
   el('officeRoleSearch').addEventListener('input', e => {state.roleQuery = e.target.value;renderRoleDirectory();});
   el('officeRoleFilter').addEventListener('change', e => {state.roleFilter = e.target.value;renderRoleDirectory();});
@@ -584,6 +693,65 @@
   el('officeRoleInspectorClose').onclick = () => closeRoleInspector();
   el('officeRoleInspector').addEventListener('cancel', e => {e.preventDefault();void closeRoleInspector();});
   el('officeSceneExpand').onclick = () => setExpanded('officeCanvas');
+  function replayName(key){return replayController.meta?.participants.find(p=>p.key===key)?.name??(key==='system'?'用户':key?.replace(/^(role|seat):/,'')??'用户');}
+  function prepareReplayParticipants(participants){
+    const desks=el('officeDesks');
+    for(const p of participants){let node=[...desks.children].find(n=>(p.roleId&&n.dataset.role===p.roleId)||(p.seatId&&n.dataset.seat===p.seatId));
+      if(!node){node=button('',()=>showDetail('历史参与者',{name:p.name,roleId:p.roleId,seatId:p.seatId,historical:true}));node.className='office-desk replay-ghost';node.dataset.seat=p.seatId??p.key;node.dataset.role=p.roleId??'';const person=make('span');person.className='office-person unknown';const caption=make('span');caption.className='office-desk-caption';caption.append(make('strong',p.name),make('small','历史参与者 · 当前不在此工位'));node.append(window.MindPondOfficeScene.props(person),caption);desks.append(node);}
+      node.dataset.replayKey=p.key;
+    }
+    layoutScene(desks.querySelectorAll('.office-desk').length);if(state.scene.autoFit)requestAnimationFrame(()=>fitScene());
+  }
+  const replayController=new window.MindPondOfficeReplay.Player({scene:scenePlayer,fetchPage:args=>api('replay',args),prepare:prepareReplayParticipants,restore:()=>{if(state.office){state.deskSnapshot=null;renderOffice();}},view:{
+    change(player){
+      el('officeReplay').classList.toggle('is-active',player.active);el('officeReplayTransport').hidden=!player.active&&!player.loading;el('officeScenePreview').disabled=player.active||player.loading;el('officeActionPreview').disabled=player.active||player.loading;
+      el('officeReplayPlay').disabled=!player.active||player.loading||player.playing;el('officeReplayPlay').textContent=player.paused?'继续':player.completed?'重新播放':'播放';
+      el('officeReplayPause').disabled=!player.playing;el('officeReplayLoad').disabled=player.loading;el('officeReplayLive').disabled=!player.active&&!player.loading;
+      el('officeReplayPrevious').disabled=!player.active||player.index===0||player.loading;el('officeReplayNext').disabled=!player.active||player.index>=player.events.length-1||player.loading;
+      el('officeReplaySeek').disabled=!player.active||player.loading;
+      if(player.loading)el('officeReplayProgress').textContent='正在读取历史事件…';
+      else if(player.active)el('officeReplayProgress').textContent=`历史回放 · ${player.index+1} / ${player.events.length} · ${player.completed?'播放完毕':player.playing?'播放中':player.paused?'已暂停':'已就绪'} · ${player.speed}×`;
+      else {el('officeReplayProgress').textContent='实时观察中，选择区间后载入回放。';el('officeReplayCurrent').hidden=true;el('officeReplayEvents').replaceChildren();if(!player.events.length){el('officeReplayRoles').replaceChildren(make('p','载入区间后，可分别设置参与角色的时长。'));}}
+    },
+    loading(done,total){el('officeReplayProgress').textContent=`正在读取历史事件：${done} / ${total}`;},
+    loaded(meta,player){
+      const rows=el('officeReplayRoles');rows.replaceChildren();
+      for(const p of [...meta.participants,{key:'system',name:'用户 / 系统事件'}]){const label=make('label',p.name+' · 每件事（秒）'),input=make('input');input.type='number';input.min='.5';input.max='60';input.step='.5';input.value=player.durations.has(p.key)?String(player.durations.get(p.key)):'';input.placeholder=String(player.defaultSeconds)+'（默认）';input.setAttribute('aria-label',p.name+'每件事展示秒数');input.onchange=()=>{if(input.value===''){player.durations.delete(p.key);}else if(input.reportValidity())player.setDuration(p.key,input.valueAsNumber);};label.append(input);rows.append(label);}
+      el('officeReplaySeek').max=String(player.events.length-1);el('officeReplaySeek').value='0';
+    },
+    select(event,index,total,player){
+      el('officeReplayNow').textContent=`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`;
+      el('officeReplaySeek').value=String(index);const current=el('officeReplayCurrent');current.hidden=false;current.replaceChildren(make('h4',`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`),make('small',new Date(event.ts).toLocaleString()));
+      const body=event.body;current.append(make('p',body.body??body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
+      if(body.why)current.append(make('p','原因：'+body.why));if(event.recipientKey)current.append(make('p','发送给：'+replayName(event.recipientKey)));
+      current.append(button(event.detailAvailable?'查看完整事件':'查看事件详情',()=>event.detailAvailable?showRecord({eventSeq:event.seq},'事件 #'+event.seq):showDetail('事件 #'+event.seq,event)));
+      for(const n of el('officeDesks').children)n.classList.toggle('replay-selected',n.dataset.replayKey===event.actorKey);
+      const list=el('officeReplayEvents');list.replaceChildren();for(let i=Math.max(0,index-3);i<Math.min(total,index+5);i++){const e=player.events[i],jump=button(`#${e.seq} · ${replayName(e.actorKey)} · ${kinds[e.kind]??e.kind}`,()=>player.seek(i));jump.setAttribute('aria-current',String(i===index));list.append(jump);}
+    },
+    progress(progress,player){if(player.playing)el('officeReplayProgress').textContent=`历史回放 · ${player.index+1} / ${player.events.length} · 当前事件 ${Math.round(progress*100)}% · ${player.speed}×`;},
+    error(error){notice('回放暂停：'+error.message,true);}
+  }});
+  scenePlayer.onReplayVisibility=()=>replayController.pause();
+  async function refreshReplayIndex(){
+    if(!state.office||replayController.active||replayController.loading)return;const room=state.office.office.id,generation=state.generation,version=state.replayIndexVersion=(state.replayIndexVersion??0)+1;
+    const meta=await api('replay',{action:'index',officeId:room});if(version!==state.replayIndexVersion||generation!==state.generation||state.office?.office.id!==room)return;
+    el('officeReplayBounds').textContent=meta.totalEvents?`共 ${meta.totalEvents} 个事件 · #${meta.firstSeq} 至 #${meta.lastSeq}`:'这间办公室还没有事件。';
+    for(const id of ['officeReplayFrom','officeReplayTo']){el(id).min=String(meta.firstSeq??1);el(id).max=String(meta.lastSeq??1);}
+    if(state.replayIndexRoom!==room){el('officeReplayFrom').value=meta.firstSeq??'';el('officeReplayTo').value=meta.lastSeq??'';state.replayIndexRoom=room;}
+  }
+  function setReplayBoundary(which,seq){setRoomTab('officeCanvas');el('officeReplay').open=true;el(which==='from'?'officeReplayFrom':'officeReplayTo').value=String(seq);el('officeReplay').scrollIntoView({block:'start'});}
+  el('officeReplay').addEventListener('toggle',()=>{if(el('officeReplay').open)void run(refreshReplayIndex);});
+  el('officeReplayRange').onsubmit=event=>{event.preventDefault();void run(async()=>{if(!state.office)return;await replayController.load(state.office.office.id,el('officeReplayFrom').valueAsNumber,el('officeReplayTo').valueAsNumber);});};
+  el('officeReplayPlay').onclick=()=>{replayController.play();if(replayController.active){el('officeReplay').open=false;el('officeStage').scrollIntoView({block:'center',behavior:'instant'});}};el('officeReplayPause').onclick=()=>replayController.pause();
+  el('officeReplayPrevious').onclick=()=>replayController.seek(replayController.index-1);el('officeReplayNext').onclick=()=>replayController.seek(replayController.index+1);
+  el('officeReplayInspect').onclick=()=>{const e=replayController.events[replayController.index];if(e)void run(()=>e.detailAvailable?showRecord({eventSeq:e.seq},'事件 #'+e.seq):showDetail('事件 #'+e.seq,e));};
+  el('officeReplaySeek').oninput=()=>replayController.seek(Number(el('officeReplaySeek').value));
+  el('officeReplayLive').onclick=()=>{replayController.close();el('officeReplayCurrent').hidden=true;el('officeReplayEvents').replaceChildren();void run(()=>updateOffice());};
+  el('officeReplayDuration').onchange=()=>{if(el('officeReplayDuration').reportValidity()){replayController.setDuration(null,el('officeReplayDuration').valueAsNumber);for(const input of el('officeReplayRoles').querySelectorAll('input'))input.placeholder=String(replayController.defaultSeconds)+'（默认）';}};
+  el('officeReplaySpeed').onchange=()=>{replayController.setSpeed(Number(el('officeReplaySpeed').value));replayController.view.change(replayController);};
+  el('officeScenePreview').onclick = () => scenePlayer.demo(el('officeActionPreview').value);
+  el('officeSceneMotion').onclick = () => {const on=!scenePlayer.motion;scenePlayer.setMotion(on);el('officeSceneMotion').setAttribute('aria-pressed',String(!on));el('officeSceneMotion').textContent=on?'暂停动态':'开启动效';};
+  el('officeSceneList').onclick = () => {const list=el('officeCanvas').classList.toggle('is-list');el('officeSceneList').setAttribute('aria-pressed',String(list));el('officeSceneList').textContent=list?'场景视图':'列表视图';scenePlayer.list=list;scenePlayer.stop();if(!list)requestAnimationFrame(()=>fitScene());};
   el('officeSceneFit').onclick = fitScene;
   el('officeSceneZoomOut').onclick = () => zoomScene(state.scene.scale / 1.2);
   el('officeSceneZoomIn').onclick = () => zoomScene(state.scene.scale * 1.2);
@@ -639,7 +807,7 @@
     }
   });
   window.addEventListener('beforeunload', e => {if (state.roleDraft?.dirty || state.containerDirty) {e.preventDefault();e.returnValue = '';}});
-  new ResizeObserver(() => {if (state.scene.autoFit) requestAnimationFrame(fitScene);}).observe(stage);
+  new ResizeObserver(() => {if (state.scene.autoFit) requestAnimationFrame(()=>fitScene());}).observe(stage);
   function renderProjects() {
     const members = el('officeProjectMembers'),
       selected = [...members.selectedOptions].map((o) => o.value);
@@ -723,6 +891,7 @@
   async function openOffice(id) {
     if (state.containerDirty && !(await confirmAction('容器有尚未保存的修改，仍要切换办公室？'))) return;
     state.containerDirty = false;
+    replayController.close();state.replayIndexRoom=null;
     const generation = ++state.generation;
     state.opening = true;
     state.loading = false;
@@ -730,6 +899,7 @@
     try { first = await api('view', { officeId: id }); }
     finally { if (generation === state.generation) state.opening = false; }
     if (generation !== state.generation || !state.logged) return;
+    scenePlayer.reset();
     state.office = first;
     state.scene.autoFit = true;
     state.scene.room = id;
@@ -742,17 +912,14 @@
     await closeOfficeDetail(true);
     renderOffice();
     el('officeView').hidden = false;
+    el('officeWorkspaceEmpty').hidden=true;
+    showAppView('officeRooms');setRoomTab('officeCanvas');
     renderRoomChoices();
-    requestAnimationFrame(fitScene);
-    el('officeView').scrollIntoView({
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        ? 'instant'
-        : 'smooth',
-      block: 'start'
-    });
+    requestAnimationFrame(()=>fitScene());
+
   }
   function seatName(id) {
-    return state.office?.seats.find((s) => s.id === id)?.label ?? id ?? '用户';
+    return state.office?.seats.find((s) => s.id === id)?.label ?? state.data?.characters?.roles.find(r=>r.id===id)?.name ?? id ?? '用户';
   }
   function fileCondition(seat) {
     const observation = state.office?.access?.find((a) => a.seatId === seat.id);
@@ -827,6 +994,7 @@
   }
   el('officeAddContainer').onclick=()=>{if(state.office)editContainer({id:'container-'+uuid(),title:'',content:'',revision:0});};
   function renderOffice() {
+    if(replayController.active)return;
     const data = state.office,
       o = data.office;
     el('officeTitle').textContent = o.title;
@@ -879,20 +1047,24 @@
           el('officeSeatRows').replaceChildren();
           for (const seat of data.seats.filter((s) => s.enabled)) addSeat(seat);
           el('officeCreate').open = true;
-          el('officeCreate').scrollIntoView();
+          document.querySelector('.office-room-actions').open=false;
         })
       );
-    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), state.data.characters?.roles.map(r => [r.id, r.name])]);
+    const removeOffice=button('永久删除办公室',()=>deleteRoom(o));removeOffice.className='office-danger';
+    controls.append(removeOffice);
+    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, state.data.characters?.roles.map(r => [r.id, r.name])]);
     if (state.deskSnapshot !== deskSnapshot) {
       state.deskSnapshot = deskSnapshot;
       const focusedSeat = document.activeElement?.closest('[data-seat]')?.dataset.seat;
     const desks = el('officeDesks');
+    scenePlayer.stop();
     desks.replaceChildren();
     for (const seat of data.seats.filter((s) => s.enabled)) {
       const node = button('', () => showSeat(seat));
       node.className = 'office-desk';
       node.dataset.seat = seat.id;
       node.dataset.role = characterForSeat(seat)?.id??'';
+      node.dataset.replayKey=node.dataset.role?'role:'+node.dataset.role:'seat:'+seat.id;
       const person = make('span');
       const access = fileCondition(seat);
       person.className =
@@ -910,6 +1082,7 @@
       const body = make('span'),
         wait = data.waits.find((w) => w.seat_id === seat.id);
       const task = data.items.find((t) => t.owner === seat.id && t.status === 'claimed');
+      body.className='office-desk-caption';
       const shared = access?.mode === 'shared_worktree';
       body.append(
         make('strong', seat.label),
@@ -933,14 +1106,21 @@
                 : '文件条件待确认'
         )
       );
-      node.append(person, body);
+      const activity=data.facilities?.activity?.find(r=>r.seatId===seat.id);
+      const pending=Number(activity?.pending??0);
+      const station=window.MindPondOfficeScene.props(person);
+      const papers=station.querySelector('.office-paper-stack');
+      papers.style.setProperty('--paper-count',Math.min(12,pending));papers.hidden=!pending;
+      if(pending){papers.textContent=String(pending);body.append(make('small',`待整理消息 ${pending} 条（含已读未归档）`));}
+      if(activity?.waitingUntil>Date.now())body.append(make('small','正在等待消息（等待窗口内）'));
+      node.append(station, body);
       desks.append(node);
     }
     if(!data.seats.some(s=>s.enabled))desks.append(make('p','这是一个空办公室，可以随时邀请角色加入。'));
       if (focusedSeat) [...desks.children].find(n => n.dataset.seat === focusedSeat)?.focus({preventScroll: true});
     }
     layoutScene(data.seats.filter(s => s.enabled).length);
-    if (state.scene.autoFit) requestAnimationFrame(fitScene);
+    if (state.scene.autoFit) requestAnimationFrame(()=>fitScene());
     const items = el('officeItems');
     items.replaceChildren();
     for (const item of data.items) {
@@ -1008,6 +1188,8 @@
     if (state.itemsCursor) items.append(button('读取更多工作项', () => more('items')));
     if (state.materialsCursor)
       materials.append(button('读取更多材料清单', () => more('materials')));
+    if(state.appView==='officeRooms'&&state.roomTab==='officeCanvas')scenePlayer.syncWaiting((data.facilities?.activity??[]).filter(a=>a.waitingUntil>Date.now()).map(a=>({key:a.roleId?'role:'+a.roleId:'seat:'+a.seatId,until:a.waitingUntil})));
+    if(el('officeReplay').open&&state.replayIndexRoom!==o.id)void run(refreshReplayIndex);
     renderEvents();
   }
   function showSeat(seat) {
@@ -1106,7 +1288,7 @@
       const n = make('article');
       n.className = 'office-event';
       n.append(
-        make('b', `${seatName(e.seat_id)} · ${kinds[e.kind] ?? e.kind}`),
+        make('b', `${seatName(e.seat_id??e.body.sender??e.actor?.roleId)} · ${kinds[e.kind] ?? e.kind}`),
         make('small', ` #${e.seq} / ${new Date(e.ts).toLocaleTimeString()}`)
       );
       const b = e.body;
@@ -1129,46 +1311,25 @@
             : showDetail('事件 #' + e.seq, e)
         )
       );
+      const from=button('设为回放起点',()=>setReplayBoundary('from',e.seq)),to=button('设为回放终点',()=>setReplayBoundary('to',e.seq));from.className=to.className='office-event-replay';n.append(from,to);
       box.append(n);
     }
     if (!state.events.length) box.append(make('p', '等待第一条真实事件。不会播放模拟工作动画。'));
   }
-  function animate(events) {
-    if (document.hidden || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const svg = el('officeWires');
-    svg.replaceChildren();
-    const ns = 'http://www.w3.org/2000/svg',
-      stage = el('officeScene').getBoundingClientRect(), scale = state.scene.scale;
-    for (const e of events.slice(-8)) {
-      const from = [...el('officeDesks').children].find((n) => n.dataset.seat === e.seat_id || n.dataset.role === (e.body.sender??e.actor?.roleId)),
-        to = [...el('officeDesks').children].find((n) => n.dataset.seat === e.body.recipient || n.dataset.role === e.body.recipient);
-      from?.classList.add('is-live');
-      if (!from || !to) continue;
-      const a = from.getBoundingClientRect(),
-        b = to.getBoundingClientRect(),
-        x = (a.left + a.width / 2 - stage.left) / scale,
-        y = (a.top - stage.top) / scale,
-        xx = (b.left + b.width / 2 - stage.left) / scale,
-        yy = (b.top - stage.top) / scale;
-      const path = document.createElementNS(ns, 'path');
-      path.setAttribute('d', `M ${x} ${y} C ${x} ${y - 35}, ${xx} ${yy - 35}, ${xx} ${yy}`);
-      svg.append(path);
-    }
-    setTimeout(() => svg.replaceChildren(), 2200);
-  }
+  function animate(events) {if(state.appView==='officeRooms'&&state.roomTab==='officeCanvas')scenePlayer.present(events);}
   async function updateOffice() {
-    if (!state.office || state.loading || state.opening) return;
+    if (!state.office || state.loading || state.opening || replayController.active) return;
     const generation = state.generation;
     state.loading = true;
     try {
       const data = await api('view', { officeId: state.office.office.id, afterSeq: state.cursor, facilityRevision:state.office.facilities?.revision,
         itemIds: state.office.items.map(t => t.id), materialIds: state.office.materials.map(m => m.id) });
-      if (generation !== state.generation || !state.logged) return;
+      if (generation !== state.generation || !state.logged || replayController.active) return;
       const isLive = !state.office.hasMore && !data.hasMore;
       const old = state.office;
       state.office = {
         ...data,
-        facilities: data.facilities?.unchanged ? old.facilities : data.facilities,
+        facilities: data.facilities?.unchanged ? {...old.facilities,activity:data.facilities.activity} : data.facilities,
         items: mergeRecords(old.items, data.items),
         materials: mergeRecords(old.materials, data.materials)
       };
@@ -1196,6 +1357,7 @@
           // Never replace it with a stale response, or erase profile form edits.
           if (state.data !== owner) { schedule(); return; }
           const changed = data.characters && !data.characters.unchanged;
+          const changedRooms = Array.isArray(data.offices) && JSON.stringify(data.offices)!==JSON.stringify(owner?.offices);
           if (!changed) data.characters = owner?.characters;
           state.data = data;
           if (changed) { renderCharacters(data.characters); refreshSeatChoices(); }
@@ -1213,6 +1375,11 @@
                         ? '已握手 · 等待 bootstrap'
                         : '待接入';
           }
+          if (state.office && Array.isArray(data.offices) && !data.offices.some(room=>room.id===state.office.office.id)) {
+            await clearDeletedRoom(state.office.office.id);
+            notice('当前办公室已在其他页面被删除。');
+          }
+          if (changedRooms) renderRoomChoices();
           await updateOffice();
           if (state.pollFailed) {
             notice('观察连接已恢复。历史记录已继续同步。');
@@ -1234,10 +1401,10 @@
     });
   }
   submit('officeLogin', async (data) => {
-    await api('login', Object.fromEntries(data));
+    await api('login', {...Object.fromEntries(data),cookiePath:new URL('./api/office-admin',location.href).pathname});
     el('officeLogin').reset();
     await refresh();
-    notice('用户管理已连接。按四步引导完成设置。');
+    notice('用户管理已连接。');
     schedule();
   });
   submit('officeEndpoint', async (data) => {
@@ -1295,7 +1462,7 @@
       state: state.editing?.state ?? 'active',
       seats
     });
-    state.editing = null;
+    state.editing = null;el('officeCreate').open=false;
     el('officeCreate').querySelector('summary').textContent = '＋ 创建空办公室';
     el('officeRoomForm').reset();
     el('officeSeatRows').replaceChildren();
@@ -1323,6 +1490,8 @@
       setExpanded(null);
       state.authEpoch++;
       await api('logout');
+      replayController.close();state.replayIndexRoom=null;
+      scenePlayer.reset();
       state.generation++;
       state.logged = false;
       clearTimeout(state.poll);
@@ -1333,17 +1502,21 @@
       el('officeSettings').hidden = true;
       el('officeView').hidden = true;
       el('officeLoginStatus').textContent = '已退出管理';
+      el('officeShellStatus').textContent='尚未登录管理';el('officeNavRoomCount').textContent='0';el('officeNavPending').hidden=true;el('officeWorkspaceEmpty').hidden=false;
+      el('officeCancelEdit').onclick();showAppView('officeSetup');
       el('officeAgentList').replaceChildren();
       el('officeRoomList').replaceChildren();
       for(const id of ['officeApplications','officeCharacterList','officeRoleMessages','officeRoleLinks','officeRoleEvents'])el(id).replaceChildren();
       notice('已退出管理。');
     });
-  window.addEventListener('pagehide', () => {state.authEpoch++;clearTimeout(state.poll);});
+  window.addEventListener('pagehide', () => {replayController.close();scenePlayer.reset();state.authEpoch++;clearTimeout(state.poll);});
   window.addEventListener('pageshow', event => {if(event.persisted && state.logged)schedule();});
+  syncAppRoute();
   api('state')
     .then(async () => {
       await refresh();
+      if(state.appView==='officeRooms'&&state.data.offices.length)await openOffice(state.data.offices[0].id);
       schedule();
     })
-    .catch(() => {el('officeSetup').open = true;});
+    .catch(() => {el('officeShellStatus').textContent='请先登录管理';showAppView('officeSetup');});
 })();

@@ -132,20 +132,31 @@ try {
     assert.equal(userView.facilities.containers.length, 1);
     assert.equal(userView.facilities.messages.length, 2);
     assert.equal((await (await post('view',{officeId:'empty',facilityRevision:userView.facilities.revision})).json()).facilities.unchanged,true);
-    // The neutral inbox also routes replies to historical office messages.
-    const actorB={v:1 as const,principal:'owner',agentId:'cli',transport:'http-mcp' as const,runtimeId:roleRuntimeId('owner','cli','explicit',rb.roleContext),roleId:rb.roleId,roleBindingId:rb.bindingId,roleBindingEpoch:1,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
-    const contextB=await graph.roles.officeContext(actorB,'empty');
-    const legacy=await graph.offices.exchange({action:'send',workSessionId:contextB.workSessionId,recipient:'a-seat',kind:'inform',body:'Historical office correspondence',key:'legacy'},actorB);
-    const legacyId='office:'+legacy.messageId;
-    assert((await ca('office_receive')).messages.some((m:any)=>m.id===legacyId));
-    const routed=await ca('office_message',{action:'send',replyTo:legacyId,body:'Reply keeps the historical reference',key:'legacy-return'});
-    assert.equal((await cb('office_message',{action:'get',messageId:routed.messageId})).message.replyTo,legacyId);
-    const collected:string[]=[];let cursor={roleAfterSeq:0,officeAfterSeq:0};
+    assert.equal(userView.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,0,'archived mail is not pending');
+    assert.equal(userView.facilities.activity.find((r:any)=>r.roleId===ra.roleId).pending,1,'room-only pending count excludes other correspondence');
+    const actorFor=(r:any)=>({v:1 as const,principal:'owner',agentId:'cli',transport:'http-mcp' as const,runtimeId:roleRuntimeId('owner','cli','explicit',r.roleContext),roleId:r.roleId,roleBindingId:r.bindingId,roleBindingEpoch:1,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+    const roleInput={action:'send',kind:'inform',recipient:rb.roleId,officeId:'empty',body:'A role message must reach the office animation',key:'role-event'};
+    const roleSent=await graph.roles.exchange(roleInput,actorFor(ra));
+    await graph.roles.exchange(roleInput,actorFor(ra));
+    const afterRole=await (await post('view',{officeId:'empty',afterSeq:userView.nextCursor,facilityRevision:userView.facilities.revision})).json();
+    assert.equal(afterRole.events.filter((e:any)=>e.kind==='message'&&e.body.messageId===roleSent.messageId).length,1,'both message interfaces emit one office event with retry deduplication');
+    assert.equal(afterRole.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,1);
+    await graph.roles.exchange({action:'ack',messageId:roleSent.messageId,state:'read',key:'role-read'},actorFor(rb));
+    let afterAck=await (await post('view',{officeId:'empty',afterSeq:afterRole.nextCursor,facilityRevision:afterRole.facilities.revision})).json();
+    assert(afterAck.events.some((e:any)=>e.kind==='message_read'&&e.actor.roleId===rb.roleId));
+    assert.equal(afterAck.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,1,'read mail remains on desk until archived');
+    await cb('office_message',{action:'archive',messageId:roleSent.messageId,key:'remove-from-desk'});
+    afterAck=await (await post('view',{officeId:'empty',afterSeq:afterAck.nextCursor,facilityRevision:afterAck.facilities.revision})).json();
+    assert(afterAck.events.some((e:any)=>e.kind==='message_archive'));
+    assert.equal(afterAck.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,0);
+    // Only the role mailbox is part of the current office UI and message protocol.
+    const collected:string[]=[];let cursor=0;
     for(let n=0;n<30;n++){
-      const page=await ca('office_receive',{includeArchived:true,limit:1,afterSeq:cursor.roleAfterSeq,officeAfterSeq:cursor.officeAfterSeq});
+      const page=await ca('office_receive',{includeArchived:true,limit:1,afterSeq:cursor});
       collected.push(...page.messages.map((m:any)=>m.id));cursor=page.nextCursor;if(!page.hasMore)break;
     }
-    assert(collected.includes(legacyId));assert.equal(new Set(collected).size,collected.length,'mixed-source paging cannot repeat or skip messages');
+    assert(collected.includes(reply.messageId));assert.equal(new Set(collected).size,collected.length,'role mailbox paging must not repeat or skip messages');
+    assert((await raw(a,'office_message',{action:'get',messageId:'office:removed',roleContext:ra.roleContext})).isError);
     assert.equal((await post('office',{id:'empty',title:'Our room',expectedRevision:2,state:'paused'})).status,200);
     assert.equal((await cb('office_material',{action:'get',officeId:'empty',materialId:material.materialId})).chunk.content,'Notes without a task or reviewer.');
     assert((await raw(a,'office_material',{action:'publish',officeId:'empty',title:'Denied',content:'Paused',key:'paused',roleContext:ra.roleContext})).isError);

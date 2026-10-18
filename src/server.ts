@@ -161,6 +161,7 @@ app.use((req, res, next) => {
 app.get('/', (_req, res) => res.sendFile(path.join(WEB_DIR, 'index.html')));
 app.get('/graph', (_req, res) => res.sendFile(path.join(WEB_DIR, 'graph.html')));
 app.get('/collaboration', (_req, res) => res.sendFile(path.join(WEB_DIR, 'collaboration.html')));
+app.get('/collaboration/guide', (_req, res) => res.sendFile(path.join(WEB_DIR, 'office-guide.html')));
 app.use('/assets', express.static(WEB_DIR));
 app.get('/vendor/vis-network.min.js', (_req, res) => res.type('application/javascript').sendFile(VIS_UMD));
 app.get('/licenses/third-party.txt', (_req, res) =>

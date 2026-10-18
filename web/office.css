@@ -1,55 +1,22 @@
+/* Standalone office UI; memory workspace styles must not affect this application. */
+:root{--o-ink:#263a36;--o-muted:#6a7771;--o-line:#dce3da;--o-green:#325f4f;--o-soft:#f0f4ee;--line:#dce3da}
+*{box-sizing:border-box}body{margin:0;font:14px/1.65 system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+button,input,textarea,select{font:inherit}button{cursor:pointer;border:1px solid var(--o-line);background:white;color:var(--o-ink);border-radius:7px;padding:9px 15px;font-weight:550}
+button:hover{background:#f1f4ec;border-color:#b9c8b1}button:disabled{opacity:.4;cursor:not-allowed}button[aria-busy=true]{opacity:.55;cursor:wait}
+input,textarea,select{padding:10px 12px;border:1px solid var(--o-line);border-radius:6px;background:white;color:var(--o-ink);max-width:100%;min-width:0}textarea{width:100%;min-height:180px;resize:vertical;line-height:1.85}
+label{font-size:12px;color:var(--o-muted);display:flex;flex-direction:column;gap:6px}
+h1,h2,h3{font-weight:600}h2{font-size:16px;margin:0 0 14px}h3{font-size:13px;margin:20px 0 10px}p{margin:8px 0}details{margin-top:14px}summary{cursor:pointer;color:var(--o-muted);font-size:11px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.8 ui-monospace,monospace;background:#f1f2eb;border-radius:6px;padding:16px;max-height:430px;overflow:auto}
+[hidden]{display:none!important}:focus-visible{outline:3px solid #829c64;outline-offset:3px}dialog{max-height:90vh}dialog::backdrop{background:#142e2a55}
+.office-role-dialog header{height:76px}.office-role-dialog label{margin-bottom:14px}
 .office-header,
-.office-main,
-.office-legacy {
+.office-main {
   --o-ink: #263a36;
   --o-muted: #6a7771;
   --o-line: #dce3da;
   --o-green: #325f4f;
   --o-soft: #f0f4ee;
   color: var(--o-ink);
-}
-.office-header {
-  display: flex;
-  gap: 32px;
-  align-items: center;
-  padding: 22px 5vw;
-  border-bottom: 1px solid var(--o-line);
-  background: #fafbf6;
-}
-.office-header > a {
-  font-size: 23px;
-  font-weight: 750;
-  text-decoration: none;
-  color: var(--o-green);
-}
-.office-header nav {
-  display: flex;
-  gap: 24px;
-}
-.office-header nav a {
-  font-size: 14px;
-  text-decoration: none;
-  color: var(--o-muted);
-}
-.office-header > span {
-  margin-left: auto;
-  font:
-    10px ui-monospace,
-    monospace;
-  letter-spacing: 2px;
-  color: var(--o-muted);
-}
-.office-main {
-  max-width: 1440px;
-  margin: auto;
-  padding: 0 5vw 64px;
-}
-.office-hero {
-  display: grid;
-  grid-template-columns: 1.3fr 1fr;
-  gap: 48px;
-  align-items: center;
-  padding: 64px 0 48px;
 }
 .office-eyebrow {
   font:
@@ -58,42 +25,6 @@
   letter-spacing: 2px;
   color: #7b8f7e;
   margin: 0 0 14px;
-}
-.office-hero h1 {
-  font-size: clamp(34px, 4.4vw, 62px);
-  font-weight: 650;
-  line-height: 1.2;
-  letter-spacing: -2px;
-  margin: 0 0 22px;
-}
-.office-hero > div > p:not(.office-eyebrow) {
-  color: var(--o-muted);
-  line-height: 1.9;
-  font-size: 15px;
-}
-.office-hero-note {
-  border: 1px solid var(--o-line);
-  border-radius: 30px;
-  background: linear-gradient(135deg, #e9f0e3, #f5f0df);
-  padding: 38px;
-  display: grid;
-  gap: 10px;
-  box-shadow: 0 22px 60px -40px #607b60;
-}
-.office-hero-note strong {
-  font-size: 20px;
-  font-weight: 600;
-}
-.office-hero-note p,
-.office-hero-note small {
-  margin: 0;
-  color: var(--o-muted);
-  line-height: 1.7;
-}
-.office-orbit {
-  font-size: 46px;
-  color: #78966e;
-  line-height: 1.3;
 }
 .office-panel {
   background: #fdfef9;
@@ -409,7 +340,7 @@
 .office-desk.is-live {
   animation: office-pulse 1.5s ease-out 1;
 }
-.office-stage svg {
+#officeWires {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -417,7 +348,7 @@
   z-index: 1;
   pointer-events: none;
 }
-.office-stage path {
+#officeWires path {
   stroke: #83a47b;
   stroke-width: 2;
   fill: none;
@@ -425,15 +356,8 @@
   animation: office-flow 1s linear 2;
   opacity: 0.7;
 }
-.office-split {
-  display: grid;
-  grid-template-columns: 1fr 1.1fr;
-  gap: 28px;
-}
-.office-split h3 {
-  font-size: 14px;
-  margin: 8px 0 16px;
-}
+
+
 .office-timeline {
   max-height: 520px;
   overflow: auto;
@@ -476,23 +400,6 @@
   padding-top: 22px;
   margin-top: 20px;
 }
-.office-legacy {
-  max-width: 1440px;
-  margin: 0 auto 40px;
-  padding: 0 5vw;
-}
-.office-legacy > summary {
-  font-size: 13px;
-  color: #8c968e;
-  cursor: pointer;
-}
-.office-main #officeNotice {
-  padding: 14px;
-  border-radius: 12px;
-  background: #e9f2e3;
-  color: #375c32;
-  overflow-wrap: anywhere;
-}
 .office-main #officeNotice.is-error {
   background: #fae9db;
   color: #985c32;
@@ -515,39 +422,23 @@
   }
 }
 @media (max-width: 850px) {
-  .office-hero {
-    grid-template-columns: 1fr;
-    gap: 20px;
-    padding: 40px 0 30px;
-  }
-  .office-hero-note {
-    padding: 24px;
-  }
+
+
   .office-steps {
     grid-template-columns: 1fr 1fr;
   }
   .office-steps li {
     border-bottom: 1px solid var(--o-line);
   }
-  .office-split {
-    grid-template-columns: 1fr;
-  }
+
   .office-seat-row {
     grid-template-columns: 1fr 1fr;
   }
-  .office-header > span {
-    display: none;
-  }
+
 }
 @media (max-width: 480px) {
-  .office-header {
-    padding: 18px 5vw;
-    gap: 18px;
-    flex-wrap: wrap;
-  }
-  .office-header nav {
-    gap: 16px;
-  }
+
+
   .office-panel {
     padding: 18px;
     border-radius: 16px;
@@ -571,16 +462,14 @@
   .office-desks {
     gap: 12px;
   }
-  .office-hero h1 {
-    letter-spacing: -1px;
-  }
+
   .office-main .office-fields > label {
     min-width: 0;
     flex-basis: 100%;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .office-stage path,
+  #officeWires path,
   .office-desk.is-live {
     animation: none;
   }
@@ -592,13 +481,13 @@
 #officeCharacters .office-agent input, #officeCharacters .office-agent textarea { box-sizing:border-box; width:100%; }
 #officeCharacters .office-agent { min-width:0; overflow-wrap:anywhere; }
 /* Compact directory, focused editing and a separate navigable scene. */
-.office-header { position:sticky; top:0; z-index:20; background:#fafbf6f5; backdrop-filter:blur(12px); padding-top:16px; padding-bottom:16px; }
-.office-header nav a:hover { color:var(--o-green); }
+
+
 .office-main { max-width:1680px; padding-left:3vw; padding-right:3vw; }
-.office-hero { padding:34px 0 28px; gap:28px; }
-.office-hero h1 { font-size:clamp(28px,3vw,42px); margin-bottom:12px; }
-.office-hero-note { padding:22px 28px; border-radius:20px; }
-.office-orbit { font-size:30px; }
+
+
+
+
 .office-panel { padding:24px; }
 .office-subhead h3 { display:flex; align-items:center; gap:10px; }
 .office-roster { border:1px solid var(--o-line); border-radius:16px; background:#f6f8f2; padding:16px; margin:18px 0 24px; min-width:0; }
@@ -665,11 +554,9 @@
 .office-main #officeNotice { position:sticky; top:75px; z-index:21; box-shadow:0 8px 30px #293c2522; }
 @media(max-width:680px) {
   .office-main { padding-left:12px; padding-right:12px; }
-  .office-header { padding:12px 16px; gap:12px; flex-wrap:wrap; }
-  .office-header nav { gap:14px; overflow:auto; flex:1; white-space:nowrap; }
-  .office-header nav a { font-size:12px; }
-  .office-hero { padding-top:24px; grid-template-columns:1fr; }
-  .office-hero-note { display:none; }
+
+
+
   .office-panel { padding:16px; }
   .office-roster { padding:10px; }
   .office-roster-tools { gap:8px; }
@@ -701,3 +588,125 @@
 .office-role-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#eef2e9; border-radius:8px; padding:12px; font:12px/1.8 ui-monospace,monospace; }
 .office-main button.office-character-card { min-height:180px; }
 .office-character-grid[data-compact=true] .office-character-card { min-height:100px; }
+/* The scene and the accessible list share the same real participants and actions. */
+.office-scene{padding:105px 58px 75px;background:repeating-linear-gradient(0deg,#ebeddd 0 54px,#d8decc 55px 56px);border:12px solid #c6d0bb;border-top:28px solid #a7b6a0;border-radius:18px;min-height:420px;box-shadow:0 18px 0 #d6ddca,0 23px 40px #35563d1a}
+.office-desks{gap:58px 32px}.office-desk{position:relative;display:flex;flex-direction:column;align-items:stretch;gap:6px;background:transparent!important;border:0!important;padding:0!important;box-shadow:none;min-height:250px;cursor:pointer;isolation:auto}
+.office-desk>.office-desk-caption{background:#fafcf5f2;border:1px solid #d2ddca;border-radius:12px;padding:9px 13px;z-index:2;min-height:90px}
+.office-desk strong{font-size:14px}.office-desk small{font-size:11px}.office-workstation{display:block;position:relative;height:155px;flex:none}
+.office-workstation>span{position:absolute;display:block}.office-table{left:36px;top:90px;width:212px;height:48px;background:#d7b58b;border:3px solid #be9a71;border-radius:12px;box-shadow:0 10px 0 #b48c61,0 22px 0 -17px #896f51,0 24px 15px -9px #87957740;z-index:4}
+.office-monitor{left:145px;top:32px;width:63px;height:45px;border:6px solid #5a706b;background:#344a46;border-radius:6px;box-shadow:0 4px 0 #c8d5c7;z-index:5}.office-monitor:after{content:'';position:absolute;left:22px;top:38px;width:9px;height:19px;background:#5a706b;box-shadow:-11px 14px 0 3px #5a706b}.office-monitor i{position:absolute;inset:6px;border-radius:2px;background:linear-gradient(120deg,#57766a,#789c80);opacity:.4}
+.office-chair{left:73px;top:87px;width:53px;height:51px;background:#8ba295;border:4px solid #748f7e;border-radius:15px;box-shadow:0 17px 0 -11px #536c5d;z-index:1}
+.office-keyboard{left:145px;top:105px;width:56px;height:16px;background:repeating-linear-gradient(90deg,#b7c1b2 0 6px,#e3e8dc 7px 8px);border:3px solid #e3e8dc;border-radius:4px;transform:skewX(-12deg);z-index:5}
+.office-cup{left:218px;top:91px;width:14px;height:17px;background:#7b9fa0;border-radius:3px 3px 6px 6px;z-index:5;box-shadow:4px 0 0 -1px #b8cdd0}.office-cup:before{content:'';position:absolute;left:3px;top:-12px;width:5px;height:9px;border-radius:50%;border-left:2px solid #9aa99480}
+.office-person{position:absolute!important;left:69px;top:21px;width:66px;height:94px;color:var(--coat,#789388);z-index:3;transform-origin:50% 70%;filter:drop-shadow(0 5px 2px #4c684322)}
+.office-person:before,.office-person:after{display:none}.office-person svg{position:static;display:block;width:66px;height:94px;overflow:visible}.office-person.shared{color:var(--coat,#668f89)}.office-person.unknown{color:#9dada0}.office-person.text-only{color:#bc976d}
+.office-paper-stack{left:43px;top:91px;width:27px;height:20px;background:#fff9df;border:1px solid #d6caa4;box-shadow:1px calc(min(var(--paper-count),6)*-1px) 0 #efe5c6,2px -7px 0 -1px #fffcef;z-index:5;font:700 11px/18px system-ui;text-align:center;color:#6a7758}.office-paper-stack[hidden]{display:none}
+.office-room-decor{position:absolute;inset:0;pointer-events:none}.office-room-door{position:absolute;top:-12px;left:16px;width:58px;height:60px;background:#a79177;border:5px solid #d4c8b4;border-bottom:0;border-radius:5px 5px 0 0;color:#f6eddc;text-align:center;font-size:11px;padding-top:18px;box-shadow:inset -10px 0 #b7a289}.office-room-lounge{position:absolute;top:10px;right:30px;padding:12px 22px;background:#c5d0b5;border:4px solid #aab99e;border-radius:12px;font-size:12px;color:#597054}.office-room-plant{position:absolute;left:5px;bottom:12px;font-size:60px;line-height:1;color:#79936a;transform-origin:bottom center;animation:office-leaf 6s ease-in-out infinite}
+.office-desk.has-motion{z-index:5}.office-desk.has-motion .office-person{z-index:7}.office-desk.is-live{animation:none}.office-desk.is-live .office-monitor i{opacity:1;animation:office-screen .7s steps(2,end) infinite}.office-desk.is-live .avatar-arm{animation:office-hand .35s ease-in-out infinite alternate;transform-origin:33px 48px}.office-desk.is-live .avatar-arm.right{animation-delay:.17s}.office-action-bubble{position:absolute;top:-16px;left:0;max-width:270px;padding:5px 12px;background:#fffcdf;border:1px solid #c4b98e;border-radius:12px 12px 12px 0;z-index:8;font-size:12px;color:#625a34;box-shadow:0 6px 16px #43563a1a;pointer-events:none}
+.office-scene-status{margin:0;padding:10px 16px;background:#f0f4e8;color:#526d53;font-size:12px;min-height:40px;border-top:1px solid #dce3da}.office-scene-views{display:flex;flex-wrap:wrap;gap:6px}.office-main .office-scene-views button{font-size:11px;padding:5px 9px;min-height:32px}.office-scene-views button[aria-pressed=true]{background:#e1e9d6}
+#officeWires{z-index:6}#officeWires path{stroke:#6c9365;stroke-width:3;stroke-dasharray:5 9;animation:office-flow .65s linear infinite}.office-scene.motion-off *{animation:none!important}.office-canvas.is-list .office-stage{height:auto!important;min-height:150px;overflow:visible;cursor:default;touch-action:auto;padding:16px}.office-canvas.is-list .office-scene{position:static;transform:none!important;width:100%!important;min-height:0;padding:0;background:none;border:0;box-shadow:none}.office-canvas.is-list .office-desks{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))!important;gap:12px}.office-canvas.is-list .office-workstation,.office-canvas.is-list .office-room-decor,.office-canvas.is-list #officeWires{display:none}.office-canvas.is-list .office-desk{min-height:0}.office-canvas.is-list .office-canvas-help{display:none}.office-canvas.is-list .office-zoom-controls{display:none}
+@keyframes office-hand{to{transform:rotate(-13deg)}}@keyframes office-screen{to{background:#a6c6a1}}@keyframes office-leaf{50%{transform:rotate(4deg)}}
+body.office-hidden .office-scene *{animation-play-state:paused!important}@media(prefers-reduced-motion:reduce){.office-scene *{animation:none!important}}@media(max-width:680px){.office-canvas-tools{gap:8px}.office-stage{height:460px}.office-scene-views{order:3;width:100%}}
+
+.office-desk.is-walking .avatar-legs{animation:office-step .3s ease-in-out infinite alternate;transform-origin:33px 70px}@keyframes office-step{to{transform:rotate(9deg)}}
+
+/* Full sprite collision boxes need a clear standing space beside each desk. */
+.office-scene{padding-top:150px}.office-person{left:0;top:25px}.office-table{left:85px;width:190px}.office-chair{left:168px;top:118px}.office-monitor{left:170px}.office-keyboard{left:171px}.office-cup{left:248px}.office-paper-stack{left:96px}
+/* Multiple readable poses for one activity state. All stay inside the reserved sprite volume. */
+.office-action-choice{display:flex;align-items:center;gap:6px;font-size:11px}.office-action-choice select{padding:5px;border:1px solid var(--o-line);border-radius:7px;background:#fff;font:inherit}.avatar-item{display:none}.office-person[data-pose=book] .avatar-book,.office-person[data-pose=note] .avatar-note,.office-person[data-pose=sip] .avatar-mug,.office-person[data-pose=think] .avatar-think,.office-person[data-pose=watch] .avatar-watch,.office-person[data-pose=typing] .avatar-laptop,.office-person[data-pose=screen] .avatar-laptop,.office-person[data-pose=letter] .avatar-letter{display:block}
+.office-person[data-pose] .avatar-arm{animation:none!important;transform-origin:33px 48px}.office-person[data-pose=book] .avatar-arm.left,.office-person[data-pose=note] .avatar-arm.left,.office-person[data-pose=typing] .avatar-arm.left{transform:rotate(-38deg)}.office-person[data-pose=book] .avatar-arm.right,.office-person[data-pose=note] .avatar-arm.right,.office-person[data-pose=typing] .avatar-arm.right{transform:rotate(38deg)}.office-person[data-pose=typing] .avatar-laptop{animation:office-tap .45s steps(2,end) infinite}.office-person[data-pose=note] .avatar-note{animation:office-write .8s ease-in-out infinite}.office-person[data-pose=sip] .avatar-arm.right{transform:rotate(105deg)}.office-person[data-pose=watch] .avatar-arm.left{transform:rotate(-65deg)}.office-person[data-pose=watch] .avatar-head{transform:rotate(-8deg);transform-origin:33px 30px}.office-person[data-pose=stretch] .avatar-arm.left{transform:rotate(110deg)}.office-person[data-pose=stretch] .avatar-arm.right{transform:rotate(-110deg)}.office-person[data-pose=stretch] .avatar-head{animation:office-nod 1.7s ease-in-out infinite}.office-person[data-pose=think] .avatar-arm.right{transform:rotate(130deg)}.office-person[data-pose=nod] .avatar-head,.office-person[data-pose=screen] .avatar-head{animation:office-nod 1.3s ease-in-out infinite}.office-person[data-pose=wave] .avatar-arm.right{animation:office-wave .7s ease-in-out infinite!important}.office-person[data-pose=relax] .avatar-head{transform:rotate(8deg);transform-origin:33px 32px}.office-scene.replay-paused *{animation-play-state:paused!important}.office-scene.is-replaying .office-paper-stack{display:none}.office-scene.is-replaying .office-desk-caption small{display:none}.office-desk.replay-ghost>.office-desk-caption{border-style:dashed}.office-desk.replay-selected>.office-desk-caption{outline:2px solid #a9a368}
+@keyframes office-tap{to{transform:translateY(2px)}}@keyframes office-write{50%{transform:rotate(3deg)}}@keyframes office-nod{50%{transform:rotate(7deg)}to{transform:rotate(0)}}@keyframes office-wave{50%{transform:rotate(-110deg)}to{transform:rotate(-70deg)}}
+.office-replay-panel{border-top:1px solid var(--o-line);background:#f8f8ec}.office-replay-panel>summary{padding:13px 16px;font-size:13px;font-weight:700;cursor:pointer}.office-replay-content{padding:0 16px 18px}.office-replay-range,.office-replay-options{display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin:12px 0}.office-replay-content label{display:flex;flex-direction:column;gap:6px;font-size:12px}.office-replay-content input[type=number]{width:145px;max-width:100%;padding:9px;border:1px solid #d6ddce;border-radius:8px;background:white;color:var(--o-ink);font:inherit}.office-replay-content select{padding:9px;border:1px solid #d6ddce;border-radius:8px;background:white;font:inherit}.office-replay-roles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:14px 0}.office-replay-roles label{padding:10px;background:#fff;border:1px solid #e0e4d6;border-radius:10px}.office-replay-buttons{margin:14px 0}.office-replay-seek input{width:100%;accent-color:#6b8d64}.office-replay-progress{font-size:13px;color:#65714e;font-weight:600}.office-replay-current{padding:16px;background:#fff;border:1px solid #d9ddc9;border-radius:12px;font-size:13px;overflow-wrap:anywhere}.office-replay-current h4{margin:0 0 8px}.office-replay-current p{white-space:pre-wrap;margin:8px 0}.office-replay-event-list{display:grid;gap:5px;margin-top:12px;max-height:240px;overflow:auto}.office-replay-event-list button{text-align:left;font-size:12px!important;padding:8px 10px!important;overflow-wrap:anywhere}.office-replay-event-list button[aria-current=true]{background:#e3ead7!important;border-color:#9caf8b!important}.office-replay-panel.is-active>summary{color:#766c35}.office-event .office-event-replay{margin-left:6px;font-size:11px;padding:5px 8px}.office-canvas:has(.office-replay-panel.is-active)>.office-canvas-tools{background:#eeeedb}
+@media(prefers-reduced-motion:reduce){.office-person[data-pose] *{animation:none!important}}@media(max-width:680px){.office-replay-content{padding:0 12px 14px}.office-replay-range label{flex:1;min-width:130px}.office-replay-range input{width:100%}.office-action-choice{width:100%}}
+.office-scene.replay-paused .office-person[data-pose] *{animation-play-state:paused!important}.office-scene.motion-off .office-person[data-pose] *{animation:none!important}@media(prefers-reduced-motion:reduce){.office-scene .office-person[data-pose] .avatar-arm,.office-scene .office-person[data-pose] .avatar-item,.office-scene .office-person[data-pose] .avatar-head{animation:none!important}}
+.office-replay-transport{position:sticky;top:74px;z-index:12;padding:10px 14px;border-top:1px solid #cdd5b9;border-bottom:1px solid #cdd5b9;background:#f5f5e5f5;backdrop-filter:blur(12px);box-shadow:0 6px 16px #33452712}.office-replay-transport[hidden]{display:none}.office-replay-transport>p{margin:3px 0;font-size:12px}.office-replay-transport #officeReplayNow{font-weight:700;color:#6c6335;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.office-replay-transport .office-replay-buttons{margin:7px 0;gap:6px}.office-replay-transport button{font-size:11px!important;padding:6px 9px!important;min-height:32px!important}.office-replay-transport .office-replay-seek{display:flex;align-items:center;gap:10px;font-size:11px}.office-replay-transport .office-replay-seek input{flex:1}.office-replay-transport #officeReplayInspect{position:absolute;right:12px;bottom:8px}.office-replay-transport .office-replay-progress{padding-right:120px;font-size:11px}.office-canvas.is-expanded .office-replay-transport{position:relative;top:0;flex:none}.office-canvas.is-expanded #officeReplay{max-height:45vh;overflow:auto}
+.office-canvas{overflow:clip}.office-replay-transport .office-replay-progress{min-height:34px;display:flex;align-items:center}.office-replay-records{margin:12px 0}.office-replay-records>summary{cursor:pointer;font-size:12px;padding:8px 0}.office-main #officeNotice{position:static}.office-main #officeNotice.is-error{position:sticky;top:75px;z-index:22}
+
+/* Application shell: one destination at a time, with a persistent room directory. */
+body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#263a36}
+.office-application .office-header{display:flex;align-items:center;height:64px;min-height:64px;padding:0 24px 0 20px;gap:24px;background:#fff;border-bottom:1px solid #dfe5de;position:relative;z-index:30;flex-wrap:nowrap;backdrop-filter:none}
+.office-application .office-app-brand{width:174px;flex:none;display:flex;align-items:center;gap:7px;font-size:20px;letter-spacing:-.6px;line-height:1;position:relative;padding-bottom:13px}
+.office-brand-mark{color:#47785e;font-size:27px}.office-brand-sub{position:absolute;left:35px;bottom:0;font-size:10px;color:#829284;letter-spacing:2px;font-weight:400}
+.office-app-breadcrumb{display:flex;gap:14px;align-items:center;font-size:12px;color:#8c978f}.office-app-breadcrumb strong{font-weight:550;color:#344d40}
+.office-header-help{margin-left:auto;font-size:12px!important;font-weight:450!important;color:#677a6d!important;white-space:nowrap}
+.office-app-layout{height:calc(100dvh - 64px);display:grid;grid-template-columns:200px minmax(0,1fr)}
+.office-sidebar{background:#edf1e9;border-right:1px solid #dce3d8;display:flex;flex-direction:column;min-height:0;padding:25px 12px 14px;color:#4b6455}
+.office-sidebar-label{padding:0 14px;margin:0 0 12px;font:10px/1.8 ui-monospace,monospace;letter-spacing:1.5px;color:#8c9b8c}
+.office-sidebar nav{display:flex;flex-direction:column;gap:5px}.office-sidebar nav>.office-sidebar-label{margin:28px 0 8px}
+.office-sidebar nav a{display:flex;gap:10px;align-items:center;padding:11px 12px;min-height:44px;border-radius:8px;font-size:13px;text-decoration:none;color:#617265;transition:background .15s}
+.office-sidebar nav a>span:first-child{width:22px;text-align:center;font-size:19px;line-height:1;color:#829281}
+.office-sidebar nav a:hover{background:#e4eadf;color:#33583f}.office-sidebar nav a[aria-current=page]{background:#dbe6d4;color:#365b40;font-weight:650;box-shadow:inset 3px 0 #618660}
+.office-sidebar nav a[aria-current=page]>span:first-child{color:#507748}.office-nav-count{margin-left:auto;min-width:21px;background:#f4f7ef;color:#69805b;font-size:10px;line-height:21px;text-align:center;border-radius:5px;font-weight:550}
+.office-sidebar-footer{margin-top:auto;display:grid;gap:10px;padding:22px 12px 0;border-top:1px solid #dce4d5;font-size:11px;color:#7c8c79}
+.office-sidebar-footer a{color:#74846f;text-decoration:none}.office-sidebar-footer a:hover{color:#2d543c}.office-sidebar-footer p{font-size:10px;margin:5px 0}.office-sidebar-footer i{display:inline-block;width:5px;height:5px;border-radius:50%;background:#8ca478;margin-right:4px}
+.office-application .office-main{max-width:none;width:100%;height:100%;min-height:0;margin:0;padding:0;overflow:auto;position:relative}
+.office-main>[data-app-view]:not(.office-workspace){max-width:1100px;margin:28px auto;padding:28px 32px;border-radius:12px;width:calc(100% - 56px);min-height:calc(100% - 56px);box-shadow:0 4px 16px #2a433205}
+.office-main>[data-app-view]>.office-section-head h2{font-size:23px;letter-spacing:-.5px}.office-main>[data-app-view]>.office-section-head .office-eyebrow{margin-bottom:8px}
+.office-main #officeNotice,.office-main #officeNotice.is-error{position:fixed;right:24px;bottom:20px;top:auto;max-width:min(500px,calc(100vw - 40px));z-index:90;border-radius:9px;box-shadow:0 8px 32px #2a433222;padding:12px 18px;font-size:12px;margin:0}
+.office-workspace{display:grid;grid-template-columns:228px minmax(0,1fr);height:100%;min-height:0}
+.office-workspace>#officeRooms{background:#fafbf7;border:0;border-right:1px solid #dfe5da;border-radius:0;margin:0;padding:25px 16px 16px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+#officeRooms .office-section-head{margin-bottom:20px;gap:8px}#officeRooms h2{font-size:19px}#officeRooms .office-eyebrow{font-size:9px;margin-bottom:7px;letter-spacing:1.6px}
+.office-main #officeRefresh{padding:4px 8px;background:transparent;border:0;font-size:20px;min-height:32px}
+#officeRooms .office-room-search{font-size:10px;margin:0 0 18px}#officeRooms .office-room-search input{font-size:12px;padding:9px 10px;background:#f0f3eb;border-color:transparent;margin-top:2px}
+.office-workspace .office-room-list{display:flex;flex-direction:column;flex:1;min-height:0;overflow:auto;gap:7px;margin:0 -5px;padding:0 5px 12px}
+.office-main .office-room-list .office-room-choice{display:flex;flex-direction:column;align-items:stretch;text-align:left;gap:7px;width:100%;padding:13px 14px;border:1px solid transparent;background:transparent;border-radius:9px;min-height:76px;flex-shrink:0;position:relative}
+.office-room-choice strong{font-size:13px;font-weight:600;line-height:1.5;overflow-wrap:anywhere}.office-room-choice span{font-size:10px;color:#8b9787;display:flex;align-items:center;gap:5px}.office-room-choice span:before{content:'';width:5px;height:5px;background:#91a882;border-radius:50%}
+.office-main .office-room-list .office-room-choice:hover{background:#f0f3eb}.office-main .office-room-list .office-room-choice[aria-pressed=true]{background:#e6eddf;border-color:#d3e0c7;box-shadow:none}.office-room-choice[aria-pressed=true] strong{color:#496940}
+.office-main .office-create-button{width:100%;font-size:12px;padding:10px;flex:none;margin-top:12px;background:#4b6c44;border-color:#4b6c44}
+.office-room-workspace{min-width:0;min-height:0;overflow:auto;background:#f5f6f1;display:flex;flex-direction:column}
+.office-room-workspace>.office-section-head{margin:0;padding:22px 28px 17px;flex:none;background:#fff;align-items:center;gap:12px;flex-wrap:wrap}
+.office-room-workspace>.office-section-head>div:first-child{flex:1;min-width:120px}.office-room-workspace>.office-section-head h2{font-size:22px;line-height:1.4;letter-spacing:-.5px}
+.office-room-workspace>.office-section-head .office-eyebrow{font-size:9px;margin-bottom:6px;color:#94a08e;letter-spacing:1.6px}
+.office-room-workspace #officeGoal{font-size:12px;color:#85907e;line-height:1.7;margin:6px 0 0;max-width:600px}
+.office-room-workspace #officeRoomMeta{font-size:10px;color:#93a18a;margin:5px 0 0}.office-room-workspace #officeSync{font-size:10px;background:#f2f5ec;color:#8b9a81;border:0;white-space:nowrap}
+.office-room-actions{margin:0;position:relative}.office-room-actions>summary{list-style:none;border:1px solid #dfe5d6;border-radius:7px;padding:7px 11px;font-size:11px;font-weight:500;color:#7c8972;white-space:nowrap}.office-room-actions summary::-webkit-details-marker{display:none}
+.office-room-actions #officeControls{position:absolute;right:0;top:38px;z-index:25;width:224px;background:#fff;border:1px solid #dce3d4;box-shadow:0 12px 36px #29403120;padding:7px;border-radius:10px;display:flex;flex-direction:column;align-items:stretch;gap:3px;margin:0}
+.office-room-actions #officeControls button{text-align:left;font-size:12px;background:transparent;border:0;padding:10px}.office-room-actions #officeControls button:hover{background:#f3f5ee}.office-room-actions #officeControls .office-danger{color:#a16b58;border-top:1px solid #eee}
+.office-workspace-tabs{display:flex;align-items:center;gap:6px;padding:0 28px;border-bottom:1px solid #dfe5d7;background:white;flex:none;overflow:auto;scrollbar-width:thin}
+.office-main .office-workspace-tabs button{position:relative;background:transparent;border:0;border-radius:0;padding:14px 12px;min-height:47px;font-size:12px;font-weight:500;color:#8b9581;white-space:nowrap}
+.office-main .office-workspace-tabs button[aria-selected=true]{color:#47603c;font-weight:650}.office-workspace-tabs button[aria-selected=true]:after{content:'';height:2px;background:#708b5b;position:absolute;bottom:0;left:12px;right:12px;border-radius:2px}
+.office-main .office-workspace-tabs .office-replay-shortcut{margin-left:auto;font-size:11px;color:#7f8969}
+.office-room-workspace>[data-room-panel]:not(.office-canvas){padding:26px 28px;overflow:auto;flex:1;background:#fcfdf9}.office-room-workspace>[data-room-panel]>h3{margin:0 0 8px;font-size:18px}
+.office-room-workspace .office-canvas{margin:18px;border-radius:12px;min-height:380px;flex:1;display:flex;flex-direction:column;overflow:auto;border-color:#dce3d1;background:#eff3e8}
+.office-room-workspace .office-canvas-tools{padding:9px 12px;gap:8px;flex:none;background:#f9fbf4}.office-room-workspace .office-canvas-tools>span{display:none}.office-room-workspace .office-scene-views{gap:5px;align-items:center}
+.office-room-workspace .office-canvas-tools button{font-size:10px;padding:5px 7px;min-height:30px}.office-room-workspace .office-canvas-tools output{font-size:10px}.office-room-workspace .office-action-choice{font-size:10px}
+.office-room-workspace .office-stage{flex:1;min-height:260px;height:auto;background-color:#f1f4e9}.office-room-workspace .office-scene-status{font-size:10px;min-height:32px;padding:8px 12px;flex:none}.office-room-workspace .office-canvas-help{font-size:9px;padding:7px 12px;flex:none}
+.office-room-workspace .office-replay-panel{margin-top:0;flex:none}.office-room-workspace .office-replay-panel>summary{padding:9px 12px;font-size:11px}.office-room-workspace .office-replay-panel[open]{max-height:55%;overflow:auto}
+.office-room-workspace .office-replay-transport{position:sticky;top:0;flex:none;z-index:12}.office-room-workspace .office-replay-content input[type=number]{width:120px}
+.office-workspace-empty{grid-column:2;align-self:center;justify-self:center;max-width:360px;text-align:center;padding:32px;color:#82917b}.office-workspace-empty>span{display:block;font-size:54px;color:#a4b595;line-height:1.4;margin-bottom:16px}.office-workspace-empty h2{font-size:21px;color:#4f6945}.office-workspace-empty p{font-size:12px;line-height:1.9;margin:12px 0 22px}.office-workspace-empty button{display:block;margin:0 auto 14px}.office-workspace-empty a{color:#7c8f6e;font-size:12px}
+.office-room-editor{width:min(740px,calc(100vw - 24px))}.office-room-editor header{height:auto;padding:0;background:transparent;border:0}.office-room-editor h2{font-size:21px}.office-room-editor #officeCreate{margin-top:0}.office-room-editor #officeCreate>summary{display:block;font-size:13px;padding:12px 0;color:#8a997f}.office-room-editor #officeCreate>summary::marker{content:''}.office-room-editor .office-seat-row{grid-template-columns:1fr 1fr auto;padding:12px}.office-room-editor #officeSeatRows{max-height:35dvh;overflow:auto}.office-room-editor textarea{min-height:70px}
+.office-room-workspace .office-canvas.is-expanded{margin:0;min-height:0;overflow:auto}.office-room-workspace .office-canvas.is-list .office-stage{flex:initial}
+@media(min-width:1600px){.office-workspace{grid-template-columns:260px minmax(0,1fr)}.office-app-layout{grid-template-columns:220px minmax(0,1fr)}.office-application .office-app-brand{width:194px}}
+@media(max-width:1150px) and (min-width:761px){.office-app-layout{grid-template-columns:166px minmax(0,1fr)}.office-workspace{grid-template-columns:190px minmax(0,1fr)}.office-application .office-app-brand{width:140px}.office-sidebar{padding-left:8px;padding-right:8px}.office-sidebar nav a{font-size:12px;padding-left:9px;padding-right:9px;gap:7px}.office-room-workspace>.office-section-head{padding:18px}.office-workspace-tabs{padding:0 12px}.office-room-workspace .office-canvas{margin:12px}.office-room-workspace #officeSync{display:none}}
+@media(max-width:760px){
+ .office-application .office-header{height:57px;min-height:57px;padding:0 14px;gap:12px}.office-application .office-app-brand{width:auto;font-size:18px;padding:0}.office-brand-mark{font-size:24px}.office-brand-sub{display:none}.office-app-breadcrumb{gap:9px;font-size:11px}.office-app-breadcrumb>span{display:none}.office-header-help{font-size:10px!important}
+ .office-app-layout{height:calc(100dvh - 57px);grid-template-columns:minmax(0,1fr);grid-template-rows:58px minmax(0,1fr)}
+ .office-sidebar{padding:0 8px;display:block;border-right:0;border-bottom:1px solid #dce3d4;overflow:auto;scrollbar-width:none}.office-sidebar>.office-sidebar-label,.office-sidebar-footer,.office-sidebar nav>.office-sidebar-label{display:none}.office-sidebar nav{flex-direction:row;min-width:max-content;height:100%;gap:3px;align-items:center}.office-sidebar nav a{padding:7px 10px;font-size:11px;min-height:40px;gap:6px}.office-sidebar nav a>span:first-child{width:16px;font-size:16px}.office-nav-count{font-size:9px;line-height:17px;min-width:17px}.office-sidebar nav a[aria-current=page]{box-shadow:inset 0 -2px #618660}
+ .office-workspace{display:flex;flex-direction:column}.office-workspace>#officeRooms{padding:10px 12px 8px;border-right:0;border-bottom:1px solid #dfe5d6;overflow:visible;flex:none;display:grid;grid-template-columns:auto minmax(100px,1fr) auto;gap:8px;align-items:center}
+ #officeRooms .office-section-head{margin:0;gap:3px}#officeRooms .office-eyebrow{display:none}#officeRooms h2{font-size:14px}#officeRooms .office-room-search{margin:0;font-size:0}#officeRooms .office-room-search input{font-size:11px;margin:0;padding:7px 8px}#officeRooms .office-create-button{margin:0;width:auto;padding:8px;font-size:10px;min-height:32px;grid-column:3;grid-row:1}#officeRooms .office-room-list{grid-column:1/-1;grid-row:2;flex-direction:row;overflow:auto;margin:0;padding:0;gap:7px;max-height:62px}
+ .office-main .office-room-list .office-room-choice{width:auto;min-width:132px;max-width:230px;min-height:53px;gap:3px;padding:8px 12px}.office-room-choice strong{font-size:11px}.office-room-choice span{font-size:9px}
+ .office-room-workspace{flex:1;min-height:0}.office-room-workspace>.office-section-head{padding:14px 16px 10px;gap:8px}.office-room-workspace>.office-section-head .office-eyebrow{display:none}.office-room-workspace>.office-section-head h2{font-size:19px}.office-room-workspace #officeGoal{font-size:11px;margin:3px 0 0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}.office-room-workspace #officeSync{display:none}.office-room-actions>summary{font-size:10px;padding:6px 8px}.office-workspace-tabs{padding:0 8px;gap:0}.office-main .office-workspace-tabs button{padding:11px 10px;min-height:40px;font-size:11px}.office-main .office-workspace-tabs .office-replay-shortcut{font-size:10px}.office-room-workspace .office-canvas{margin:10px;min-height:340px}.office-room-workspace .office-canvas-tools{padding:7px 9px}.office-room-workspace .office-scene-views{width:auto;order:0}.office-room-workspace .office-action-choice{width:auto}.office-room-workspace .office-stage{min-height:210px}.office-room-workspace .office-canvas-help{display:none}.office-room-workspace .office-scene-status{padding:7px 10px;min-height:29px}.office-room-workspace>[data-room-panel]:not(.office-canvas){padding:20px 16px}
+ .office-main>[data-app-view]:not(.office-workspace){width:calc(100% - 20px);margin:10px;padding:20px 16px;min-height:calc(100% - 20px)}.office-main>[data-app-view]>.office-section-head h2{font-size:21px}.office-room-editor .office-seat-row{grid-template-columns:1fr}.office-workspace-empty{align-self:center;margin:auto}.office-main #officeNotice,.office-main #officeNotice.is-error{right:12px;bottom:12px}
+}
+@media(prefers-reduced-motion:reduce){.office-sidebar nav a{transition:none}}
+/* Replay settings open as a drawer; playback keeps the scene and transport visible. */
+.office-room-workspace .office-canvas{position:relative;isolation:isolate}
+.office-room-workspace .office-canvas-tools{order:0}
+.office-room-workspace .office-stage{order:1}
+.office-room-workspace .office-replay-transport{order:2;position:relative;top:auto;padding:8px 12px;box-shadow:none}
+.office-room-workspace .office-scene-status{order:3}
+.office-room-workspace .office-canvas-help{order:4}
+.office-room-workspace .office-replay-panel:not([open]){display:none}
+.office-room-workspace .office-replay-panel[open]{position:absolute;right:0;top:68px;bottom:56px;width:348px;max-width:100%;max-height:none;overflow:auto;border:0;border-left:1px solid #dce3cf;background:#fafbf4;z-index:14;box-shadow:-12px 0 24px #40502c0b}
+.office-room-workspace .office-replay-panel[open]>summary{position:sticky;top:0;background:#f0f3e6;padding:13px 12px;z-index:1;display:flex;justify-content:space-between;list-style:none;border-bottom:1px solid #dde4d0}
+.office-room-workspace .office-replay-panel[open]>summary:after{content:'收起 ×';font-size:10px;font-weight:400}
+.office-room-workspace .office-replay-panel .office-replay-content{padding:0 12px 12px}.office-room-workspace .office-replay-panel .office-hint{font-size:10px;line-height:1.8}.office-room-workspace .office-replay-panel label{font-size:10px}
+.office-room-workspace .office-replay-panel .office-replay-range{gap:8px}.office-room-workspace .office-replay-panel .office-replay-range label{flex:1;min-width:100px}.office-room-workspace .office-replay-panel input[type=number]{width:100%;padding:7px 8px}.office-room-workspace .office-replay-panel .office-replay-options{gap:8px}.office-room-workspace .office-replay-panel .office-replay-roles{grid-template-columns:1fr;gap:7px}.office-room-workspace .office-replay-roles label{display:grid;grid-template-columns:1fr 105px;align-items:center;padding:7px 9px}
+.office-room-workspace .office-canvas:has(.office-replay-panel[open]) .office-stage{margin-right:348px}
+.office-room-workspace .office-canvas:has(.office-replay-panel.is-active[open]) .office-replay-panel{bottom:185px}
+@media(max-width:1150px){.office-room-workspace .office-canvas:has(.office-replay-panel[open]) .office-stage{margin-right:0}.office-room-workspace .office-replay-panel[open]{top:0;width:min(360px,100%)}}
+@media(max-width:760px){.office-room-workspace .office-replay-panel[open]{bottom:29px}.office-room-workspace .office-canvas:has(.office-replay-panel.is-active[open]) .office-replay-panel{bottom:177px}}
+.office-application .office-app-brand{font-weight:700;color:#325f4f;text-decoration:none}.office-header-help{text-decoration:none}
+.office-room-workspace .office-canvas.is-expanded{position:fixed;inset:12px;z-index:100;height:auto;max-height:none;box-shadow:0 0 0 100vmax #1d332d66}
+.office-room-workspace .office-canvas.is-expanded #officeReplay{max-height:none}
+@media(max-width:760px){.office-room-workspace .office-canvas.is-expanded{inset:6px}}

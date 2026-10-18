@@ -14,10 +14,13 @@ let fetcher, detail;
 let timer, renderedCharacters;
 const context = vm.createContext({
   state,
+  replayController:{active:false,close(){}},
+  scenePlayer: {reset() {},present() {}},
   api: (...args) => fetcher(...args),
   el: () => ({ scrollIntoView() {} }),
   renderOffice() {},
   renderRoomChoices() {},
+  showAppView() {}, setRoomTab() {},
   async closeOfficeDetail() {},
   requestAnimationFrame() {},
   fitScene() {},
@@ -27,6 +30,7 @@ const context = vm.createContext({
   clearTimeout() { timer = null; },
   renderCharacters(data) { renderedCharacters = data; },
   refreshSeatChoices() {},
+  async clearDeletedRoom() {state.generation++;state.office=null;},
   notice() {},
   window: { matchMedia: () => ({ matches: true }) },
   showDetail: (title, value) => {
@@ -161,6 +165,11 @@ lateRegistry.resolve({ agents: [], characters: { revision: 99, pending: [] } });
 await pendingRegistry;
 assert.equal(state.data, null);
 assert.equal(timer, null, 'an expired poll cannot restart a timer after logout');
+// Another browser deleting the selected room clears its stale cached view.
+state.logged=true;state.office={office:{id:'removed-elsewhere'}};
+state.data={characters:{revision:3}};
+fetcher=async()=>({agents:[],offices:[],characters:{unchanged:true,revision:3}});
+context.schedule();await timer();assert.equal(state.office,null);
 // Fit-to-all must include all desks on a narrow screen, not clamp at 20% and clip them.
 const sceneState = {scene: {scale: 1, x: 0, y: 0, autoFit: true}};
 const elements = {
@@ -169,7 +178,7 @@ const elements = {
   officeSceneZoomValue: {}, officeSceneZoomOut: {}, officeSceneZoomIn: {}
 };
 const sceneContext = vm.createContext({state: sceneState, el: id => elements[id], Math});
-vm.runInContext(source.slice(source.indexOf('  function applyScene('), source.indexOf("  document.querySelector('.office-header nav')")), sceneContext);
+vm.runInContext(source.slice(source.indexOf('  function applyScene('), source.indexOf('  // Application navigation')), sceneContext);
 sceneContext.fitScene();
 const fitted = sceneState.scene;
 assert(fitted.scale < .2, 'mobile fit permits smaller than 20%');
@@ -191,3 +200,64 @@ sceneContext.fitScene();assert.deepEqual(fitted, previous, 'hidden scenes must n
 console.log(
   'PASS office UI: reversed opens, room-switch polling, loaded-page refresh, bounded detail pagination, logout fencing, draft isolation and mobile viewport geometry'
 );
+
+// Destructive actions have their own confirmation and cannot wipe a different
+// room opened while the delete request was in flight.
+const deletionState={logged:true,authEpoch:0,generation:1,roleDraft:{id:'role',dirty:true},office:{office:{id:'a'}},events:[1],cursor:9};
+const view={hidden:false};let confirmed=false,deletionCalls=[],refreshes=0,closed=false;
+const deletionContext=vm.createContext({state:deletionState,replayController:{close(){}},scenePlayer:{reset(){}},
+  confirmAction:async()=>confirmed,
+  api:async(route,body)=>{deletionCalls.push({route,body});},
+  el:id=>id==='officeView'?view:id==='officeRoleInspectorBody'?{querySelectorAll:()=>[]}: {disabled:false},
+  closeRoleInspector:async()=>{closed=true;deletionState.roleDraft=null;},
+  refresh:async()=>{refreshes++;},updateOffice:async()=>{},closeOfficeDetail:async()=>{},setExpanded:()=>{},notice:()=>{}
+});
+vm.runInContext(source.slice(source.indexOf('  async function deleteCharacter('),source.indexOf('  async function closeRoleInspector(')),deletionContext);
+await deletionContext.deleteCharacter({id:'role',name:'角色',revision:2});
+await deletionContext.deleteRoom({id:'a',title:'A',revision:3});
+assert.equal(deletionCalls.length,0,'cancelling either confirmation sends no deletion request');
+confirmed=true;
+deletionContext.api=async()=>{throw Error('stale_version');};
+await assert.rejects(deletionContext.deleteCharacter({id:'role',name:'角色',revision:2}));
+assert.equal(closed,false);assert.equal(deletionState.roleDraft.saving,false);
+deletionContext.api=async(route,body)=>{deletionCalls.push({route,body});};
+await deletionContext.deleteCharacter({id:'role',name:'角色',revision:2});
+assert.equal(closed,true);assert.equal(deletionCalls[0].route,'role/delete');
+assert.equal(deletionCalls[0].body.expectedRevision,2);assert.equal(refreshes,1);
+await deletionContext.deleteRoom({id:'a',title:'A',revision:3});
+assert.equal(deletionState.office,null);assert.equal(view.hidden,true);assert.equal(deletionState.generation,2);
+assert.equal(deletionState.events.length,0);assert.equal(deletionState.cursor,0);
+const deleting=deferred();deletionState.office={office:{id:'a'}};
+deletionContext.api=()=>deleting.promise;
+const pendingDelete=deletionContext.deleteRoom({id:'a',title:'A',revision:3});
+await Promise.resolve();deletionState.office={office:{id:'b'}};const roomGeneration=deletionState.generation;
+deleting.resolve({deleted:true});await pendingDelete;
+assert.equal(deletionState.office.office.id,'b');assert.equal(deletionState.generation,roomGeneration);
+console.log('PASS deletion UI: cancellation, stale version retains draft, confirmed deletion clears only its own room and fences old polls');
+// App routes retain the existing DOM drafts and pause playback when its view is hidden.
+const routePanels=['officeRooms','officeCharacters','officeProjects','officeAgents','officeSetup'].map(id=>({dataset:{appView:id},hidden:false}));
+const routeLinks=routePanels.map(p=>({dataset:{appRoute:p.dataset.appView},attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];}}));
+const roomPanels=['officeCanvas','officeMaterialPanel','officeTaskPanel','officeMessagePanel','officeTimelinePanel'].map(id=>({id,hidden:false}));
+const roomTabs=roomPanels.map(p=>({dataset:{roomTab:p.id},attrs:{},setAttribute(k,v){this.attrs[k]=v;},focus(){this.focused=true;}}));
+const routeElements={officePageTitle:{},officeWorkspaceEmpty:{}};
+let pauseCount=0,stopCount=0;const historyEntries=[];
+const routeState={appView:'officeRooms',roomTab:'officeCanvas',office:{},scene:{autoFit:true}};
+const routeContext=vm.createContext({state:routeState,el:id=>routeElements[id],document:{querySelectorAll:s=>s==='[data-app-view]'?routePanels:s==='[data-app-route]'?routeLinks:s==='[data-room-tab]'?roomTabs:roomPanels},
+ replayController:{pause(){pauseCount++;}},scenePlayer:{stop(){stopCount++;}},requestAnimationFrame(){},location:{hash:'#officeRooms'},history:{pushState(_a,_b,hash){historyEntries.push(hash);}},Object});
+vm.runInContext(source.slice(source.indexOf('  const appViews ='),source.indexOf("  document.querySelector('.office-sidebar nav')")),routeContext);
+routeContext.showAppView('officeCharacters');assert.equal(routePanels.filter(p=>!p.hidden)[0].dataset.appView,'officeCharacters');assert.equal(routeLinks[1].attrs['aria-current'],'page');assert.equal(pauseCount,1);assert.equal(stopCount,1);
+routeContext.setRoomTab('officeMaterialPanel',true);assert.deepEqual(roomPanels.filter(p=>!p.hidden).map(p=>p.id),['officeMaterialPanel']);assert.equal(roomTabs[1].tabIndex,0);assert(roomTabs[1].focused);
+routeContext.setRoomTab('missing');assert.equal(routeState.roomTab,'officeMaterialPanel');
+routeContext.syncAppRoute();assert.equal(routeState.appView,'officeRooms');assert.equal(historyEntries.length,1,'history restore cannot push another entry');
+routeContext.showAppView('__proto__');assert.equal(routeState.appView,'officeRooms');assert.equal(routeElements.officeWorkspaceEmpty.hidden,true);
+console.log('PASS application shell: isolated destinations, selected navigation, keyboard-ready room tabs, hidden-view playback pause and browser history restoration');
+
+routeState.opening=true;routeState.generation=5;routeContext.showAppView('officeCharacters');assert.equal(routeState.generation,6);assert.equal(routeState.opening,false,'leaving the workspace fences an unfinished open request');
+// Login derives cookie scope from the actual browser mount, rather than assuming /.
+let loginHandler,loginBody;
+const loginLocation={href:'http://localhost:3000/mindpond/collaboration#officeSetup'};
+const loginContext=vm.createContext({URL,location:loginLocation,submit(_id,fn){loginHandler=fn;},api:async(_route,body)=>{loginBody=body;},el:()=>({reset(){}}),refresh:async()=>{},notice(){},schedule(){}});
+vm.runInContext(source.slice(source.indexOf("  submit('officeLogin'"),source.indexOf("  submit('officeEndpoint'")),loginContext);
+await loginHandler(new Map([['operatorKey','']]));assert.equal(loginBody.cookiePath,'/mindpond/api/office-admin');
+loginLocation.href='http://127.0.0.1:7903/collaboration';await loginHandler(new Map());assert.equal(loginBody.cookiePath,'/api/office-admin');
+console.log('PASS login UI: prefixed proxy and direct-root cookie scopes follow the page URL');

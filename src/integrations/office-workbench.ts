@@ -1,5 +1,6 @@
 /** Browser-only operator control plane. This router is never mounted on /mcp. */
 import express from 'express';
+import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -47,6 +48,16 @@ export function officeWorkbench(
       res.status(403).json({ error: 'Open the workbench on its own origin' });
       return;
     }
+    // A reverse proxy may mount this UI under /mindpond (or another prefix).
+    // Keep the HttpOnly cookie scoped to the browser-visible admin API path.
+    const cookiePath = z.string().max(512)
+      .regex(/^\/(?:[A-Za-z0-9._~-]+\/)*api\/office-admin$/)
+      .refine(value => !value.split('/').some(part => part === '.' || part === '..'))
+      .safeParse(req.body.cookiePath ?? '/api/office-admin');
+    if (!cookiePath.success) {
+      res.status(400).json({ error: 'Invalid management cookie path' });
+      return;
+    }
     const address = req.ip ?? 'unknown',
       now = Date.now(),
       attempt = attempts.get(address);
@@ -92,7 +103,7 @@ export function officeWorkbench(
       httpOnly: true,
       sameSite: 'strict',
       secure: req.secure,
-      path: '/api/office-admin',
+      path: cookiePath.data,
       maxAge: 12 * 3600000
     });
     res.json({ ok: true });
@@ -164,6 +175,12 @@ export function officeWorkbench(
   route('/role/review', req => graph.roles.review(roleReviewSchema.parse(req.body), operator));
   route('/role/state', req => graph.roles.state(operator,req.body.afterSeq));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
+  const deletionSchema = z.object({id:officeConfigurationSchema.shape.id,expectedRevision:z.number().int().min(1)}).strict();
+  route('/role/delete', req => {
+    const i=deletionSchema.parse(req.body);
+    return graph.roles.deleteRole({roleId:i.id,expectedRevision:i.expectedRevision},operator);
+  });
+  route('/office/delete', req => graph.roles.deleteOffice(deletionSchema.parse(req.body),operator));
   route('/role/link', req => graph.roles.link(roleLinkSchema.parse(req.body), operator));
   route('/containers', req => graph.building.container(parseContainerInput(req.body),operator));
   route('/view', async (req) => ({
@@ -190,6 +207,8 @@ export function officeWorkbench(
     )),
     facilities: await graph.building.snapshot(officeConfigurationSchema.shape.id.parse(req.body.officeId),operator,req.body.facilityRevision)
   }));
+  const replaySchema=z.object({action:z.enum(['index','page']),officeId:officeConfigurationSchema.shape.id,fromSeq:z.number().int().min(1).optional(),toSeq:z.number().int().min(0).optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}).strict();
+  route('/replay',req=>graph.building.replay(replaySchema.parse(req.body),operator));
   route('/item/cancel', (req) => {
     const itemId = officeConfigurationSchema.shape.id.parse(req.body.itemId),
       expectedRevision = agentConfigurationSchema.shape.expectedRevision.parse(

@@ -8,6 +8,7 @@ import { digest } from './growth.js';
 import type { TrustedCallContext } from './trust.js';
 import type { OfficeStore } from './office.js';
 import { BUILDING_INSTRUCTIONS } from './office-building.js';
+import { deleteRoleData, deleteOfficeData } from './office-deletion.js';
 
 type Row = Record<string, any>;
 export const ROLE_INSTRUCTIONS = BUILDING_INSTRUCTIONS;
@@ -161,6 +162,27 @@ export class RoleStore {
       return { roleId: old.id, revision };
     });
   }
+  async deleteRole(i: {roleId: string; expectedRevision: number}, a?: TrustedCallContext) {
+    this.admin(a);
+    return this.write(async () => {
+      const role = await this.db.get<Row>('SELECT revision FROM character_roles WHERE id=?',[i.roleId]);
+      if (!role || role.revision !== i.expectedRevision) fail('Character profile changed or was deleted; refresh','stale_version');
+      await this.fenceRole(i.roleId);
+      await deleteRoleData(this.db,i.roleId);
+      await this.event(i.roleId,'deleted',{roleId:i.roleId});
+      return {deleted:true,roleId:i.roleId};
+    });
+  }
+  async deleteOffice(i: {id: string; expectedRevision: number}, a?: TrustedCallContext) {
+    this.admin(a);
+    return this.write(async () => {
+      const office = await this.db.get<Row>('SELECT revision FROM offices WHERE id=?',[i.id]);
+      if (!office || office.revision !== i.expectedRevision) fail('Office changed or was deleted; refresh','stale_version');
+      await deleteOfficeData(this.db,i.id);
+      await this.event(null,'office_deleted',{officeId:i.id});
+      return {deleted:true,officeId:i.id};
+    });
+  }
   private async fenceRole(roleId: string) {
     // Explicit work_session_open sessions have no cached role_office_contexts row.
     const sessions = `SELECT id FROM office_sessions WHERE seat_id IN (SELECT seat_id FROM role_seats WHERE role_id=?)
@@ -258,6 +280,7 @@ export class RoleStore {
           if (i.state === 'resolved' && message.kind === 'request') fail('A request requires a final reply; reading/resolving is not a substitute', 'invalid_input');
           await this.db.run("UPDATE role_message_states SET state=CASE WHEN state='resolved' THEN state ELSE ? END,updated_at=? WHERE message_id=?", [i.state, this.clock(), message.id]);
           await this.event(b!.role_id, 'message_' + i.state, { messageId: message.id });
+          if(message.office_id)await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)',[message.office_id,JSON.stringify({principal:actor.principal,roleId:b!.role_id}),i.state==='resolved'?'message_archive':'message_read',JSON.stringify({messageId:message.id}),this.clock()]);
           return { messageId: message.id, state: (await this.db.get<Row>('SELECT state FROM role_message_states WHERE message_id=?', [message.id]))!.state };
         }
         const sender = await this.db.get<Row>('SELECT * FROM character_roles WHERE id=?', [b!.role_id]);
@@ -279,6 +302,7 @@ export class RoleStore {
         const seq = await this.event(recipient.id, 'message_queued', { messageId: id, sender: sender!.id, recipient: recipient.id, kind: i.kind, requestId });
         await this.db.run('INSERT INTO role_messages(id,sender,recipient,kind,body,request_id,final,sender_name,recipient_name,office_id,seq,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', [id, sender!.id, recipient.id, i.kind, i.body, requestId, i.final ? 1 : 0, sender!.name, recipient.name, i.officeId ?? null, seq, this.clock()]);
         await this.db.run('INSERT INTO role_message_states VALUES(?,?,?)', [id, 'queued', this.clock()]);
+        if(i.officeId)await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)',[i.officeId,JSON.stringify({principal:actor.principal,roleId:sender!.id}),'message',JSON.stringify({messageId:id,sender:sender!.id,recipient:recipient.id,senderName:sender!.name,recipientName:recipient.name,body:i.body}),this.clock()]);
         return { messageId: id, requestId: i.kind === 'request' ? id : requestId, seq, state: 'queued', nextAction: 'Delivery is durable, not proof the host is running. The recipient uses its inbox command to continue.' };
       });
     });

@@ -6,7 +6,7 @@ Codex CLI / OpenCode CLI 现可在聊天中申请角色、由用户在页面批�
 
 # Task offices: HTTP MCP agents and session roles
 
-The collaboration page (`/collaboration`) provides guided setup, independent agents, optional reusable collaboration projects, per-chat seats, text material delivery and an office timeline. Old account-to-account tasks remain in the collapsed legacy section. Operational records do not become memory graph nodes.
+The collaboration page (`/collaboration`) provides guided setup, independent agents, optional reusable collaboration projects, per-chat seats, text material delivery and an office timeline. The previous account-to-account frontend and mixed inbox compatibility have been removed. Operational records do not become memory graph nodes.
 
 The [role-centered successor design](design/role-offices-2026-10-16.md) describes persistent characters, session enrollment approval, portable role knowledge and cross-office messaging. The basic character application/sync/mailbox flow is now implemented; full knowledge portability, takeover and automatic host continuation remain planned.
 
@@ -93,3 +93,47 @@ npm run verify:trusted-context
 `verify:office` uses a temporary database, real native HTTP MCP clients and an isolated browser management server. It covers distinct agents on one account, role/context selection, scoped credentials, message correlation, text completeness, exact round validation, responsibility transfer, scoped session memory/reconnection, revocation, secret-free projections and provisioning failure recovery. Additional regression tests exercise transfer/submission ordering, request cursor recovery, idle-reviewer notification, completed waits, long browser reports, privilege-preserving rotation, MCP-only Unicode publication and frontend response races. v2 initialization, capabilities, protocol rules/resources and timeout instructions consistently describe office tools; legacy connections retain their own rules and cache identity. Real host model behavior and per-chat secret isolation require host-specific acceptance; SDK success is not reported as that acceptance.
 
 Official template references checked 2026-10-15: [Codex](https://learn.chatgpt.com/docs/extend/mcp), [OpenCode](https://opencode.ai/docs/mcp-servers/), [Claude Code](https://code.claude.com/docs/en/mcp).
+
+## 新手使用说明与永久删除
+
+协作页面顶部的“使用说明”打开独立的 `/collaboration/guide` 页面，无需登录阅读。它包含接入、申请与批准角色、创建办公室、可复制的双角色协作示例，以及消息、材料、容器和日常管理的说明。操作以真实页面截图、编号红框和简短图注展示，支持点击放大。截图由 `verify-office-deletion.ts --preview` 的隔离虚构数据环境拍摄（2026-10-17），未签发真实凭据；截图资产逐项列入发布清单，更新时需重新检查无秘密和真实用户数据。使用示例中的名字不替代实际角色编号；由 agent 查询真实身份和办公室。
+
+角色资料中有“永久删除角色”，办公室（含已归档办公室）有“永久删除办公室”。两者均先显示影响范围并要求确认。删除通过仅用户管理可用、同源 Cookie 认证的接口完成，不作为 MCP agent 工具开放：
+
+- `POST /api/office-admin/role/delete`：`{id, expectedRevision}`。硬删除角色及绑定、申请、通信授权、角色收发私信和相关回执，撤销工位并取消其参与的未完成任务。保留办公室历史材料和删除审计。
+- `POST /api/office-admin/office/delete`：`{id, expectedRevision}`。硬删除目标办公室及其消息、材料、容器、任务轮次、事件、工位、会话和相关回执。角色本身、其他办公室、项目和独立记忆不受影响；角色的主要工位会改为其余可用工位或空值。
+
+版本必须匹配当前记录，否则返回 `stale_version`；全部依赖清理在单一事务内完成，异常会回滚。旧会话与进行中的等待会重新检查权限，不能利用删除前的绑定或回执恢复权限或内容。删除记录保存在独立的管理审计中；归档仍是保留内容的终结操作，暂停则可再开放。
+
+## 办公室场景与事件（2026-10-17）
+
+`web/office-scene.js` 独立负责场景动作，`web/office.js` 负责数据与界面。地板、桌椅、屏幕、门、休息区和人物为原生 DOM/SVG；没有额外图像模型依赖。新近 15 秒内的消息触发人物到接收者桌边再返回，材料读取/发布、容器修改显示相应动作与标签。首次打开和翻页历史不会重播；重复 seq 不重播，队列最多 8 个。切房、退出、后台、减少动态效果、暂停动态或列表模式会取消进行中的动作。静态/未知状态不能推断宿主离线或正在工作。植物摆动为装饰，独立于业务状态。
+
+“预览人物动作”仅本地演示，不发消息、不写事件、不启动宿主。场景中的纸张上限 12 份，数字显示该办公室精确的未归档消息总数（含已读）；不统计其它办公室的私信。`office_receive` 现在只有角色邮箱与单一数值 `nextCursor`，下一页传 `afterSeq`；不再合并 `office:` 历史信封或使用 `officeAfterSeq`。旧版协作页面脚本和样式已删除。任务/轮次数据仍可由当前工作记录读取，移除兼容不删除已有业务记录。
+
+验收：`node scripts/verify-office-scene.mjs`、`npm run verify:office-building` 与浏览器实际动作验证。
+
+人物导航在 `web/office-navigation.js` 中：以完整人物矩形（非点或脚底）加 12px 安全间距膨胀桌椅、显示器、入口、休息区与其他人物障碍；在场景坐标中搜索可通行路线，平滑时逐段检查，禁止斜线切角。交接停靠点位于接收者旁边，不占据接收者位置。场景同时只放行一个行走动作，空间不足就原地等待；窗口导致桌位重排、切换办公室或关闭动态时撤销路径。与缩放/平移后的屏幕坐标分开计算，返回也沿安全路径。
+
+## 同状态动作与历史回放（2026-10-17）
+
+每个阅读/处理/等待/休息/通信状态有三种有区别的姿态（翻书/对照屏幕/摘记、键入/便签/思考、喝水/看时间/活动肩膀等）。同一角色连续相同状态切换动作；长事件每两秒换一次。等待窗口仍有效时可用等待动作，不把未知宿主画成正在执行；休息预览明确标为演示。姿态保持在已预留的完整人物碰撞体内，行走仍走碰撞导航。
+
+办公室中的“历史回放 / Replay”支持起止事件编号（包含端点），时间线也能直接设起终点。载入时固定结束编号，后来新增的事件不插入此次回放。每个角色可设 0.5–60 秒的每条事件展示时长，留空继承默认；速度 0.5×/1×/2×/4×/8×立即生效，角色时长从下一事件生效。这是回放展示时间，不是对宿主实际耗时的测量。支持暂停/继续、上一/下一、进度跳转、重播与回到实时。减少动态效果时仍按时序显示记录，不强制移动。后台暂停，切换办公室/退出会取消未完成读取和播放。
+
+`POST /api/office-admin/replay` 为管理员只读投影，严格校验 `{action:'index'|'page',officeId,fromSeq?,toSeq?,afterSeq?,limit?}`；同源 Cookie 权限不变。分页最多100条/约64KB，长正文标记为预览，可通过已有完整事件分块读取。前端载入最多5000事件，过长时要求缩小区间，不静默截断。名称使用当前角色资料或事件历史署名，缺失身份标为历史角色；不推测旧桌位或没有记录的状态。历史视图使用当前场景布局，隐藏当前待处理纸堆以免混作历史数量。
+
+`web/office-replay.js` 控制只读载入、时序和失效隔离，`web/office-scene.js` 提供独立的 replayEvent/pause/rate 和姿态目录，`src/core/office-replay.ts` 投影受限办公室历史。回放期间暂停实时办公室快照替换，用户管理目录继续检查办公室删除；回到实时从原游标继续同步。回放不写消息、已读、任务、容器、记忆或审计事件。`verify:office-replay` 验证只读零写入、范围与分页、旧身份、每角色时长、暂停跳转及迟到响应失效。截图说明页增加了对应的真实页面示例。
+
+### 应用式工作区
+
+`/collaboration` 使用独立的 `office.css`，不再加载记忆页面的 `app.css`，避免全局页头、表单和移动断点互相覆盖。
+
+- 固定导航切换办公室、角色与申请、协作项目、宿主连接、连接设置；URL hash 支持刷新和浏览器前进后退。
+- 办公室列表和当前工作区并列显示。工作区按办公室场景、材料、工作项、通信、时间线分标签，键盘左右方向键、Home / End 可切换。
+- 创建和编辑办公室使用原生弹窗；编辑、暂停、归档与永久删除集中在右上角“办公室设置”。原有管理员身份、版本检查和删除确认保持生效。
+- 回放从标签栏打开设置抽屉，播放时收起设置，场景与控制栏同时可见。切换到其它功能或内容标签会暂停回放，返回时由用户继续；离开工作区会隔离尚未完成的打开办公室请求。
+- 小屏显示横向功能导航和办公室列表，各内容区域独立滚动。场景按完整人物布局取景，保留手动缩放、拖动、列表和展开功能。
+- 使用说明的 12 张真实演示截图与新界面同步；截图不含真实用户内容或凭据。
+
+协作管理登录支持反向代理挂载路径：浏览器在登录请求中携带当前页面解析出的 `cookiePath`，例如 `/mindpond/api/office-admin`；服务端只接受规范的、以 `/api/office-admin` 结束的限定路径。直连默认仍为 `/api/office-admin`。Cookie 保持 HttpOnly / SameSite=Strict，管理员凭据与同源验证不变；不能把路径统一改为 `/` 来绕过挂载问题。

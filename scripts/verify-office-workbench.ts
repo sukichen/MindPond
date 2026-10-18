@@ -16,15 +16,11 @@ try {
   await graph.init();
   const app = express();
   app.use(express.json());
-  app.use(
-    '/api/office-admin',
-    officeWorkbench(graph, {
-      apiKey: 'fixture-api',
-      operatorKey: 'fixture-operator',
-      contextSecret: 'fixture-secret',
-      configFile: config
-    })
-  );
+  const workbench=officeWorkbench(graph, {
+    apiKey: 'fixture-api', operatorKey: 'fixture-operator', contextSecret: 'fixture-secret', configFile: config
+  });
+  app.use('/api/office-admin',workbench);
+  app.use('/mindpond/api/office-admin',workbench);
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((r) => server!.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as any).port}/api/office-admin/`;
@@ -55,6 +51,24 @@ try {
   cookie = login.headers.get('set-cookie')!.split(';')[0];
   assert(login.headers.get('set-cookie')!.includes('HttpOnly'));
   assert(login.headers.get('set-cookie')!.includes('SameSite=Strict'));
+  assert(login.headers.get('set-cookie')!.includes('Path=/api/office-admin;'));
+  const proxyBase=base.replace('/api/office-admin/','/mindpond/api/office-admin/');
+  const proxyRequest=(route:string,body:unknown={},cookieHeader='')=>fetch(proxyBase+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookieHeader,Origin:new URL(proxyBase).origin},body:JSON.stringify(body)});
+  const proxied=await proxyRequest('login',{apiKey:'fixture-api',operatorKey:'fixture-operator',cookiePath:'/mindpond/api/office-admin'});
+  assert.equal(proxied.status,200);
+  const proxySetCookie=proxied.headers.get('set-cookie')!;
+  assert(proxySetCookie.includes('HttpOnly')&&proxySetCookie.includes('SameSite=Strict'));
+  const cookiePath=/; Path=([^;]+)/i.exec(proxySetCookie)![1];
+  const browserCookie=new URL(proxyBase+'state').pathname.startsWith(cookiePath+'/')?proxySetCookie.split(';')[0]:'';
+  assert.equal((await proxyRequest('state',{},browserCookie)).status,200,'browser must send the login cookie to the prefixed state request');
+  assert.equal((await proxyRequest('logout',{},browserCookie)).status,200);
+  assert.equal((await proxyRequest('state',{},browserCookie)).status,401,'prefixed logout invalidates the session');
+  for(const cookiePath of ['/','//evil.example/api/office-admin','/mindpond/../api/office-admin','/mindpond/api/office-admin?scope=all']){
+    assert.equal((await proxyRequest('login',{apiKey:'fixture-api',operatorKey:'fixture-operator',cookiePath})).status,400);
+  }
+  assert.equal((await proxyRequest('login',{cookiePath:'/mindpond/api/office-admin'})).status,403,'mount paths cannot bypass authentication');
+  console.log('PASS prefixed management login: browser cookie path matching, HttpOnly/SameSite, logout and invalid path/auth rejection');
+
   assert.equal(
     (await req('settings', { mcpUrl: 'https://user:secret@example.com/mcp' })).status,
     400

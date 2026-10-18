@@ -1137,9 +1137,9 @@ export class GraphMemory {
     await this.collaboration.init();
     this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
     await this.offices.init();
-    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['init','application','sync','identity','binding','review','configure','registry','state','configureOffice','officeContext','link','receive','exchange']);
+    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['init','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','officeContext','link','receive','exchange']);
     await this.roles.init();
-    this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material']);
+    this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay']);
     await this.building.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.

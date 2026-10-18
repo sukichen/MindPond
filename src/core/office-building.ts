@@ -1,5 +1,6 @@
 /** Neutral HTTP-MCP facilities: rooms, correspondence and user-defined documents. */
 import { createHash, randomUUID } from 'node:crypto';
+import { officeReplay } from './office-replay.js';
 import type { Database } from 'sqlite';
 import type { TrustedCallContext } from './trust.js';
 import type { RoleStore } from './roles.js';
@@ -18,8 +19,8 @@ export class OfficeBuilding {
                 const b = await this.roles.binding(a);
                 if ((i as Row).requestId)
                     await this.ownMessage((i as Row).requestId, b!.role_id, a!);
-                const page = await this.receive({ limit: 1, afterSeq: i.afterSeq, officeAfterSeq: (i as Row).officeAfterSeq, replyTo: (i as Row).requestId }, a);
-                return page.messages.length ? { status: 'matched', message: page.messages[0], nextCursor: page.nextCursor.roleAfterSeq, officeAfterSeq: page.nextCursor.officeAfterSeq } : undefined;
+                const page = await this.receive({ limit: 1, afterSeq: i.afterSeq, replyTo: (i as Row).requestId }, a);
+                return page.messages.length ? { status: 'matched', message: page.messages[0], nextCursor: page.nextCursor } : undefined;
             }),
             start: (id, i, a, ms) => this.write(async () => {
                 const b = await this.roles.binding(a);
@@ -39,6 +40,7 @@ export class OfficeBuilding {
       CREATE TABLE IF NOT EXISTS office_containers(id TEXT PRIMARY KEY,office_id TEXT NOT NULL REFERENCES offices(id),title TEXT NOT NULL,content TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,updated_by TEXT NOT NULL,updated_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS office_container_page ON office_containers(office_id,id);
       CREATE TABLE IF NOT EXISTS building_receipts(actor TEXT NOT NULL,binding_id TEXT NOT NULL,operation TEXT NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(actor,binding_id,operation,key));
+      CREATE INDEX IF NOT EXISTS role_message_office_recipient ON role_messages(office_id,recipient);
       CREATE TABLE IF NOT EXISTS role_message_waits(id TEXT PRIMARY KEY,role_id TEXT NOT NULL,binding_id TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
     `);
     }
@@ -84,24 +86,13 @@ export class OfficeBuilding {
         const members = await this.db.all(`SELECT s.id assignmentId,s.label,s.role description,r.id roleId,r.name,r.introduction FROM office_seats s LEFT JOIN role_seats rs ON rs.seat_id=s.id LEFT JOIN character_roles r ON r.id=rs.role_id WHERE s.office_id=? AND s.enabled=1 ORDER BY s.id`, [o.id]);
         return { office: { id: o.id, title: o.title, description: o.goal, state: o.state }, members };
     }
-    private normalize(m: Row, legacy = false) {
-        return { id: legacy ? 'office:' + m.id : m.id, seq: m.seq, sender: legacy ? m.sender_role : m.sender, recipient: legacy ? m.recipient_role : m.recipient, senderName: m.sender_name, recipientName: m.recipient_name, officeId: m.office_id ?? null, body: m.body, replyTo: legacy ? (m.request_id ? 'office:' + m.request_id : null) : (m.reply_to ?? m.request_id ?? null), metadata: legacy ? {} : JSON.parse(m.metadata ?? '{}'), state: m.state === 'resolved' || m.receipt === 'accepted' ? 'archived' : m.state === 'read' || m.receipt === 'read' ? 'read' : 'unread', sentAt: m.created_at ?? m.ts };
+    private normalize(m: Row) {
+        return {id:m.id,seq:m.seq,sender:m.sender,recipient:m.recipient,senderName:m.sender_name,recipientName:m.recipient_name,officeId:m.office_id??null,body:m.body,replyTo:m.reply_to??m.request_id??null,metadata:JSON.parse(m.metadata??'{}'),state:m.state==='resolved'?'archived':m.state==='read'?'read':'unread',sentAt:m.created_at};
     }
-    private async ownMessage(id: string, roleId: string, a: TrustedCallContext): Promise<{
-        row: Row;
-        legacy: boolean;
-    }> {
-        if (id.startsWith('office:')) {
-            const row = await this.db.get<Row>(`SELECT m.*,e.ts,rs.role_id sender_role,rr.role_id recipient_role FROM office_messages m JOIN office_events e ON e.seq=m.seq LEFT JOIN role_seats rs ON rs.seat_id=m.sender LEFT JOIN role_seats rr ON rr.seat_id=m.recipient WHERE m.id=?`, [id.slice(7)]);
-            if (!row || ![row.sender_role, row.recipient_role].includes(roleId))
-                fail('Message unavailable');
-            await this.room(row!.office_id, a);
-            return { row: row!, legacy: true };
-        }
-        const row = await this.db.get<Row>('SELECT m.*,s.state FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.id=? AND (m.sender=? OR m.recipient=?)', [id, roleId, roleId]);
-        if (!row)
-            fail('Message unavailable');
-        return { row: row!, legacy: false };
+    private async ownMessage(id:string,roleId:string,_a:TrustedCallContext):Promise<{row:Row}> {
+        const row=await this.db.get<Row>('SELECT m.*,s.state FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.id=? AND (m.sender=? OR m.recipient=?)',[id,roleId,roleId]);
+        if(!row)fail('Message unavailable');
+        return {row:row!};
     }
     async receive(i: Row, a?: TrustedCallContext): Promise<Row> {
         const actor = await this.actor(a), limit = i.limit ?? 10;
@@ -125,92 +116,44 @@ export class OfficeBuilding {
             args.push(i.replyTo, i.replyTo);
         }
         const direct = await this.db.all<Row[]>(`SELECT m.*,s.state FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE ${where} ORDER BY m.seq LIMIT ?`, [...args, limit + 1]);
-        const seats = await this.offices.authorizedSeats(actor.a);
-        const ids = seats.map(s => s.id);
-        let legacy: Row[] = [];
-        if (ids.length && (!i.replyTo || i.replyTo.startsWith('office:'))) {
-            const placeholders = ids.map(() => '?').join(',');
-            const params: any[] = [...ids];
-            let filter = i.direction === 'sent' ? `m.sender IN (${placeholders})` : i.direction === 'all' ? `(m.recipient IN (${placeholders}) OR m.sender IN (${placeholders}))` : `m.recipient IN (${placeholders})`;
-            if (i.direction === 'all')
-                params.push(...ids);
-            filter += ' AND m.seq>?';
-            params.push(i.officeAfterSeq ?? 0);
-            if (!i.includeArchived && (!i.direction || i.direction === 'inbox'))
-                filter += " AND COALESCE(ack.kind,'unread')<>'accepted'";
-            if (i.officeId) {
-                filter += ' AND m.office_id=?';
-                params.push(i.officeId);
-            }
-            if (i.replyTo) {
-                filter += ' AND m.request_id=?';
-                params.push(i.replyTo.slice(7));
-            }
-            legacy = await this.db.all<Row[]>(`SELECT m.*,e.ts,ack.kind receipt,rs.role_id sender_role,rr.role_id recipient_role FROM office_messages m JOIN office_events e ON e.seq=m.seq LEFT JOIN office_acks ack ON ack.message_id=m.id AND ack.seat_id=m.recipient LEFT JOIN role_seats rs ON rs.seat_id=m.sender LEFT JOIN role_seats rr ON rr.seat_id=m.recipient WHERE ${filter} ORDER BY m.seq LIMIT ?`, [...params, limit + 1]);
-        }
-        // Merge FIFO streams without comparing their independent sequence numbers.
-        const messages: Row[] = [];
-        let d = 0, l = 0, roleCursor = i.afterSeq ?? 0, officeCursor = i.officeAfterSeq ?? 0;
-        while (messages.length < limit && (d < direct.length || l < legacy.length)) {
-            if (l >= legacy.length || (d < direct.length && direct[d].created_at <= legacy[l].ts)) {
-                const m = direct[d++];
-                messages.push(this.normalize(m));
-                roleCursor = m.seq;
-            }
-            else {
-                const m = legacy[l++];
-                messages.push(this.normalize(m, true));
-                officeCursor = m.seq;
-            }
-        }
-        return { identity: { roleId: actor.b.role_id, name: actor.b.name, introduction: actor.b.introduction }, messages, hasMore: d < direct.length || l < legacy.length, nextCursor: { roleAfterSeq: roleCursor, officeAfterSeq: officeCursor } };
+        const messages=direct.slice(0,limit).map(m=>this.normalize(m));
+        return {identity:{roleId:actor.b.role_id,name:actor.b.name,introduction:actor.b.introduction},messages,hasMore:direct.length>limit,nextCursor:messages.at(-1)?.seq??i.afterSeq??0};
     }
+
     async message(i: Row, a?: TrustedCallContext): Promise<Row> {
         const operation=async () => {
             const actor = await this.actor(a);
             if (i.action === 'get') {
                 const m = await this.ownMessage(i.messageId, actor.b.role_id, actor.a);
-                return { message: this.normalize(m.row, m.legacy) };
+                return { message: this.normalize(m.row) };
             }
             return this.receipt(actor.b, 'message', i, async () => {
                 if (i.action === 'read' || i.action === 'archive') {
                     const m = await this.ownMessage(i.messageId, actor.b.role_id, actor.a);
-                    if ((m.legacy ? m.row.recipient_role : m.row.recipient) !== actor.b.role_id)
+                    if (m.row.recipient !== actor.b.role_id)
                         fail('Only recipient may mark or archive a message');
-                    if (m.legacy) {
-                        await this.db.run("INSERT INTO office_acks VALUES(?,?,?) ON CONFLICT(message_id,seat_id) DO UPDATE SET kind=CASE WHEN kind='accepted' THEN kind ELSE excluded.kind END",[m.row.id,m.row.recipient,i.action==='read'?'read':'accepted']);
-                    }
-                    else
-                        await this.db.run("UPDATE role_message_states SET state=CASE WHEN state='resolved' THEN state ELSE ? END,updated_at=? WHERE message_id=?", [i.action === 'read' ? 'read' : 'resolved', this.clock(), m.row.id]);
+                    await this.db.run("UPDATE role_message_states SET state=CASE WHEN state='resolved' THEN state ELSE ? END,updated_at=? WHERE message_id=?",[i.action==='read'?'read':'resolved',this.clock(),m.row.id]);
                     await this.log(actor.b.role_id, 'message_' + i.action, { messageId: i.messageId });
-                    const actual = m.legacy
-                        ? await this.db.get<Row>('SELECT kind state FROM office_acks WHERE message_id=? AND seat_id=?', [m.row.id, m.row.recipient])
-                        : await this.db.get<Row>('SELECT state FROM role_message_states WHERE message_id=?', [m.row.id]);
+                    const actual=await this.db.get<Row>('SELECT state FROM role_message_states WHERE message_id=?',[m.row.id]);
+                    if(m.row.office_id)await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)',[m.row.office_id,JSON.stringify({principal:actor.a.principal,roleId:actor.b.role_id}),['resolved','accepted'].includes(actual!.state)?'message_archive':'message_read',JSON.stringify({messageId:i.messageId}),this.clock()]);
                     return { messageId: i.messageId, state: ['resolved', 'accepted'].includes(actual!.state) ? 'archived' : 'read' };
                 }
                 let recipient = i.recipient, officeId = i.officeId;
                 if (i.replyTo) {
                     const original = await this.ownMessage(i.replyTo, actor.b.role_id, actor.a);
-                    const sender = original.legacy ? original.row.sender_role : original.row.sender;
-                    const target = original.legacy ? original.row.recipient_role : original.row.recipient;
+                    const sender = original.row.sender;
+                    const target = original.row.recipient;
                     const other = actor.b.role_id === sender ? target : sender;
                     if (recipient && recipient !== other)
                         fail('Reply recipient differs from original correspondent', 'invalid_input');
                     recipient = other;
-                    if (original.legacy && !other) {
-                        if(Object.keys(i.metadata??{}).length)fail('Legacy correspondent supports text only; metadata cannot be delivered','invalid_input');
-                        const c = await this.roles.officeContext(actor.a, original.row.office_id);
-                        const isReply = original.row.kind === 'request' && original.row.recipient_role === actor.b.role_id;
-                        const sent = await this.offices.exchange({ action: 'send', workSessionId: c.workSessionId, recipient: original.row.recipient_role === actor.b.role_id ? original.row.sender : original.row.recipient, kind: isReply ? 'reply' : 'inform', ...(isReply ? { requestId: original.row.id, final: false } : {}), body: i.body, key: i.key }, actor.a);
-                        return { messageId: 'office:' + sent.messageId, replyTo: i.replyTo };
-                    }
                     if(officeId===undefined)officeId=original.row.office_id;
                 }
                 const receiver = await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'", [recipient]);
                 if (!receiver || recipient === actor.b.role_id)
                     fail('Choose an active correspondent', 'invalid_input');
                 const replying = i.replyTo ? await this.ownMessage(i.replyTo, actor.b.role_id, actor.a) : null;
-                const returnChannel = replying && (replying.legacy?replying.row.sender_role:replying.row.sender) === recipient && (replying.legacy?replying.row.recipient_role:replying.row.recipient) === actor.b.role_id;
+                const returnChannel = replying && replying.row.sender === recipient && replying.row.recipient === actor.b.role_id;
                 if (receiver!.principal !== actor.a.principal && !returnChannel && !(await this.db.get('SELECT 1 FROM role_links WHERE sender=? AND recipient=?', [actor.b.role_id, recipient])))
                     fail('Cross-account correspondence needs user permission');
                 if (officeId)
@@ -219,7 +162,7 @@ export class OfficeBuilding {
                 await this.db.run(`INSERT INTO role_messages(id,sender,recipient,kind,body,request_id,final,sender_name,recipient_name,office_id,seq,created_at,reply_to,metadata) VALUES(?,?,?,'inform',?,NULL,0,?,?,?,?,?,?,?)`, [id, actor.b.role_id, recipient, i.body, actor.b.name, receiver!.name, officeId ?? null, seq, this.clock(), i.replyTo ?? null, JSON.stringify(i.metadata ?? {})]);
                 await this.db.run('INSERT INTO role_message_states VALUES(?,?,?)', [id, 'queued', this.clock()]);
                 if (officeId)
-                    await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)', [officeId, JSON.stringify({ principal: actor.a.principal, roleId: actor.b.role_id }), 'message', JSON.stringify({ messageId: id, sender: actor.b.role_id, recipient, body: i.body }), this.clock()]);
+                    await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)', [officeId, JSON.stringify({ principal: actor.a.principal, roleId: actor.b.role_id }), 'message', JSON.stringify({ messageId: id, sender: actor.b.role_id, recipient, senderName:actor.b.name, recipientName:receiver!.name, body: i.body }), this.clock()]);
                 return { messageId: id, seq, replyTo: i.replyTo ?? null, state: 'queued' };
             });
         };
@@ -261,6 +204,11 @@ export class OfficeBuilding {
         };
         return ['get','list'].includes(i.action)?this.read(operation):this.write(operation);
     }
+    async replay(i:Row,a?:TrustedCallContext){
+        if(!a?.operator)fail('User management required');
+        await this.room(i.officeId,a!);
+        return officeReplay(this.db,i);
+    }
     async snapshot(officeId: string, a: TrustedCallContext, afterRevision?: number) {
         if (!a.operator)
             fail('User management required');
@@ -268,11 +216,17 @@ export class OfficeBuilding {
         if (afterRevision !== undefined && (!Number.isSafeInteger(afterRevision) || afterRevision < 0))
             fail('Invalid facility revision', 'invalid_input');
         const revision = (await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM office_events WHERE office_id=?', [officeId]))!.n;
+        // Activity is independent of document revision (for example a bounded wait starts/ends).
+        // Pending counts are exact for this room; private mail from other rooms is excluded.
+        const activity=await this.db.all(`SELECT s.id seatId,rs.role_id roleId,
+          (SELECT COUNT(*) FROM role_messages m JOIN role_message_states st ON st.message_id=m.id WHERE m.office_id=s.office_id AND m.recipient=rs.role_id AND st.state<>'resolved') pending,
+          (SELECT MAX(w.expires_at) FROM role_message_waits w JOIN role_bindings b ON b.id=w.binding_id WHERE w.role_id=rs.role_id AND b.state='active' AND w.state='waiting' AND w.expires_at>?) waitingUntil
+          FROM office_seats s LEFT JOIN role_seats rs ON rs.seat_id=s.id WHERE s.office_id=? AND s.enabled=1 ORDER BY s.id`,[this.clock(),officeId]);
         if (revision === afterRevision)
-            return { unchanged: true, revision };
+            return { unchanged: true, revision, activity };
         const containers = await this.container({ action: 'list', officeId }, a);
         const messages = await this.db.all('SELECT id,sender_name,recipient_name,body,reply_to,created_at FROM role_messages WHERE office_id=? ORDER BY seq DESC LIMIT 50', [officeId]);
-        return { ...containers, messages, revision };
+        return { ...containers, messages, revision, activity };
     }
     async material(i: Row, a?: TrustedCallContext) {
         return this.write(async () => {

@@ -31,5 +31,19 @@
     "scripts/verify-agent-api.ts": [
       "workbench-test-key"
     ]
-  }
+  },
+  "reviewedScreenshotAssets": [
+    "web/guide/01-login.jpg",
+    "web/guide/02-connection.jpg",
+    "web/guide/03-mcp.jpg",
+    "web/guide/04-approve.jpg",
+    "web/guide/05a-room-name.jpg",
+    "web/guide/05b-invite.jpg",
+    "web/guide/06-office.jpg",
+    "web/guide/07-container.jpg",
+    "web/guide/08-role-manage.jpg",
+    "web/guide/09-office-delete.jpg",
+    "web/guide/10-materials.jpg",
+    "web/guide/11-replay.jpg"
+  ]
 }

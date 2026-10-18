@@ -27,10 +27,10 @@ try{
   const token=(principal:string)=>signContextToken({principal,domains:[{kind:'personal',id:principal}]},env.MEMORY_CONTEXT_SECRET);
   const request=async(route:string,body?:unknown,principal?:string)=>{const response=await fetch(base+route,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...(principal?{'x-mindpond-context':token(principal)}:{})},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,text:await response.text()};};
   const post=async(route:string,body:unknown,principal:string)=>{const r=await request('/api/work/'+route,body,principal);assert.equal(r.status,200,r.text);return JSON.parse(r.text);};
-  const page=await request('/collaboration');assert.equal(page.status,200);for(const id of ['handoffForm','inbox','thread','workspaceForm','contextToken'])assert(page.text.includes(`id="${id}"`));
-  const asset=await request('/assets/collaboration.js');assert.equal(asset.status,200);assert(!asset.text.includes('innerHTML'));assert(!asset.text.includes('localStorage'));
-  for(const id of ['activityTasks','activityConnection','autoObserve'])assert(page.text.includes(`id="${id}"`));
-  const loopAsset=await request('/assets/collaboration-loop.js');assert.equal(loopAsset.status,200);assert(loopAsset.text.includes('renderActivity'));assert(!loopAsset.text.includes('innerHTML'));
+  const page=await request('/collaboration');assert.equal(page.status,200);for(const id of ['officeApp','officeRoster','officeScene','officeSceneList','officeScenePreview'])assert(page.text.includes(`id="${id}"`));
+  const asset=await request('/assets/office.js');assert.equal(asset.status,200);assert(!asset.text.includes('innerHTML'));assert([...asset.text.matchAll(/localStorage\.setItem\(['"]([^'"]+)/g)].every(m=>m[1]==='mindpond.office.roleZoom'),'only public display preferences may be persisted');
+  assert(!page.text.includes('office-legacy'));
+  const sceneAsset=await request('/assets/office-scene.js');assert.equal(sceneAsset.status,200);assert(sceneAsset.text.includes('class Scene'));
   assert.equal((await request('/api/work/workspaces',{})).status,403);
   assert.equal((await request('/api/work/workspace/configure',workspace,'reporter-account')).status,403);
   const report={summary:'Fixture issue',project:'Tool',version:'Fixture v1',environment:'Test fixture',expected:'Expected fixture behavior',actual:'Observed fixture failure',reproduction:['Run the fixture'],evidence:[{label:'Error',content:'Fixture error text',source:'file:///fixture/private/error.log'}],attempts:[],unknowns:['Real production outcome'],acceptance:['Reporter repeats the fixture']};
