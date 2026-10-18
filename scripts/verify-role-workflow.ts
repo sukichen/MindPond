@@ -1,5 +1,6 @@
 /** Real HTTP MCP + browser control plane, isolated DB, no model calls/secrets. */
 import assert from 'node:assert/strict';
+import { COLLABORATION_LEARNING } from '../src/core/collaboration-learning.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -175,8 +176,8 @@ try {
     const launch = await roleClientLaunch(directory, [], { FIXTURE_MINDPOND_AUTH: tokens.codex });
     assert(!JSON.stringify({ args: launch.args }).includes(tokens.codex));
     if (client === 'codex') {
-      assert(launch.args.includes('--no-daemon'));
-      const skill = await fs.readFile(path.join(directory, '.agents/skills/mindpond-inbox/SKILL.md'), 'utf8');assert(skill.includes('office_receive'));
+      assert(launch.args.includes('--no-daemon'));assert(launch.args.some(s=>s.includes('tool_timeout_sec = 360')),'Codex deadline must exceed the five-minute message wait');
+      const skill = await fs.readFile(path.join(directory, '.agents/skills/mindpond-inbox/SKILL.md'), 'utf8');assert(skill.includes('office_receive'));assert(skill.includes(COLLABORATION_LEARNING));
       if(process.env.MINDPOND_TEST_CODEX_BIN) {
         const cli=await promisify(execFile)(process.env.MINDPOND_TEST_CODEX_BIN,[...launch.args,'mcp','get','mindpond_office','--json'],{cwd:launch.cwd,timeout:15000,maxBuffer:1000000,env:{...process.env,...launch.env}});
         const parsed=JSON.parse(cli.stdout);
@@ -190,6 +191,7 @@ try {
       }
     } else {
       const c = JSON.parse(await fs.readFile(path.join(directory, 'opencode.json'), 'utf8'));
+      assert(c.command.mindpond_office_get_message.template.includes(COLLABORATION_LEARNING));
       assert.equal(c.mcp.mindpond_office.type, 'remote');assert.equal(c.command.mindpond_office_get_message.subtask, false);
       if(process.env.MINDPOND_TEST_OPENCODE_BIN) {
         const cli=await promisify(execFile)(process.env.MINDPOND_TEST_OPENCODE_BIN,[...launch.args,'--pure','mcp','list'],{

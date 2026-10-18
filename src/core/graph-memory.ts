@@ -33,7 +33,6 @@ import { VectorIndex, cosineSimilarity, type VectorItem } from './vector-index.j
 import { zhEnabled, zhDims, isChineseText, getZhEmbeddingService,legacyZhEmbeddingIdentity,acceptsUnlabelledZhVectors } from './embedding-zh.js';
 import { createModuleLogger } from '../infra/logger.js';
 import { getErrorMessage } from '../infra/errors.js';
-import { debugTrace } from '../infra/debug-tracer.js';
 import { MEMORY_SAVE_LIMITS } from './save-policy.js';
 import { normalizeDimensions, legacyDimension, dimensionPlacements, type KnowledgeDimension } from './knowledge.js';
 import { AnchorStore, normalizeAnchors, diagnoseAnchors, anchorIssueField, type MemoryAnchor, type StoredAnchor, type AnchorMatch } from './anchors.js';
@@ -373,19 +372,6 @@ const NODE_COLUMNS_NO_EMBEDDING =
 
 /** Same list prefixed for JOINs against the nodes table (alias n). */
 const NODE_COLUMNS_NO_EMBEDDING_N = NODE_COLUMNS_NO_EMBEDDING.split(', ').map(c => `n.${c}`).join(', ');
-
-/** Raw SQLite row shape for edges table */
-interface EdgeRow {
-  id: string;
-  from_id: string;
-  to_id: string;
-  label: string;
-  weight: number;
-  created_at: number;
-}
-
-/** Row shape for JOIN queries (edges + nodes) */
-type JoinedRow = EdgeRow & NodeRow;
 
 // ============================================
 // Database
@@ -3974,7 +3960,7 @@ export class GraphMemory {
       this.zhVectorIndex.clear();
       await this.db.exec(`DELETE FROM nodes_zh;`);
     }
-    const result = await this.db.exec(`DELETE FROM nodes; DELETE FROM edges;`);
+    await this.db.exec(`DELETE FROM nodes; DELETE FROM edges;`);
     await this.bumpIndexGeneration();
     return 0; // exec doesn't return changes easily
     });

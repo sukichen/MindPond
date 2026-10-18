@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { MEMORY_BOOTSTRAP } from '../core/bootstrap.js';
+import { OFFICE_TOOL_TIMEOUT_MS, OFFICE_TOOL_TIMEOUT_SECONDS } from '../core/office-wait-policy.js';
 import { parseMcpToolProfile, type McpToolProfile } from '../core/mcp-tool-profile.js';
 import { MindPondError } from '../core/errors.js';
 
@@ -53,8 +54,9 @@ export async function prepareClientBundle(options:ClientBundleOptions) {
   const files:Record<string,string>={'instructions.md':MEMORY_BOOTSTRAP+'\n'};
   let launch:BundleManifest['launch'];
   if(options.client==='codex') {
-    files['config.toml']=`[mcp_servers.${name}]\ncommand = ${toml(server.command)}\nargs = ${toml(server.args)}\nenv = ${toml(env)}\n`;
-    launch={command:'codex',args:['-c',`mcp_servers.${name}=${toml(server)}`],env:{}};
+    const codexServer={...server,tool_timeout_sec:OFFICE_TOOL_TIMEOUT_SECONDS};
+    files['config.toml']=`[mcp_servers.${name}]\ncommand = ${toml(server.command)}\nargs = ${toml(server.args)}\nenv = ${toml(env)}\ntool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS}\n`;
+    launch={command:'codex',args:['-c',`mcp_servers.${name}=${toml(codexServer)}`],env:{}};
   } else if(options.client==='claude') {
     files['mcp.json']=json({mcpServers:{[name]:{type:'stdio',...server}}});
     launch={command:'claude',args:['--mcp-config',path.join(directory,'mcp.json'),'--append-system-prompt',MEMORY_BOOTSTRAP],env:{}};
@@ -65,7 +67,7 @@ export async function prepareClientBundle(options:ClientBundleOptions) {
       await fs.access(pluginPath);
       files['mindpond-plugin.mjs']=`import { createOpenCodeMemoryPlugin } from ${JSON.stringify(pathToFileURL(pluginPath).href)};\nexport default (host)=>createOpenCodeMemoryPlugin(host,${JSON.stringify({dbPath,personalId:options.personalId??'default',nodePath:server.command,capturePublicMessages:options.capturePublicMessages??true,...(options.embeddingConfigPath?{embeddingConfigPath:absolute(options.embeddingConfigPath,'embeddingConfigPath')}:{}),...(options.modelDirectory?{modelDirectory:absolute(options.modelDirectory,'modelDirectory')}: {})})});\n`;
     }
-    const config={...(native?{plugin:[pathToFileURL(path.join(directory,'mindpond-plugin.mjs')).href]}:{}),mcp:{[name]:{type:'local',command:[server.command,...server.args],environment:env,enabled:!native,timeout:15000}},instructions:[path.join(directory,'instructions.md')]};
+    const config={...(native?{plugin:[pathToFileURL(path.join(directory,'mindpond-plugin.mjs')).href]}:{}),mcp:{[name]:{type:'local',command:[server.command,...server.args],environment:env,enabled:!native,timeout:native?15000:OFFICE_TOOL_TIMEOUT_MS}},instructions:[path.join(directory,'instructions.md')]};
     files['opencode.json']=json(config);
     launch={command:'opencode',args:[],env:{OPENCODE_CONFIG_CONTENT:JSON.stringify(config)}};
   }

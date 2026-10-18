@@ -1,19 +1,10 @@
-/**
- * Active Memory Retriever — single GraphMemory backend
- *
- * No more EnhancedMemoryManager. All memory lives in GraphMemory.
- * Four layers map to dimensions:
- *   short-term → session history (passed by caller, not stored here)
- *   long-term  → fact + event dimensions
- *   skills     → nodes tagged 'skill'
- *   lessons    → lesson dimension
- */
+/** Scoped GraphMemory retrieval with per-session injection deduplication.
+ * Searches configured identities and does not invoke an LLM. */
 
-import { GraphMemory, type Dimension, type SearchResult } from './graph-memory.js';
+import { GraphMemory, type SearchResult } from './graph-memory.js';
 import { createModuleLogger } from '../infra/logger.js';
 import { getErrorMessage } from '../infra/errors.js';
 import { debugTrace } from '../infra/debug-tracer.js';
-import { LLMClient } from './llm.js';
 import { getEmbeddingService } from './embedding.js';
 
 const logger = createModuleLogger('active-retriever');
@@ -44,7 +35,6 @@ export interface RetrievalResult {
 
 export class ActiveMemoryRetriever {
   private graphMemory: GraphMemory;
-  private llmClient?: LLMClient;
 
   /**
    * Cross-turn injection dedup (user requirement 2026-09-03: "重复memory不进上下文").
@@ -58,9 +48,8 @@ export class ActiveMemoryRetriever {
   private injectedHistory = new Map<string, Map<string, { turn: number; score: number }>>();
   private turnCounter = new Map<string, number>();
 
-  constructor(graphMemory: GraphMemory, llmClient?: LLMClient) {
+  constructor(graphMemory: GraphMemory) {
     this.graphMemory = graphMemory;
-    this.llmClient = llmClient;
     logger.info('ActiveMemoryRetriever initialized');
   }
 
@@ -132,12 +121,11 @@ let instance: ActiveMemoryRetriever | undefined;
 let instanceGraphMemory: GraphMemory | undefined;
 
 export function getActiveMemoryRetriever(
-  graphMemory: GraphMemory,
-  llmClient?: LLMClient
+  graphMemory: GraphMemory
 ): ActiveMemoryRetriever {
   // Recreate if a different GraphMemory backend is passed
   if (!instance || instanceGraphMemory !== graphMemory) {
-    instance = new ActiveMemoryRetriever(graphMemory, llmClient);
+    instance = new ActiveMemoryRetriever(graphMemory);
     instanceGraphMemory = graphMemory;
   }
   return instance;

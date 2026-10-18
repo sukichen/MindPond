@@ -22,7 +22,7 @@
  * by the host for its actual model; the request driver bounds total execution.
  */
 
-import { GraphMemory, MemoryNode, MemoryEdge, Dimension, MemoryLayer, SearchResult, RecallFeedbackInput, MemoryUseReportInput } from './core/graph-memory.js';
+import { GraphMemory, MemoryNode, Dimension, MemoryLayer, SearchResult, RecallFeedbackInput, MemoryUseReportInput } from './core/graph-memory.js';
 import { MemoryPipelineManager } from './core/memory-pipeline.js';
 import { MemoryConsolidation } from './core/memory-consolidation.js';
 import { LLMClient } from './core/llm.js';
@@ -43,7 +43,6 @@ export type { ProfileRetrievalDependencies } from './core/profile-retrieval.js';
  * Legacy extraction callback; prefer the bounded organization driver for new integrations.
  */
 export type LLMFn = (prompt: string, system?: string) => Promise<string>;
-const ASSOCIATIVE_EDGE_LABELS = new Set(['related', 'similar-to', 'caused-by', 'fixes', 'supports']);
 
 /** Adapter: lets MindPond call the host's LLMFn through the internal interface. */
 function llmFnToClient(fn: LLMFn): LLMClient {

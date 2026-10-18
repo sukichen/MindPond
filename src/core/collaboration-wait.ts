@@ -30,7 +30,7 @@ export class CollaborationWaiter {
   private active=new Map<string,number>();
   private pending=new Set<Promise<unknown>>();
   private generation=0;
-  constructor(private hooks:WaitHooks, private resumeTool = 'work_wait'){}
+  constructor(private hooks:WaitHooks, private resumeTool = 'work_wait', private limits={defaultMs:25000,maxMs:55000}){}
   notify(){this.generation++;for(const listener of [...this.listeners])listener();}
   async close(){this.stopping.abort();this.notify();await Promise.allSettled([...this.pending]);}
   private pause(ms:number,generation:number,signal:AbortSignal){
@@ -48,9 +48,9 @@ export class CollaborationWaiter {
     return promise;
   }
   private async run(input:WorkWaitInput,actor:TrustedCallContext|undefined,runtime:WorkCallRuntime={}){
-    const waitMs=input.waitMs??25000;
-    if(!Number.isInteger(waitMs)||waitMs<100||waitMs>55000)
-      throw new MindPondError('invalid_input','waitMs must be 100–55000 milliseconds');
+    const waitMs=input.waitMs??this.limits.defaultMs;
+    if(!Number.isInteger(waitMs)||waitMs<100||waitMs>this.limits.maxMs)
+      throw new MindPondError('invalid_input',`waitMs must be 100–${this.limits.maxMs} milliseconds`);
     // Validate authorization and filters before consuming a waiter slot.
     await runtime.authorize?.();
     await this.hooks.inspect(input,actor);

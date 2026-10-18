@@ -7,7 +7,7 @@
  * Maintenance: decay stale nodes, archive cold L0, report stats
  */
 
-import { GraphMemory, type MemoryNode, type MemoryLayer } from './graph-memory.js';
+import { GraphMemory, type MemoryNode } from './graph-memory.js';
 import { LLMClient } from './llm.js';
 import { MindPondError } from './errors.js';
 import { createModuleLogger } from '../infra/logger.js';

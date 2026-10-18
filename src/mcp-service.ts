@@ -1,6 +1,6 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
-import {OFFICE_INSTRUCTIONS,officeMemorySession} from './core/office.js';
-import { ROLE_INSTRUCTIONS, roleRuntimeId } from './core/roles.js';
+import {officeMemorySession} from './core/office.js';
+import { roleRuntimeId } from './core/roles.js';
 import { roleOperations } from './core/role-tools.js';
 import { buildingOperations } from './core/building-tools.js';
 import { BUILDING_INSTRUCTIONS } from './core/office-building.js';
@@ -161,7 +161,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
       if(current.roleContext && (name==='role_application'||name==='role_sync'||name.startsWith('office_'))) {
         const entry=result.content?.find((c:any)=>c.type==='text');
-        if(entry){const payload=JSON.parse(entry.text);entry.text=JSON.stringify({...payload,roleContext:current.roleContext,contextMode:'public_correlation'});}
+        if(entry){const payload=JSON.parse(entry.text);entry.text=JSON.stringify({...payload,...(name==='office_wait'&&payload.resume?{resume:{...payload.resume,roleContext:current.roleContext}}:{}),roleContext:current.roleContext,contextMode:'public_correlation'});}
       }
       if(roleIdentity) {
         const revision=String(roleIdentity.profileRevision)+':'+String(roleIdentity.bindingEpoch);

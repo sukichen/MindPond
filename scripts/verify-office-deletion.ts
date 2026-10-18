@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import express from 'express';
 import { GraphMemory } from '../src/core/graph-memory.js';
 import { getEmbeddingService } from '../src/core/embedding.js';
@@ -41,7 +42,7 @@ try {
     const materialRequest={action:'publish',officeId,title:'交通与预算草案',version:'草案 v1',content:'两位成年人，从杭州出发，两天一夜。预算上限约 2000 元，出发日期、交通时刻与住宿价格待确认。请结合景点顺序继续调整。',key:'material-'+officeId};
     const material=await graph.building.material(materialRequest,a);
     await graph.building.container({action:'put',officeId,id:officeId+'-note',title:'待确认清单',content:{date:'待确认'},expectedRevision:0,key:'note-'+officeId},a);
-    const message=await graph.building.message({action:'send',officeId,recipient:b.roleId,body:'小麦，请先安排景点顺序，我会结合路线整理交通与预算。完整草案已放到文本材料，日期和价格暂时待确认。',key:'message-'+officeId},a);
+    const message=await graph.building.message({action:'send',officeId,recipient:b.roleId,body:process.argv.includes('--preview')?'## 路线 Review\n\n**结论：草案可继续完善。** 出发日期与价格待确认。\n\n- [x] 核对景点顺序\n- [ ] 确认交通时刻与预算\n\n| 检查项 | 当前结果 |\n| --- | --- |\n| 路线 | 两天一夜，避免折返 |\n| 预算 | 上限约 2000 元，待核价 |\n\n> 收到回复后，再更新交通方案。\n\n`review` 记录请保留待确认项。':'小麦，请先安排景点顺序，我会结合路线整理交通与预算。完整草案已放到文本材料，日期和价格暂时待确认。',key:'message-'+officeId},a);
     const task=await graph.offices.item({action:'create',workSessionId:session.workSessionId,title:'Fixture task',acceptance:'Evidence required',owner:officeId+'-a',reviewer:officeId+'-b',key:'task-'+officeId},a);
     const claim=await graph.offices.item({action:'claim',workSessionId:session.workSessionId,itemId:task.item.id,expectedRevision:task.item.revision,key:'claim-'+officeId},a);
     await graph.offices.item({action:'submit',workSessionId:session.workSessionId,itemId:task.item.id,expectedRevision:claim.item.revision,leaseToken:claim.leaseToken,codeVersion:'fixture-v1',materialId:material.materialId,key:'submit-'+officeId},a);
@@ -54,8 +55,9 @@ try {
   const web=path.resolve(new URL('../web',import.meta.url).pathname);
   app.get('/collaboration',(_req,res)=>res.sendFile(path.join(web,'collaboration.html')));
   app.get('/collaboration/guide',(_req,res)=>res.sendFile(path.join(web,'office-guide.html')));
+  app.get('/assets/marked.js',(_req,res)=>res.sendFile(fileURLToPath(new URL('./marked.umd.js',import.meta.resolve('marked')))));
   app.use('/assets',express.static(web));
-  app.use('/api/office-admin',officeWorkbench(graph,{apiKey:'',operatorKey:'fixture-operator',contextSecret:'fixture-secret',...(process.argv.includes('--preview')?{configFile:path.join(dir,'accounts.json')}:{})}));
+  app.use('/api/office-admin',officeWorkbench(graph,{apiKey:'',operatorKey:process.argv.includes('--preview')?'':'fixture-operator',contextSecret:process.argv.includes('--preview')?'':'fixture-secret',...(process.argv.includes('--preview')?{configFile:path.join(dir,'accounts.json')}:{})}));
   const previewPort=process.argv.includes('--preview')?Number(process.argv.find(a=>a.startsWith('--preview-port='))?.split('=')[1]??0):0;
   assert(Number.isSafeInteger(previewPort)&&previewPort>=0&&previewPort<=65535);
   server=app.listen(previewPort,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
@@ -63,6 +65,7 @@ try {
   let cookie='';
   const request=(route:string,body:unknown={},origin?:string)=>fetch(url+'/api/office-admin/'+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,...(origin?{Origin:origin}:{})},body:JSON.stringify(body)});
   if(process.argv.includes('--preview')) {
+    await graph.roles.configureOffice({id:'archived-example',title:'已归档的演示办公室',state:'cancelled',expectedRevision:0},admin);
     await graph.offices.settings(admin,'https://memory.example/mcp');
     await graph.roles.application({action:'submit',name:'小橘',introduction:'擅长整理旅行资料和待确认清单',reason:'希望一起完成两天一夜的出游计划',key:'guide-application'},
       {v:1,principal:'owner',agentId:'connector',runtimeId:'guide-pending',transport:'http-mcp',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
@@ -86,6 +89,20 @@ try {
     await assert.rejects(graph.roles.deleteOffice(roomRequest,a));
     assert(!roleOperations(graph).some(op=>op.name.includes('delete')),'agents cannot discover admin deletion tools');
     console.log('PASS deletion requires current user management, same origin and an exact revision');
+
+    // Closed rooms remain readable and deletable without reopening them or enabling agent writes.
+    for(const state of ['cancelled','completed']) {
+      const id='closed-'+state;
+      await createOffice(id);
+      await graph.roles.configureOffice({id,title:'已结束示例',state,expectedRevision:1},admin);
+      const registry=await (await request('state')).json() as any;
+      assert(registry.offices.some((o:any)=>o.id===id&&o.state===state));
+      assert.equal((await request('view',{officeId:id})).status,200);
+      assert.equal((await request('office/delete',{id,expectedRevision:1})).status,409);
+      assert.equal((await request('office/delete',{id,expectedRevision:2})).status,200);
+      assert.equal(await db.get('SELECT id FROM offices WHERE id=?',[id]),undefined);
+    }
+    console.log('PASS archived/completed rooms can be read and permanently deleted at the current revision');
 
     const counts=async()=>Promise.all(['offices','office_sessions','office_messages','role_messages','office_materials','office_chunks','office_containers','office_items','office_rounds','role_office_contexts'].map(async table=>[table,(await db.get(`SELECT COUNT(*) n FROM ${table}`)).n]));
     const before=await counts();

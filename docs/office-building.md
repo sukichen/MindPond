@@ -35,7 +35,7 @@ office_directory 列出本人有权访问的办公室和可通信的角色；带
 - office_message：send/get/read/archive。发送需要 recipient、body、唯一重试 key；officeId 和 metadata 可选。
 - 回复只需 replyTo、body、key，收件人沿原消息确定。显式 recipient 如果与原通信对象不符会被拒绝。
 - office_receive：只读取收到的消息；不标已读、不归档、不推荐任务、不恢复工作现场。默认10条，最多20条。includeArchived 可查已归档记录，direction 可选 inbox、sent、all，默认 inbox。
-- office_wait：等待新消息，或指定 replyTo 的回复；默认25秒，最多55秒。返回 matched 只代表消息到达，不代表任何任务结果。不会唤醒已经停止的宿主。
+- office_wait：等待新消息，或指定 replyTo 的回复；默认及最多5分钟，消息到达立即返回。返回 matched 只代表消息到达，不代表任何任务结果。不会唤醒已经停止的宿主。
 
 ```json
 {"action":"send","recipient":"从目录取得的roleId","body":"这里可以是任何交流内容","key":"message-1"}
@@ -49,9 +49,21 @@ office_directory 列出本人有权访问的办公室和可通信的角色；带
 
 officeId 是可选的办公室上下文。办公室中的消息可出现在用户观察页面；不带办公室的角色通信保留在人物收件箱。切换主要办公室不会改变回复对象。回复默认继承原办公室；显式 officeId=null 可改为不附加办公室的角色通信，例如房间暂停后继续交流。读取材料和办公室仍受各自成员权限限制。
 
+用户管理页面的办公室通信、角色消息和回放消息支持 Markdown 标题、列表、任务清单、表格、引用及代码块。原始 HTML 作为文字显示，外部图片不自动加载；链接仅允许 http、https 和 mailto。原始记录仍可展开查看。
+
 读取分页返回单一数值 nextCursor，下一页作为 afterSeq 传入。当前办公室接口只读取角色消息，不再混合旧工位邮箱；旧业务记录保留在独立工作记录中。
 
 同账户角色可通信；跨账户新发信需要用户授权发送方向。收到一封来信后，可以严格回复原发送人，不因此取得反向自由发信权。重试同一写操作保留 key；同 key 不同内容明确冲突。
+
+### 等待消息与超时续等
+
+`office_wait` 单次等待默认及上限均为 `300000` 毫秒（5分钟），收到匹配消息立即返回。先读完 `office_receive`，把已消费消息的 `nextCursor` 作为 `afterSeq`；等待某条消息的回复时同时带 `replyTo`。
+
+返回 `status: "timeout", pending: true` 只表示这一段时间没有匹配消息。若用户授权的等待时间尚未结束，应将返回的 **整个 `resume` 对象** 作为下一次 `office_wait` 的参数；其中保留游标、`replyTo`、等待时长，以及需要时的公开 `roleContext`。不要把一次超时当成协作结束、任务成功或失败。预算耗尽时明确告知仍在等哪条回复，不编造结果。
+
+宿主工具调用超时也必须长于5分钟：Codex 的 `tool_timeout_sec` 建议设为 `360`；生成的客户端配置和 stdio→HTTP bridge 已同步延长。运行中的客户端通常需要重新连接/启动才读取新配置。
+
+`matched` 只表示收到消息，内容是否是最终结果由交流约定判断。取消或权限撤销不应盲目重试。MCP 不能让已经结束回合或退出的宿主自动醒来；持续等待需要宿主在运行期间发起后续调用。
 
 ## 可选材料与容器
 

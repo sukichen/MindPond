@@ -126,7 +126,6 @@ declare global {
  * session, never global (T10: unknown sessions return nothing by default). */
 const ANONYMOUS_CONTEXT: TrustedCallContext = { v: 1, principal: 'anonymous', domains: [{ kind: 'personal', id: 'default' }], issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
 const CORS_ORIGINS = new Set((process.env.MEMORY_CORS_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean));
-const EDGE_LABELS = new Set(['related', 'similar-to', 'caused-by', 'fixes', 'supports']);
 
 const WEB_DIR = path.resolve(__dirname, '..', 'web');
 const VIS_UMD = createRequire(import.meta.url).resolve('vis-network/standalone/umd/vis-network.min.js');
@@ -162,6 +161,7 @@ app.get('/', (_req, res) => res.sendFile(path.join(WEB_DIR, 'index.html')));
 app.get('/graph', (_req, res) => res.sendFile(path.join(WEB_DIR, 'graph.html')));
 app.get('/collaboration', (_req, res) => res.sendFile(path.join(WEB_DIR, 'collaboration.html')));
 app.get('/collaboration/guide', (_req, res) => res.sendFile(path.join(WEB_DIR, 'office-guide.html')));
+app.get('/assets/marked.js', (_req,res)=>res.sendFile(fileURLToPath(new URL('./marked.umd.js',import.meta.resolve('marked')))));
 app.use('/assets', express.static(WEB_DIR));
 app.get('/vendor/vis-network.min.js', (_req, res) => res.type('application/javascript').sendFile(VIS_UMD));
 app.get('/licenses/third-party.txt', (_req, res) =>

@@ -8,6 +8,7 @@ import {Server} from '@modelcontextprotocol/sdk/server/index.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {CallToolRequestSchema,ListToolsRequestSchema,ListResourcesRequestSchema,ReadResourceRequestSchema} from '@modelcontextprotocol/sdk/types.js';
 import {MEMORY_BOOTSTRAP} from './core/bootstrap.js';
+import {OFFICE_TOOL_TIMEOUT_MS} from './core/office-wait-policy.js';
 const {values}=parseArgs({options:{url:{type:'string'},'token-file':{type:'string'},'allow-http':{type:'boolean'},session:{type:'string'}}});
 try {
   const url=new URL(values.url??process.env.MINDPOND_REMOTE_URL??'');
@@ -26,7 +27,7 @@ try {
   await client.connect(transport);
   const server=new Server({name:'mindpond-remote',version:'0.1.0'},{capabilities:{tools:{},resources:{}},instructions:client.getInstructions()??MEMORY_BOOTSTRAP});
   server.setRequestHandler(ListToolsRequestSchema,async(request,extra)=>client.listTools(request.params,{signal:extra.signal}));
-  server.setRequestHandler(CallToolRequestSchema,async(request,extra)=>client.callTool(request.params,undefined,{signal:extra.signal}));
+  server.setRequestHandler(CallToolRequestSchema,async(request,extra)=>client.callTool(request.params,undefined,{signal:extra.signal,...(request.params.name==='office_wait'?{timeout:OFFICE_TOOL_TIMEOUT_MS}:{})}));
   server.setRequestHandler(ListResourcesRequestSchema,async(request,extra)=>client.listResources(request.params,{signal:extra.signal}));
   server.setRequestHandler(ReadResourceRequestSchema,async(request,extra)=>client.readResource(request.params,{signal:extra.signal}));
   let closing=false;

@@ -77,21 +77,23 @@
     "verify:network-mcp": "tsx scripts/verify-network-mcp.ts",
     "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts",
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
-    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs",
+    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-markdown",
     "verify:office-deletion": "tsx scripts/verify-office-deletion.ts",
     "verify:roles": "tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts",
     "verify:office-building": "tsx scripts/verify-office-building.ts",
-    "verify:office-replay": "tsx scripts/verify-office-replay.ts && node scripts/verify-office-replay-ui.mjs"
+    "verify:office-replay": "tsx scripts/verify-office-replay.ts && node scripts/verify-office-replay-ui.mjs",
+    "verify:office-markdown": "node scripts/verify-office-markdown.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "@modelcontextprotocol/sdk": "^1.0.4",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "marked": "18.1.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
     "vis-network": "^10.1.0",
-    "zod": "4.5.4",
-    "@huggingface/transformers": "^4.3.0"
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
@@ -167,7 +169,8 @@
     "web/office-scene.js",
     "web/office-navigation.js",
     "web/office-replay.js",
-    "web/guide/11-replay.jpg"
+    "web/guide/11-replay.jpg",
+    "web/office-markdown.js"
   ],
   "license": "MIT",
   "repository": {

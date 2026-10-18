@@ -378,11 +378,17 @@
     const rooms = state.data?.offices ?? [], query = state.roomQuery.trim().toLocaleLowerCase();
     const matches = rooms.filter(room => !query || [room.title, room.goal, room.id].join(' ').toLocaleLowerCase().includes(query));
     for (const room of matches) {
+      const row=make('div');row.className='office-room-row';
       const pick = button('', () => openOffice(room.id));
       pick.append(make('strong', room.title), make('span', officeStates[room.state] ?? room.state));
       pick.className = 'office-room-choice';
       pick.setAttribute('aria-pressed', String(state.office?.office.id === room.id));
-      box.append(pick);
+      row.append(pick);
+      if (['completed','cancelled'].includes(room.state)) {
+        const remove=button('删除',()=>deleteRoom(room));remove.className='office-room-delete office-danger';
+        remove.setAttribute('aria-label','永久删除办公室「'+room.title+'」');row.append(remove);
+      }
+      box.append(row);
     }
     if (!matches.length) box.append(make('p', rooms.length ? '没有匹配的办公室。' : '还没有办公室。可以直接创建一个空房间。'));
   }
@@ -439,7 +445,7 @@
     const messages = el('officeRoleMessages');messages.replaceChildren();
     for (const m of data.messages) {
       const card = make('details'), summary = make('summary', `${m.sender_name ?? nameOf(m.sender)} → ${m.recipient_name ?? nameOf(m.recipient)} · ${m.kind} · ${m.state === 'queued' ? '未读' : m.state === 'read' ? '已读' : '已归档'}`);
-      card.append(summary, make('p', new Date(m.created_at).toLocaleString() + ' · ' + m.id), make('pre', m.body));messages.append(card);
+      card.append(summary, make('p', new Date(m.created_at).toLocaleString() + ' · ' + m.id), window.MindPondOfficeMarkdown.render(m.body));messages.append(card);
     }
     if (!data.messages.length) messages.append(make('p', '尚无角色消息。'));
   }
@@ -604,13 +610,14 @@
     const viewport=el('officeStage');
     let cols=1,best=0;
     for(let candidate=1;candidate<=Math.min(count||1,7);candidate++){
-      const score=Math.min((Math.max(viewport.clientWidth,300)-40)/(candidate*312+100),(Math.max(viewport.clientHeight,260)-40)/(Math.ceil((count||1)/candidate)*308+207));
+      const score=Math.min((Math.max(viewport.clientWidth,300)-40)/(candidate*312+100),(Math.max(viewport.clientHeight,260)-40)/(Math.ceil((count||1)/candidate)*492+257));
       if(score>best){best=score;cols=candidate;}
     }
     const columns=`repeat(${cols}, 280px)`;
     if(el('officeDesks').style.gridTemplateColumns!==columns)scenePlayer.stop();
     el('officeDesks').style.gridTemplateColumns = columns;
     el('officeScene').style.width = (cols * 312 + 100) + 'px';
+    scenePlayer.startIdle();
   }
   function applyScene() {
     const {x, y, scale} = state.scene;
@@ -646,8 +653,8 @@
     }
     el('officePageTitle').textContent=appViews[id];
     if(updateHash && location.hash!=='#'+id)history.pushState(null,'','#'+id);
-    if(id!=='officeRooms'){if(state.opening){state.generation++;state.opening=false;}replayController.pause();scenePlayer.stop();}
-    else if(state.office && state.roomTab==='officeCanvas')requestAnimationFrame(()=>{layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
+    if(id!=='officeRooms'){if(state.opening){state.generation++;state.opening=false;}replayController.pause();scenePlayer.setActive(false);}
+    else if(state.office && state.roomTab==='officeCanvas')requestAnimationFrame(()=>{scenePlayer.setActive(true);layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
     el('officeWorkspaceEmpty').hidden=Boolean(state.office);
   }
   function setRoomTab(id, focus = false) {
@@ -656,8 +663,8 @@
     state.roomTab=id;
     for(const tab of tabs){const selected=tab.dataset.roomTab===id;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;if(selected&&focus)tab.focus();}
     for(const panel of document.querySelectorAll('[data-room-panel]'))panel.hidden=panel.id!==id;
-    if(id!=='officeCanvas'){replayController.pause();scenePlayer.stop();}
-    else requestAnimationFrame(()=>{layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
+    if(id!=='officeCanvas'){replayController.pause();scenePlayer.setActive(false);}
+    else requestAnimationFrame(()=>{scenePlayer.setActive(state.appView==='officeRooms');layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
   }
   function syncAppRoute(){showAppView(location.hash.slice(1)||'officeRooms',false);}
   document.querySelector('.office-sidebar nav').addEventListener('click',event=>{
@@ -722,7 +729,7 @@
     select(event,index,total,player){
       el('officeReplayNow').textContent=`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`;
       el('officeReplaySeek').value=String(index);const current=el('officeReplayCurrent');current.hidden=false;current.replaceChildren(make('h4',`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`),make('small',new Date(event.ts).toLocaleString()));
-      const body=event.body;current.append(make('p',body.body??body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
+      const body=event.body;current.append(typeof body.body==='string'?window.MindPondOfficeMarkdown.render(body.body):make('p',body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
       if(body.why)current.append(make('p','原因：'+body.why));if(event.recipientKey)current.append(make('p','发送给：'+replayName(event.recipientKey)));
       current.append(button(event.detailAvailable?'查看完整事件':'查看事件详情',()=>event.detailAvailable?showRecord({eventSeq:event.seq},'事件 #'+event.seq):showDetail('事件 #'+event.seq,event)));
       for(const n of el('officeDesks').children)n.classList.toggle('replay-selected',n.dataset.replayKey===event.actorKey);
@@ -751,7 +758,7 @@
   el('officeReplaySpeed').onchange=()=>{replayController.setSpeed(Number(el('officeReplaySpeed').value));replayController.view.change(replayController);};
   el('officeScenePreview').onclick = () => scenePlayer.demo(el('officeActionPreview').value);
   el('officeSceneMotion').onclick = () => {const on=!scenePlayer.motion;scenePlayer.setMotion(on);el('officeSceneMotion').setAttribute('aria-pressed',String(!on));el('officeSceneMotion').textContent=on?'暂停动态':'开启动效';};
-  el('officeSceneList').onclick = () => {const list=el('officeCanvas').classList.toggle('is-list');el('officeSceneList').setAttribute('aria-pressed',String(list));el('officeSceneList').textContent=list?'场景视图':'列表视图';scenePlayer.list=list;scenePlayer.stop();if(!list)requestAnimationFrame(()=>fitScene());};
+  el('officeSceneList').onclick = () => {const list=el('officeCanvas').classList.toggle('is-list');el('officeSceneList').setAttribute('aria-pressed',String(list));el('officeSceneList').textContent=list?'场景视图':'列表视图';scenePlayer.list=list;scenePlayer.stop();if(!list)requestAnimationFrame(()=>{fitScene();scenePlayer.startIdle();});};
   el('officeSceneFit').onclick = fitScene;
   el('officeSceneZoomOut').onclick = () => zoomScene(state.scene.scale / 1.2);
   el('officeSceneZoomIn').onclick = () => zoomScene(state.scene.scale * 1.2);
@@ -989,7 +996,7 @@
     for(const c of data?.containers??[]){const row=make('article');row.className='office-item';row.append(make('strong',c.title),make('p','版本 '+c.revision),button('打开 / 编辑',async()=>{const room=state.office.office.id;const record=await api('containers',{action:'get',officeId:room,id:c.id});if(state.office?.office.id===room)editContainer(record);}));box.append(row);}
     if(!data?.containers?.length)box.append(make('p','这里还没有容器。需要时可以自行添加。'));
     if(data?.hasMore)box.append(button('查看更多容器',async()=>{const room=state.office.office.id;const page=await api('containers',{action:'list',officeId:room,afterId:data.nextAfterId});if(state.office?.office.id!==room)return;state.office.facilities={...data,containers:[...data.containers,...page.containers],hasMore:page.hasMore,nextAfterId:page.nextAfterId};renderFacilities(state.office.facilities);}));
-    for(const m of data?.messages??[]){const row=make('details');row.append(make('summary',m.sender_name+' → '+m.recipient_name+' · '+new Date(m.created_at).toLocaleString()),make('pre',m.body));messages.append(row);}
+    for(const m of data?.messages??[]){const row=make('details');row.append(make('summary',m.sender_name+' → '+m.recipient_name+' · '+new Date(m.created_at).toLocaleString()),window.MindPondOfficeMarkdown.render(m.body));messages.append(row);}
     if(!data?.messages?.length)messages.append(make('p','尚无办公室消息。'));
   }
   el('officeAddContainer').onclick=()=>{if(state.office)editContainer({id:'container-'+uuid(),title:'',content:'',revision:0});};
@@ -1067,21 +1074,17 @@
       node.dataset.replayKey=node.dataset.role?'role:'+node.dataset.role:'seat:'+seat.id;
       const person = make('span');
       const access = fileCondition(seat);
-      person.className =
-        'office-person ' +
-        (access?.mode === 'text_only'
-          ? 'text-only'
-          : access?.mode === 'shared_worktree'
-            ? 'shared'
-            : 'unknown');
-      if (access?.group) {
-        let hash = 0;
-        for (const c of access.group) hash = (hash * 31 + c.charCodeAt(0)) | 0;
-        person.style.setProperty('--coat', `hsl(${Math.abs(hash) % 360} 24% 48%)`);
-      }
+      person.className='office-person';
+      let appearance=0;
+      for(const c of node.dataset.role||seat.id)appearance=(appearance*31+c.charCodeAt(0))|0;
+      const palette=[158,208,32,266,12],tone=Math.abs(appearance);
+      person.style.setProperty('--coat',`hsl(${palette[tone%palette.length]} 32% 64%)`);
+      person.style.setProperty('--hair',['#776052','#645a74','#ae815d','#5c736d'][tone%4]);
+      person.dataset.appearance=String(tone%4);person.style.setProperty('--blink-delay',`-${tone%50/10}s`);
       const body = make('span'),
         wait = data.waits.find((w) => w.seat_id === seat.id);
       const task = data.items.find((t) => t.owner === seat.id && t.status === 'claimed');
+      node.dataset.busy=String(Boolean(task));
       body.className='office-desk-caption';
       const shared = access?.mode === 'shared_worktree';
       body.append(
@@ -1109,6 +1112,7 @@
       const activity=data.facilities?.activity?.find(r=>r.seatId===seat.id);
       const pending=Number(activity?.pending??0);
       const station=window.MindPondOfficeScene.props(person);
+      if(task)person.dataset.facing='desk';
       const papers=station.querySelector('.office-paper-stack');
       papers.style.setProperty('--paper-count',Math.min(12,pending));papers.hidden=!pending;
       if(pending){papers.textContent=String(pending);body.append(make('small',`待整理消息 ${pending} 条（含已读未归档）`));}
@@ -1188,7 +1192,7 @@
     if (state.itemsCursor) items.append(button('读取更多工作项', () => more('items')));
     if (state.materialsCursor)
       materials.append(button('读取更多材料清单', () => more('materials')));
-    if(state.appView==='officeRooms'&&state.roomTab==='officeCanvas')scenePlayer.syncWaiting((data.facilities?.activity??[]).filter(a=>a.waitingUntil>Date.now()).map(a=>({key:a.roleId?'role:'+a.roleId:'seat:'+a.seatId,until:a.waitingUntil})));
+    scenePlayer.setActive(state.appView==='officeRooms'&&state.roomTab==='officeCanvas');
     if(el('officeReplay').open&&state.replayIndexRoom!==o.id)void run(refreshReplayIndex);
     renderEvents();
   }
@@ -1269,7 +1273,11 @@
   }
   function showDetail(title, data) {
     const n = openOfficeDetail();
-    n.replaceChildren(make('h3', title), make('pre', JSON.stringify(data, null, 2)));
+    const message=typeof data.body==='string'?data.body:typeof data.body?.body==='string'?data.body.body:null;
+    n.replaceChildren(make('h3', title));
+    if(message===null){n.append(make('pre',JSON.stringify(data,null,2)));return;}
+    n.append(window.MindPondOfficeMarkdown.render(message));
+    const raw=make('details');raw.append(make('summary','原始记录'),make('pre',JSON.stringify(data,null,2)));n.append(raw);
   }
   function mergeRecords(previous, incoming) {
     const records = new Map(previous.map(r => [r.id, r]));

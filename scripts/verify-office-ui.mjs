@@ -234,6 +234,18 @@ await Promise.resolve();deletionState.office={office:{id:'b'}};const roomGenerat
 deleting.resolve({deleted:true});await pendingDelete;
 assert.equal(deletionState.office.office.id,'b');assert.equal(deletionState.generation,roomGeneration);
 console.log('PASS deletion UI: cancellation, stale version retains draft, confirmed deletion clears only its own room and fences old polls');
+
+// Archived rooms can be deleted straight from the directory, without loading their historical view.
+const makeNode=(tag,text)=>({tag,text,children:[],append(...nodes){this.children.push(...nodes);},replaceChildren(){this.children=[];},setAttribute(k,v){this[k]=v;}});
+const roomList=makeNode('div'),roomCounter={};let deletedFromList;
+const directoryContext=vm.createContext({state:{data:{offices:[{id:'archived',title:'旧办公室',state:'cancelled',revision:7},{id:'completed',title:'已结束办公室',state:'completed',revision:3},{id:'active',title:'开放办公室',state:'active'}]},roomQuery:'',office:null},
+  make:makeNode,el:id=>id==='officeRoomList'?roomList:roomCounter,officeStates:{},openOffice(){throw Error('directory deletion must not load a room');},
+  button:(text,click)=>({...makeNode('button',text),click}),deleteRoom:record=>{deletedFromList=record;}});
+vm.runInContext(source.slice(source.indexOf('  function renderRoomChoices('),source.indexOf('  function refreshSeatChoices(')),directoryContext);
+directoryContext.renderRoomChoices();assert.equal(roomList.children.length,3);
+for(const [i,revision] of [[0,7],[1,3]]){const remove=roomList.children[i].children[1];assert.equal(remove.text,'删除');await remove.click();assert.equal(deletedFromList.revision,revision);}
+assert.equal(roomList.children[2].children.length,1,'active rooms retain their management-menu confirmation flow');
+console.log('PASS archived directory: direct deletion for cancelled/completed rooms without opening the historical view');
 // App routes retain the existing DOM drafts and pause playback when its view is hidden.
 const routePanels=['officeRooms','officeCharacters','officeProjects','officeAgents','officeSetup'].map(id=>({dataset:{appView:id},hidden:false}));
 const routeLinks=routePanels.map(p=>({dataset:{appRoute:p.dataset.appView},attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];}}));
@@ -243,7 +255,7 @@ const routeElements={officePageTitle:{},officeWorkspaceEmpty:{}};
 let pauseCount=0,stopCount=0;const historyEntries=[];
 const routeState={appView:'officeRooms',roomTab:'officeCanvas',office:{},scene:{autoFit:true}};
 const routeContext=vm.createContext({state:routeState,el:id=>routeElements[id],document:{querySelectorAll:s=>s==='[data-app-view]'?routePanels:s==='[data-app-route]'?routeLinks:s==='[data-room-tab]'?roomTabs:roomPanels},
- replayController:{pause(){pauseCount++;}},scenePlayer:{stop(){stopCount++;}},requestAnimationFrame(){},location:{hash:'#officeRooms'},history:{pushState(_a,_b,hash){historyEntries.push(hash);}},Object});
+ replayController:{pause(){pauseCount++;}},scenePlayer:{stop(){stopCount++;},setActive(on){assert.equal(on,false);stopCount++;}},requestAnimationFrame(){},location:{hash:'#officeRooms'},history:{pushState(_a,_b,hash){historyEntries.push(hash);}},Object});
 vm.runInContext(source.slice(source.indexOf('  const appViews ='),source.indexOf("  document.querySelector('.office-sidebar nav')")),routeContext);
 routeContext.showAppView('officeCharacters');assert.equal(routePanels.filter(p=>!p.hidden)[0].dataset.appView,'officeCharacters');assert.equal(routeLinks[1].attrs['aria-current'],'page');assert.equal(pauseCount,1);assert.equal(stopCount,1);
 routeContext.setRoomTab('officeMaterialPanel',true);assert.deepEqual(roomPanels.filter(p=>!p.hidden).map(p=>p.id),['officeMaterialPanel']);assert.equal(roomTabs[1].tabIndex,0);assert(roomTabs[1].focused);

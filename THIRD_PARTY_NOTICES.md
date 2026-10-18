@@ -8,6 +8,8 @@ The locked dependency declarations are in [licenses/inventory.json](licenses/inv
 
 The HTTP workbench sends the unchanged vis-network npm UMD bundle to the browser. Its upstream copyright header remains intact. We use its MIT option and include the complete upstream MIT text and installed package notices. This collection also includes notices for its installed dependencies; do not remove upstream bundle comments during minification.
 
+The collaboration UI also serves the unchanged Marked npm UMD bundle (MIT); its original copyright header and full license are retained in the dependency notices. Markdown is parsed into tokens and rendered through an explicit DOM allowlist; source HTML is displayed as text.
+
 ## Native dependencies and model files
 
 Transformers.js is Apache-2.0; its sharp/libvips dependency includes LGPL-licensed platform binaries. The inventory records the license of each concrete package. This source repository and npm package do not contain node_modules or model weights. A Docker image, offline distribution or executable containing those binaries needs a separate review of the actual components, accompanying notices, corresponding source and library modification/replacement requirements. Merely linking an upstream repository is not a substitute for every distribution obligation.

@@ -1,11 +1,13 @@
 /** Real HTTP MCP, clean initialization, neutral messages and arbitrary containers. */
 import assert from 'node:assert/strict';
+import { COLLABORATION_LEARNING } from '../src/core/collaboration-learning.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { GraphMemory } from '../src/core/graph-memory.js';
 import { roleRuntimeId } from '../src/core/roles.js';
 import { createNetworkMcpApp } from '../src/integrations/network-server.js';
@@ -56,7 +58,9 @@ try {
     allowedHosts.push('127.0.0.1:' + port);
     async function connect(id: string) { const c = new Client({ name: 'generic-fixture', version: '1' }); clients.push(c); await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer ' + tokens[id] } } })); return c; }
     const a = await connect('cli'), b = await connect('cli'), c = await connect('other');
-    const raw = (client: Client, name: string, input: any = {}) => client.callTool({ name, arguments: input });
+    assert(a.getInstructions()?.includes(COLLABORATION_LEARNING),'new MCP agents receive concise learning guidance at initialization');
+    assert(Buffer.byteLength(COLLABORATION_LEARNING)<512,'the collaboration reminder stays bounded');
+    const raw = (client: Client, name: string, input: any = {}) => client.callTool({ name, arguments: input },undefined,{timeout:name==='office_wait'?360000:60000});
     const call = async (client: Client, name: string, input: any = {}) => { const result = await raw(client, name, input); assert(!result.isError, JSON.stringify(result)); return JSON.parse((result.content[0] as any).text); };
     const tools = (await a.listTools()).tools.map(t => t.name);
     for (const tool of ['office_receive', 'office_message', 'office_wait', 'office_container'])
@@ -74,11 +78,32 @@ try {
     const [ra, rb, rc] = assigned;
     assert.notEqual(ra.roleContext, rb.roleContext);
     assert((await raw(b, 'role_sync')).isError, 'missing correlation must never choose another session implicitly');
-    assert.equal((await call(a, 'role_sync', { roleContext: ra.roleContext })).identity.roleId, ra.roleId);
+    const introduction=await call(a, 'role_sync', { roleContext: ra.roleContext });
+    assert.equal(introduction.identity.roleId, ra.roleId);
+    assert(introduction.instructions.includes(COLLABORATION_LEARNING),'role_sync restores the guidance after context loss');
     assert.equal((await call(b, 'role_sync', { roleContext: rb.roleContext })).identity.roleId, rb.roleId);
     const ca = (name: string, input: any = {}) => call(a, name, { ...input, roleContext: ra.roleContext });
     const cb = (name: string, input: any = {}) => call(b, name, { ...input, roleContext: rb.roleContext });
     const cc = (name: string, input: any = {}) => call(c, name, { ...input, roleContext: rc.roleContext });
+    const waitSchema=(await a.listTools()).tools.find(t=>t.name==='office_wait')!.inputSchema;
+    assert.equal((waitSchema.properties!.waitMs as any).maximum,300000);
+    if(process.argv.includes('--long-wait')){
+        // Exercise the real stdio→HTTP bridge past the SDK's former 60-second deadline,
+        // while an independent HTTP call proves the default five-minute timeout.
+        const bridge=new Client({name:'long-wait-fixture',version:'1'});clients.push(bridge);
+        await bridge.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp-remote.js'),'--url',`http://127.0.0.1:${port}/mcp`,'--token-file',path.join(dir,'cli.token')],stderr:'pipe'}));
+        const start=Date.now();
+        const full=cb('office_wait');
+        const bridged=call(bridge,'office_wait',{roleContext:ra.roleContext});
+        const sentLate=new Promise<void>((resolve,reject)=>setTimeout(()=>{void cb('office_message',{action:'send',recipient:ra.roleId,body:'Arrived after sixty seconds',key:'long-arrival'}).then(()=>resolve(),reject);},65000));
+        const arrived=await bridged;await sentLate;
+        assert.equal(arrived.status,'matched');assert(Date.now()-start>=64000);assert.equal(arrived.message.body,'Arrived after sixty seconds');
+        console.log('PASS actual bridge: message arrived after 65 seconds without an intermediate timeout');
+        const timeout=await full;
+        assert.equal(timeout.status,'timeout');assert.equal(timeout.resume.waitMs,300000);assert(timeout.elapsedMs>=299000&&timeout.elapsedMs<315000);
+        console.log('PASS actual default office_wait: held open five minutes, then returned timeout with resumable public context');
+        await ca('office_message',{action:'archive',messageId:arrived.message.id,key:'archive-long-arrival'});
+    }
     assert(Array.isArray(await ca('memory_spaces')), 'public correlation must not alter array-shaped memory responses');
     const seats = [{ id: 'a-seat', agentId: 'cli', roleId: ra.roleId, label: 'Whatever A does', role:'observer' }, { id: 'b-seat', agentId: 'cli', roleId: rb.roleId, label: 'Whatever B does' }];
     const room = await post('office', { id: 'empty', title: 'Our room', expectedRevision: 1, state: 'active', seats });
@@ -103,7 +128,19 @@ try {
     assert.equal((await ca('office_receive')).messages[0].id, reply.messageId);
     const waiting = await ca('office_wait', { replyTo: sent.messageId, waitMs: 100 });
     assert.equal(waiting.status, 'matched', 'reply before wait remains observable');
-    assert.equal((await cb('office_wait', { waitMs: 100 })).status, 'timeout');
+    const idle = await cb('office_wait', { waitMs: 100 });
+    assert.equal(idle.status, 'timeout');assert.equal(idle.pending, true);
+    assert.equal(idle.resume.waitMs, 100);assert.equal(idle.resume.roleContext, rb.roleContext);
+    // Retry the exact public continuation through MCP: an unrelated message must not satisfy it.
+    const pendingReply = await ca('office_wait', { replyTo: sent.messageId, afterSeq: reply.seq, waitMs: 100 });
+    assert.equal(pendingReply.status, 'timeout');assert.equal(pendingReply.resume.replyTo, sent.messageId);
+    assert.equal(pendingReply.resume.requestId, undefined);assert.equal(pendingReply.resume.roleContext, ra.roleContext);
+    await cb('office_message', { action:'send',recipient:ra.roleId,body:'Unrelated conversation',key:'unrelated-wait' });
+    const stillPending=await call(a,'office_wait',pendingReply.resume);
+    assert.equal(stillPending.status,'timeout','resume must preserve the exact reply filter');
+    await cb('office_message',{action:'send',replyTo:sent.messageId,officeId:null,body:'Later reply after timeout',key:'later-reply'});
+    const resumed=await call(a,'office_wait',stillPending.resume);
+    assert.equal(resumed.status,'matched');assert.equal(resumed.message.body,'Later reply after timeout');
     assert((await raw(c, 'office_message', { action: 'get', messageId: sent.messageId, roleContext: rc.roleContext })).isError);
     assert((await raw(a, 'office_message', { action: 'send', recipient: rc.roleId, body: 'not permitted', key: 'cross', roleContext: ra.roleContext })).isError);
     await graph.roles.link({ sender: ra.roleId, recipient: rc.roleId, enabled: true }, admin);

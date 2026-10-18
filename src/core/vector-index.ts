@@ -91,7 +91,6 @@ export class VectorIndex {
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟
   private _cacheHits: number = 0;
   private _cacheMisses: number = 0;
-  private _dirtyCount: number = 0;
 
   /**
    * 添加向量项
@@ -357,7 +356,6 @@ options: SearchOptions
    */
   private clearCache(): void {
     this.cache.clear();
-    this._dirtyCount = 0;
   }
 }
 

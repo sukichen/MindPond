@@ -22,7 +22,7 @@ function requiredProfileContext(a:{sessionId?:string;domains?:unknown;scope?:unk
   if (!a.sessionId && !(domains && domains.length)) throw new Error('domain context required: sessionId, domains, or scope=operator');
   return { sessionId: a.sessionId, domains };
 }
-import { domainSchema, sourceReferenceSchema, dimensionIdSchema, dimensionsSchema, anchorSchema } from './host-schemas.js';
+import { domainSchema, sourceReferenceSchema, dimensionsSchema, anchorSchema } from './host-schemas.js';
 export { domainSchema, sourceReferenceSchema, dimensionIdSchema, dimensionsSchema, anchorSchema } from './host-schemas.js';
 import { memoryFinishSchema } from './finish-schema.js';
 export { memoryFinishSchema } from './finish-schema.js';

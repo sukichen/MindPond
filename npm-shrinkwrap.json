@@ -7,24 +7,26 @@
     "": {
       "name": "mindpond",
       "version": "0.1.0",
+      "license": "MIT",
       "dependencies": {
         "@huggingface/transformers": "^4.3.0",
         "@modelcontextprotocol/sdk": "^1.0.4",
         "dotenv": "^16.4.5",
         "express": "^4.19.2",
+        "marked": "18.1.1",
         "sqlite": "^5.1.1",
         "sqlite3": "^6.0.1",
         "vis-network": "^10.1.0",
         "zod": "4.5.4"
       },
       "bin": {
-        "mindpond-server": "./dist/server.js",
-        "mindpond-mcp": "./dist/mcp.js",
-        "mindpond-connect": "./dist/connect.js",
-        "mindpond-maintenance": "./dist/maintenance.js",
-        "mindpond-models": "./dist/models.js",
-        "mindpond-mcp-http": "./dist/mcp-http.js",
-        "mindpond-mcp-remote": "./dist/mcp-remote.js"
+        "mindpond-connect": "dist/connect.js",
+        "mindpond-maintenance": "dist/maintenance.js",
+        "mindpond-mcp": "dist/mcp.js",
+        "mindpond-mcp-http": "dist/mcp-http.js",
+        "mindpond-mcp-remote": "dist/mcp-remote.js",
+        "mindpond-models": "dist/models.js",
+        "mindpond-server": "dist/server.js"
       },
       "devDependencies": {
         "@types/express": "^4.17.21",
@@ -34,8 +36,7 @@
       },
       "engines": {
         "node": ">=22"
-      },
-      "license": "MIT"
+      }
     },
     "node_modules/@egjs/hammerjs": {
       "version": "2.0.17",
@@ -2683,6 +2684,18 @@
       "resolved": "https://registry.npmjs.org/long/-/long-5.3.2.tgz",
       "integrity": "sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==",
       "license": "Apache-2.0"
+    },
+    "node_modules/marked": {
+      "version": "18.1.1",
+      "resolved": "https://registry.npmjs.org/marked/-/marked-18.1.1.tgz",
+      "integrity": "sha512-zEGgrtUG8crk+TrMacJSVABU4DYDDkS8uqgU3ohrn/2fW9C2AEfUrO3m6IhpIpQpl7YcVpiXXC9cSMWDANT3dg==",
+      "license": "MIT",
+      "bin": {
+        "marked": "bin/marked.js"
+      },
+      "engines": {
+        "node": ">= 20"
+      }
     },
     "node_modules/matcher": {
       "version": "4.0.0",

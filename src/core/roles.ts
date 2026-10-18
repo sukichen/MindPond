@@ -119,7 +119,7 @@ export class RoleStore {
     }
     const assignments = await this.assignments(b, actor);
     const contacts = await this.db.all<Row[]>(`SELECT r.id roleId,r.name,r.introduction FROM character_roles r WHERE r.state='active' AND r.id<>? AND (r.principal=? OR EXISTS(SELECT 1 FROM role_links l WHERE l.sender=? AND l.recipient=r.id)) ORDER BY r.name,r.id LIMIT 200`, [b.role_id, actor.principal, b.role_id]);
-    return { state: 'active', identity: await this.badge(actor, b), assignments, contacts };
+    return { state: 'active', identity: await this.badge(actor, b), assignments, contacts, instructions: ROLE_INSTRUCTIONS };
   }
   private async assignments(b: Row, a: TrustedCallContext) {
     const seats = await this.offices.authorizedSeats({ ...a, roleId: b.role_id, roleBindingId: b.id, roleBindingEpoch: b.epoch });

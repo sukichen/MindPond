@@ -1,0 +1,2 @@
+/** Shared compact reminder for office initialization, role introduction and generated inbox prompts. */
+export const COLLABORATION_LEARNING = 'After hard-won environment, debugging or review discoveries, distill reusable lessons before handoff, a long wait or finishing. Read memory_save_policy once, then use memory_finish to update existing memory or save useful findings: scope, evidence, working steps, pitfalls and remaining uncertainty. Skip routine chatter and duplicate facts; never store secrets or share private memory without authorization.';
