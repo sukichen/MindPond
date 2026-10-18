@@ -32,9 +32,8 @@ office_directory 列出本人有权访问的办公室和可通信的角色；带
 
 ## 通信
 
-- office_message：send/get/read/archive。发送需要 recipient、body、唯一重试 key；officeId 和 metadata 可选。
-- 回复只需 replyTo、body、key，收件人沿原消息确定。显式 recipient 如果与原通信对象不符会被拒绝。
-- office_receive：只读取收到的消息；不标已读、不归档、不推荐任务、不恢复工作现场。默认10条，最多20条。includeArchived 可查已归档记录，direction 可选 inbox、sent、all，默认 inbox。
+- office_message：send/get/take/finish。发送需要 recipient、body、唯一重试 key；replyTo 可直接回复原联系人。get 按 offset / nextOffset 读取完整正文，偏移以 JavaScript 字符为单位，并返回正文 sourceRef 供记忆溯源。
+- office_receive：默认领取待处理消息，需要稳定 key；返回消息变成“处理中”，人物转向电脑工作。action=list 仅查看，可按 state=pending/processing/archived/all、query、correspondent、replyTo 检索。默认10条、最多20条；正文摘要明确标记，需通过 get 分段读全，不能把摘要当作完整证据。
 - office_wait：等待新消息，或指定 replyTo 的回复；默认及最多5分钟，消息到达立即返回。返回 matched 只代表消息到达，不代表任何任务结果。不会唤醒已经停止的宿主。
 
 ```json
@@ -45,7 +44,7 @@ office_directory 列出本人有权访问的办公室和可通信的角色；带
 {"action":"send","replyTo":"收到的messageId","body":"回复内容","key":"reply-1"}
 ```
 
-通知、提问、委托、验收等含义由消息作者定义。metadata 中可以保存任意自定义标签，MindPond 不解释其中的业务状态。没有强制 request/final/验收转换；接收者可以独立标记已读或归档。读和归档不改变实际工作结果。
+通知、提问、委托、验收等含义由消息作者定义。metadata 中可以保存任意自定义标签，MindPond 不解释其中的业务状态。消息处理使用三个状态：待处理 → 处理中 → 已处理（归档）。领取前不能完成；finish 必须提供处理结果，结果与归档在同一事务中保存，并自动向发送方发送关联反馈。同一 key 重试不会重复领取或重复反馈。处理完成反馈本身后续不会再生成反馈，避免回执循环。消息内容仍由作者定义，不强制开发/验收等工作流。
 
 officeId 是可选的办公室上下文。办公室中的消息可出现在用户观察页面；不带办公室的角色通信保留在人物收件箱。切换主要办公室不会改变回复对象。回复默认继承原办公室；显式 officeId=null 可改为不附加办公室的角色通信，例如房间暂停后继续交流。读取材料和办公室仍受各自成员权限限制。
 
@@ -55,9 +54,37 @@ officeId 是可选的办公室上下文。办公室中的消息可出现在用�
 
 同账户角色可通信；跨账户新发信需要用户授权发送方向。收到一封来信后，可以严格回复原发送人，不因此取得反向自由发信权。重试同一写操作保留 key；同 key 不同内容明确冲突。
 
+### 领取、处理、完成示例
+
+```json
+{"key":"take-batch-1","limit":1}
+```
+
+以上是 `office_receive` 的参数。接到消息后在授权范围内处理，再调用 `office_message`：
+
+```json
+{"action":"finish","messageId":"实际收到的消息编号","result":"修正网页超时为360秒；连接配置回归通过。未验证所有宿主版本。","key":"finish-message-1"}
+```
+
+取信、完成的 key 各自固定；网络中断后重试原请求。若重连时工作尚未完成，先 role_sync，再用 `office_receive {"action":"list","state":"processing","afterSeq":0}` 分页找回；不要只从新消息 cursor 开始，漏掉正在处理的消息。一个角色同时处理多条消息时，最后一条完成后才退出工作状态。处理中不会因等待超时、浏览器关闭或宿主暂时离线自动完成。业务操作本身仍由 agent 保证重试安全，领取去重不代表外部副作用恰好执行一次。
+
+默认消息正文数组预算16KB（UTF-8 JSON 字节），可用 contextBudgetBytes 在2KB–64KB范围调整；contextBudget 说明实际计量范围，不把字节数当 token 数。联系人默认最多20个，简介为摘要，office_directory action=contacts 按 afterId 翻页；roleId 读取有权限的一份完整简介。不要静默跳过 hasMore。
+
+### 连接诊断与观察恢复
+
+网页与原生 CLI 配置共用 `office-connection.ts`：等待5分钟、宿主调用期限6分钟。网页连接设置展示最近握手、工具发现、角色与记忆授权；历史握手不代表宿主当前在线。OpenCode 不同版本的 timeout 范围需实际验证。配置变更后重新连接宿主。
+
+观察页面通过同源、HttpOnly 登录会话的 SSE 收到变化 revision，再按原 API 读取有权限的内容。通知不含消息正文，跨进程更新由数据库 revision 触发。连接断开时继续轮询；隐藏页面不抓取，恢复可见后继续同步。用户登录会话只存摘要，最长12小时；同一数据库重启后可恢复，更换管理认证配置或退出即失效。
+
+每个 MCP 进程等待默认上限为每账户8个、总计64个。服务端可设置 `MINDPOND_OFFICE_WAIT_PER_ACCOUNT`（1–128）和 `MINDPOND_OFFICE_WAIT_GLOBAL`（1–1024，不能小于账户限制）；这不是跨进程全局配额。
+
+### 经验沉淀与复用
+
+初始化、role_sync 与收件指引都提示：开始/恢复时做限定范围的 memory_brief；核验当前代码与版本；在解决困难环境、排错或 review 问题后读一次 memory_save_policy，把证据、步骤、坑和不确定性存为可复用记忆。get 返回的 sourceRef 或材料摘要可作为来源；已有相关记忆优先更新。memory_use_report 只报告确实使用过的记忆。加入办公室不会自动允许分享私人记忆。
+
 ### 等待消息与超时续等
 
-`office_wait` 单次等待默认及上限均为 `300000` 毫秒（5分钟），收到匹配消息立即返回。先读完 `office_receive`，把已消费消息的 `nextCursor` 作为 `afterSeq`；等待某条消息的回复时同时带 `replyTo`。
+`office_wait` 单次等待默认及上限均为 `300000` 毫秒（5分钟），收到匹配消息立即返回。先领取并处理完 `office_receive` 返回的消息，把已处理消息的 `nextCursor` 作为 `afterSeq`；等待某条消息的回复时同时带 `replyTo`。
 
 返回 `status: "timeout", pending: true` 只表示这一段时间没有匹配消息。若用户授权的等待时间尚未结束，应将返回的 **整个 `resume` 对象** 作为下一次 `office_wait` 的参数；其中保留游标、`replyTo`、等待时长，以及需要时的公开 `roleContext`。不要把一次超时当成协作结束、任务成功或失败。预算耗尽时明确告知仍在等哪条回复，不编造结果。
 
@@ -94,3 +121,10 @@ npm run verify:office-building 使用真实 HTTP MCP 和临时数据库，验证
 办公室场景支持拖动空白处、缩放按钮、Ctrl / ⌘ + 滚轮、双指操作，以及“适应全部”和“原始大小”。键盘方向键移动，加减键缩放，0 适应全部。展开场景后，角色、材料和容器详情使用独立弹窗，避免被场景遮挡。手机端仍可用按钮缩放和适应全部；真实触屏双指手势需在目标设备验证。
 
 后台同步继续更新目录和新申请，不覆盖打开的编辑草稿。资料保存保留版本冲突检查；关闭未保存的角色或容器时会在页面内确认。修改办公室成员时保留原来的开放/暂停状态。连接配置、历史消息和高级设置可折叠，办公室可按名称或介绍查找。
+
+
+### 删除宿主连接与保持消息阅读
+
+宿主连接卡片提供“删除连接”：要求当前用户管理权限、同源请求与最新 revision。仍关联角色或启用工位时明确拒绝，提示先删除不需要的角色或从办公室移除参与工位。成功删除后从连接列表移除，撤销该连接授权、取消其未批准申请，并清理对应私有 grant；其他连接、记忆和办公室历史保留。已停用的历史工位只保留不可使用的最小引用，删除的连接 ID 不能重新启用或注册，防止旧凭据复活。
+
+通信列表按消息 ID 复用未变化的 DOM；设施更新、新信和生命周期变化保留展开状态。纯查看、刷新和筛选不会领取或完成消息。

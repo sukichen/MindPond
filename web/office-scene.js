@@ -1,7 +1,7 @@
 /* Office scene: visual effects consume real events; preview never writes business data. */
 (() => {
   'use strict';
-  const labels={inform:'通知',request:'请求答复',reply:'回复',read:'阅读消息',accepted:'整理收件箱',item_claim:'领取任务',item_submit:'提交材料',item_verify:'反馈结果',item_create:'安排任务',item_renew:'续租',wait_pose:'等待消息',rest_pose:'休息',work_pose:'处理事情',celebrate_pose:'庆祝（演示）',message:'发送消息',message_read:'阅读消息',message_archive:'整理收件箱',material_read:'阅读材料',material_published:'放好材料',container:'整理容器',progress:'报告进展',claim:'领取工作',submit:'提交材料',verify:'反馈结果'};
+  const labels={message_take:'领取消息',message_finish:'反馈处理结果',inform:'通知',request:'请求答复',reply:'回复',read:'阅读消息',accepted:'整理收件箱',item_claim:'领取任务',item_submit:'提交材料',item_verify:'反馈结果',item_create:'安排任务',item_renew:'续租',wait_pose:'等待消息',rest_pose:'休息',work_pose:'处理事情',celebrate_pose:'庆祝（演示）',message:'发送消息',message_read:'阅读消息',message_archive:'整理收件箱',material_read:'阅读材料',material_published:'放好材料',container:'整理容器',progress:'报告进展',claim:'领取工作',submit:'提交材料',verify:'反馈结果'};
   // Original vector character/animation; references inform proportions and timing, not copied artwork.
   const neutral={headTilt:0,headX:0,headY:0,leftArm:0,rightArm:0,bodyTilt:0,bodyY:0,bodyScale:1,propY:0,propTilt:0,propOpacity:0,eyes:1,page:1,expression:'calm'};
   const sequence=(id,label,stages,beats)=>({id,label,stages,keyframes:[{at:0,...neutral},...beats.map(([at,frame])=>({at,...neutral,propOpacity:1,...frame})),{at:1,...neutral}]});
@@ -50,7 +50,7 @@
     person.dataset.expression=frame.expression;
   }
   function clearAction(person){delete person.dataset.pose;delete person.dataset.idle;person.dataset.facing='down';person.dataset.posture='seated';drawAction(person,neutral);}
-  const stateFor=kind=>['material_read','message_read','read'].includes(kind)?'reading':['wait_pose','wait_started'].includes(kind)?'waiting':kind==='rest_pose'?'resting':kind==='celebrate_pose'?'celebrating':['message','inform','request','reply'].includes(kind)?'communicating':'working';
+  const stateFor=kind=>['material_read','message_read','read'].includes(kind)?'reading':['wait_pose','wait_started'].includes(kind)?'waiting':kind==='rest_pose'?'resting':kind==='celebrate_pose'?'celebrating':['message','inform','request','reply','message_finish'].includes(kind)?'communicating':'working';
   function props(person){
     const station=document.createElement('span');station.className='office-workstation';station.setAttribute('aria-hidden','true');
     // All markup here is fixed geometry. User names/content are rendered through textContent elsewhere.
@@ -114,6 +114,7 @@
     station.append(person);return station;
   }
   // Ambient rest uses one clock for all seats and never fabricates office events or agent status.
+  const workClips=['typing','write','think'];
   const idleClips=['sip','stretch','headphones','watch','relax','doze'];
   const seatSeed=node=>{let seed=0;for(const c of node.dataset.replayKey||node.dataset.role||node.dataset.seat||'')seed=(Math.imul(seed,31)+c.charCodeAt(0))>>>0;return seed;};
   class Scene {
@@ -138,17 +139,19 @@
       for(const [node,row] of this.idleSeats)if(!current.has(node)){if(row.person.dataset.idle)clearAction(row.person);this.idleSeats.delete(node);}
       for(const node of nodes){
         const person=node.querySelector('.office-person');if(!person)continue;
-        if(node.classList.contains('is-live')||node.dataset.busy==='true'){
+        if(node.classList.contains('is-live')){
           if(person.dataset.idle)clearAction(person);
-          this.idleSeats.delete(node);if(node.dataset.busy==='true'&&!node.classList.contains('is-live'))person.dataset.facing='desk';continue;
+          this.idleSeats.delete(node);continue;
         }
+        const working=node.dataset.busy==='true',clips=working?workClips:idleClips;
         let row=this.idleSeats.get(node);
-        if(!row){const seed=seatSeed(node),used=new Set([...this.idleSeats.values()].map(r=>r.index));let index=seed%idleClips.length;for(let i=0;i<idleClips.length&&used.has(index);i++)index=(index+1)%idleClips.length;row={person,seed,index,start:now+seed%1300,duration:4800+seed%1800};this.idleSeats.set(node,row);clearAction(person);}
-        person.dataset.facing='down';person.dataset.posture='seated';person.dataset.idle='true';
+        if(row&&row.working!==working){clearAction(person);this.idleSeats.delete(node);row=null;}
+        if(!row){const seed=seatSeed(node),used=new Set([...this.idleSeats.values()].map(r=>r.index));let index=seed%clips.length;for(let i=0;i<clips.length&&used.has(index);i++)index=(index+1)%clips.length;row={person,seed,index,working,start:now+seed%1300,duration:4800+seed%1800};this.idleSeats.set(node,row);clearAction(person);}
+        person.dataset.facing=working?'desk':'down';person.dataset.posture='seated';person.dataset.idle='true';
         if(now<row.start)continue;
         const progress=(now-row.start)/row.duration;
-        if(progress>=1){clearAction(person);person.dataset.idle='true';row.index=(row.index+1)%idleClips.length;row.start=now+1100+(row.seed+row.index*337)%1500;continue;}
-        const clip=idleClips[row.index];person.dataset.pose=clip;drawAction(person,sampleAction(clip,progress));
+        if(progress>=1){clearAction(person);person.dataset.idle='true';row.index=(row.index+1)%clips.length;row.start=now+1100+(row.seed+row.index*337)%1500;continue;}
+        const clip=clips[row.index];person.dataset.pose=clip;drawAction(person,sampleAction(clip,progress));
       }
     }
     setMotion(on){this.motion=on;this.root.classList.toggle('motion-off',!on);if(!on)this.stop();else this.startIdle();}

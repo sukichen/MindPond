@@ -69,9 +69,19 @@ try {
     await graph.offices.settings(admin,'https://memory.example/mcp');
     await graph.roles.application({action:'submit',name:'小橘',introduction:'擅长整理旅行资料和待确认清单',reason:'希望一起完成两天一夜的出游计划',key:'guide-application'},
       {v:1,principal:'owner',agentId:'connector',runtimeId:'guide-pending',transport:'http-mcp',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+    await graph.offices.configureAgent({id:'unused-example',principal:'demo-unused',name:'不再使用的测试连接',host:'codex',state:'pending',expectedRevision:0},admin);
+    const processing=await graph.building.message({action:'send',officeId:'keep-room',recipient:b.roleId,body:'请核对两天一夜的景点安排，避免绕路。',key:'cycle-processing'},a);
+    await graph.building.message({action:'take',messageId:processing.messageId,key:'cycle-take'},b);
+    const completed=await graph.building.message({action:'send',officeId:'keep-room',recipient:b.roleId,body:'请整理交通方案需要进一步确认的事项。',key:'cycle-completed'},a);
+    await graph.building.message({action:'take',messageId:completed.messageId,key:'cycle-completed-take'},b);
+    await graph.building.message({action:'finish',messageId:completed.messageId,result:'已整理待确认事项：出发日期、车次和住宿价格。没有把未核验价格当成事实。',key:'cycle-completed-finish'},b);
+    app.post('/fixture/message-cycle',async(req,res,next)=>{try{
+      if(req.body.action==='finish')res.json(await graph.building.message({action:'finish',messageId:processing.messageId,result:'路线核对完成，已保留日期与价格的不确定性。',key:'cycle-finish'},b));
+      else res.status(400).json({error:'Disposable fixture accepts finish only'});
+    }catch(error){next(error);}});
     if(process.argv.includes('--animate')){
       let n=0,busy=false;
-      const timer=setInterval(async()=>{if(busy||n>=18)return;busy=true;try{n++;const sent=await graph.building.message({action:'send',officeId:'keep-room',recipient:b.roleId,body:`隔离演示消息 ${n}：请核对交通与路线。`,key:'live-demo-'+n},a);await graph.building.material({action:'get',officeId:'keep-room',materialId:kept.material.materialId,number:0},b);if(n%2===0)await graph.building.message({action:'archive',messageId:sent.messageId,key:'live-demo-archive-'+n},b);}finally{busy=false;if(n>=18)clearInterval(timer);}},8000);
+      const timer=setInterval(async()=>{if(busy||n>=18)return;busy=true;try{n++;const sent=await graph.building.message({action:'send',officeId:'keep-room',recipient:b.roleId,body:`隔离演示消息 ${n}：请核对交通与路线。`,key:'live-demo-'+n},a);await graph.building.material({action:'get',officeId:'keep-room',materialId:kept.material.materialId,number:0},b);if(n%2===0){await graph.building.message({action:'take',messageId:sent.messageId,key:'live-demo-take-'+n},b);await graph.building.message({action:'finish',messageId:sent.messageId,result:'演示核对完成',key:'live-demo-archive-'+n},b);}}finally{busy=false;if(n>=18)clearInterval(timer);}},8000);
       server!.once('close',()=>clearInterval(timer));
     }
     console.log(JSON.stringify({preview:url+'/collaboration',guide:url+'/collaboration/guide'}));
@@ -186,9 +196,9 @@ try {
     assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);
     const guide=await fetch(url+'/collaboration/guide');assert.equal(guide.status,200);
     const text=await guide.text();for(const marker of ['五步','复制给小栗','复制给小麦','永久删除角色','永久删除办公室','常见问题'])assert(text.includes(marker));
-    assert.equal((text.match(/data-zoom /g)??[]).length,12,'screenshot walkthrough has all steps');
+    assert.equal((text.match(/data-zoom /g)??[]).length,14,'screenshot walkthrough includes message lifecycle and connection deletion');
     assert(text.includes('shotDialog'));
-    for(const asset of ['office-guide.css','office-guide.js','guide/01-login.jpg','guide/09-office-delete.jpg','guide/11-replay.jpg'])assert.equal((await fetch(url+'/assets/'+asset)).status,200);
+    for(const asset of ['office-guide.css','office-guide.js','guide/01-login.jpg','guide/09-office-delete.jpg','guide/11-replay.jpg','guide/12-message-cycle.jpg','guide/13-connection-delete.jpg'])assert.equal((await fetch(url+'/assets/'+asset)).status,200);
     console.log('PASS archived offices can be deleted; independent beginner guide and assets are publicly readable');
   }
 } finally {

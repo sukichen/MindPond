@@ -66,3 +66,10 @@ HTTP `/api/memory/search`、MCP `memory_search` 和 SDK `pond.recall` 可传 `co
 ## 局域网中心账户
 
 需要由其它账户/机器访问中心库时，使用 `prepare --remote-url <中心 /mcp URL> --token-file <私有令牌文件>`；不传 `--db`。可用 `--session <宿主真实逻辑会话>` 继续同一会话，未提供则每次连接独立。三个客户端均生成 stdio 桥接配置；OpenCode 远程模式不使用本地 native adapter。详见 [网络 MCP](network-mcp.md)。
+
+
+## 协作连接配置的统一来源
+
+原生办公室 CLI 与网页均调用 `src/integrations/office-connection.ts` 生成配置；通用 stdio 包使用同一 `office-wait-policy.ts`。office_wait 最多300000毫秒，宿主调用期限360000毫秒（Codex 360秒）。修改后重新连接 MCP，运行中的旧配置不会自动更新。
+
+宿主字段依据：[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[Claude Code 超时](https://code.claude.com/docs/en/mcp)、[OpenCode MCP](https://opencode.ai/docs/mcp-servers/)。OpenCode 官方说明与版本可能对 timeout 的工具发现/执行范围有差别；生成配置和工具发现通过不等于所有宿主实测五分钟等待通过。

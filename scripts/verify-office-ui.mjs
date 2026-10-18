@@ -273,3 +273,31 @@ vm.runInContext(source.slice(source.indexOf("  submit('officeLogin'"),source.ind
 await loginHandler(new Map([['operatorKey','']]));assert.equal(loginBody.cookiePath,'/mindpond/api/office-admin');
 loginLocation.href='http://127.0.0.1:7903/collaboration';await loginHandler(new Map());assert.equal(loginBody.cookiePath,'/api/office-admin');
 console.log('PASS login UI: prefixed proxy and direct-root cookie scopes follow the page URL');
+
+
+// Refresh real rendering functions: open messages survive unrelated/new activity.
+class MailNode {
+  constructor(tag,text){this.tag=tag;this.textContent=text??'';this.children=[];this.dataset={};this.open=false;this.parent=null;}
+  append(...nodes){for(const n of nodes)this.insertBefore(n,null);}
+  insertBefore(node,reference){if(node===reference)return;node.remove();const index=reference?this.children.indexOf(reference):this.children.length;this.children.splice(index,0,node);node.parent=this;}
+  remove(){if(this.parent){const siblings=this.parent.children;siblings.splice(siblings.indexOf(this),1);this.parent=null;}}
+  replaceChildren(...nodes){for(const n of [...this.children])n.remove();this.append(...nodes);}
+  get lastElementChild(){return this.children.at(-1);}
+}
+const mailElements=Object.fromEntries(['officeContainers','officeRoomMessages','officeMessageStatus'].map(id=>[id,new MailNode('div')]));
+const mailState={office:{office:{id:'room'}},mail:null};
+const mailContext=vm.createContext({state:mailState,mailRenderVersions:new WeakMap(),mailStates:{pending:'待处理',processing:'处理中',archived:'已处理'},
+  el:id=>mailElements[id],make:(tag,text)=>new MailNode(tag,text),button:text=>new MailNode('button',text),window:{MindPondOfficeMarkdown:{render:text=>new MailNode('article',text)}}});
+vm.runInContext(source.slice(source.indexOf('  function renderFacilities('),source.indexOf('  async function loadMail(')),mailContext);
+const message={id:'one',seq:1,state:'processing',senderName:'A',recipientName:'B',sentAt:1,body:'Review evidence'};
+mailContext.renderFacilities({revision:1,messages:[message],containers:[]});
+const openMessage=mailElements.officeRoomMessages.children[0];openMessage.open=true;openMessage.selectionToken='reading-position';
+mailContext.renderFacilities({revision:2,messages:[message],containers:[]});
+assert.equal(mailElements.officeRoomMessages.children[0],openMessage,'unrelated facility updates reuse the message DOM');assert(openMessage.open);
+mailContext.renderFacilities({revision:3,messages:[{...message,id:'two',seq:2},message],containers:[]});
+assert.equal(mailElements.officeRoomMessages.children[1],openMessage,'incoming messages do not replace an expanded message');assert(openMessage.open);assert.equal(openMessage.selectionToken,'reading-position');
+mailContext.renderFacilities({revision:4,messages:[{...message,id:'two',seq:2},{...message,state:'archived',result:'Verified'}],containers:[]});
+assert(mailElements.officeRoomMessages.children[1].open,'lifecycle updates preserve open state while refreshing feedback');
+mailState.mail.query='Review';const filtered=mailElements.officeRoomMessages.children[1];
+mailContext.renderFacilities({revision:5,messages:[],containers:[]});assert.equal(mailElements.officeRoomMessages.children[1],filtered,'facility refresh cannot empty an active filtered view');
+console.log('PASS message viewing: expanded body/DOM and reading state survive facility refreshes, incoming messages, lifecycle changes and active filters');

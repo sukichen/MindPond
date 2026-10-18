@@ -7,6 +7,8 @@ import { MindPondError } from './errors.js';
 import { digest } from './growth.js';
 import type { TrustedCallContext } from './trust.js';
 import type { OfficeStore } from './office.js';
+import { previewText, jsonBytes } from './office-context.js';
+import { messageState } from './office-message-state.js';
 import { BUILDING_INSTRUCTIONS } from './office-building.js';
 import { deleteRoleData, deleteOfficeData } from './office-deletion.js';
 
@@ -41,6 +43,9 @@ export class RoleStore {
       const columns=await this.db.all<Row[]>('PRAGMA table_info(role_messages)');
       if(!columns.some(c=>c.name==='reply_to'))await this.db.exec('ALTER TABLE role_messages ADD COLUMN reply_to TEXT');
       if(!columns.some(c=>c.name==='metadata'))await this.db.exec("ALTER TABLE role_messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
+      const states=await this.db.all<Row[]>('PRAGMA table_info(role_message_states)');
+      for(const [name,type] of [['taken_at','INTEGER'],['completed_at','INTEGER'],['completion','TEXT']])
+        if(!states.some(c=>c.name===name))await this.db.exec(`ALTER TABLE role_message_states ADD COLUMN ${name} ${type}`);
     });
   }
   private actor(a?: TrustedCallContext): TrustedCallContext & { runtimeId: string; agentId: string } {
@@ -117,10 +122,31 @@ export class RoleStore {
       const application = await this.db.get<Row>('SELECT id,name,introduction,state,revision,created_at FROM role_applications WHERE principal=? AND connector_id=? AND runtime_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [actor.principal, actor.agentId, actor.runtimeId]);
       return { state: application?.state ?? 'unregistered', identity: null, application: application ?? null, instructions: ROLE_INSTRUCTIONS };
     }
-    const assignments = await this.assignments(b, actor);
-    const contacts = await this.db.all<Row[]>(`SELECT r.id roleId,r.name,r.introduction FROM character_roles r WHERE r.state='active' AND r.id<>? AND (r.principal=? OR EXISTS(SELECT 1 FROM role_links l WHERE l.sender=? AND l.recipient=r.id)) ORDER BY r.name,r.id LIMIT 200`, [b.role_id, actor.principal, b.role_id]);
-    return { state: 'active', identity: await this.badge(actor, b), assignments, contacts, instructions: ROLE_INSTRUCTIONS };
+    const officePage = await this.rooms({},actor);
+    const contactPage = await this.contacts({}, actor);
+    const processing=await this.db.all("SELECT m.id messageId,m.office_id officeId,s.taken_at takenAt FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.recipient=? AND s.state='processing' ORDER BY m.seq LIMIT 21",[b.role_id]);
+    return { state: 'active', identity: await this.badge(actor, b), assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
+      processing:processing.slice(0,20),processingHasMore:processing.length>20,instructions: ROLE_INSTRUCTIONS };
   }
+  async contacts(i:Row,a?:TrustedCallContext){
+    const actor=this.actor(a),b=await this.binding(actor);
+    const rows=await this.db.all<Row[]>(`SELECT r.id roleId,r.name,r.introduction FROM character_roles r WHERE r.state='active' AND r.id<>? AND r.id>? AND (r.principal=? OR EXISTS(SELECT 1 FROM role_links l WHERE l.sender=? AND l.recipient=r.id)) ORDER BY r.id LIMIT ?`,[b!.role_id,i.afterId??'',actor.principal,b!.role_id,(i.limit??20)+1]);
+    const contacts:Row[]=[];const budget=i.contextBudgetBytes??8192;
+    for(const row of rows.slice(0,i.limit??20)){const summary={...row,introduction:previewText(row.introduction,240),introductionTruncated:Buffer.byteLength(row.introduction)>240};if(jsonBytes([...contacts,summary])>budget)break;contacts.push(summary);}
+    return {contacts,hasMore:rows.length>contacts.length,nextAfterId:contacts.at(-1)?.roleId??i.afterId??'',contextBudget:{limit:budget,used:jsonBytes(contacts),unit:'utf8_bytes',appliesTo:'contacts'}};
+  }
+  async contact(roleId:string,a?:TrustedCallContext){
+    const actor=this.actor(a),b=await this.binding(actor);
+    const row=await this.db.get(`SELECT r.id roleId,r.name,r.introduction FROM character_roles r WHERE r.id=? AND r.state='active' AND (r.principal=? OR EXISTS(SELECT 1 FROM role_links l WHERE l.sender=? AND l.recipient=r.id))`,[roleId,actor.principal,b!.role_id]);
+    if(!row)fail('Contact unavailable');return {contact:row};
+  }
+  async rooms(i:Row,a?:TrustedCallContext){
+    const actor=this.actor(a),b=await this.binding(actor),all=(await this.assignments(b!,actor)).filter(s=>s.assignmentId>(i.afterId??'')).sort((a,b)=>a.assignmentId<b.assignmentId?-1:a.assignmentId>b.assignmentId?1:0);
+    const rooms:Row[]=[];const budget=i.contextBudgetBytes??8192;
+    for(const row of all.slice(0,i.limit??20)){const summary={...row,title:previewText(row.title,240),duty:previewText(row.duty,240)};if(jsonBytes([...rooms,summary])>budget)break;rooms.push(summary);}
+    return {rooms,hasMore:all.length>rooms.length,nextAfterId:rooms.at(-1)?.assignmentId??i.afterId??'',contextBudget:{limit:budget,used:jsonBytes(rooms),unit:'utf8_bytes',appliesTo:'rooms'}};
+  }
+
   private async assignments(b: Row, a: TrustedCallContext) {
     const seats = await this.offices.authorizedSeats({ ...a, roleId: b.role_id, roleBindingId: b.id, roleBindingEpoch: b.epoch });
     return seats.map(s => ({ assignmentId: s.id, officeId: s.office_id, label: s.label, duty: s.role, title: s.title, state: s.office_state, deadline: s.deadline }));
@@ -200,9 +226,14 @@ export class RoleStore {
     const pending = await this.db.all('SELECT id,principal,connector_id,mode,name,introduction,reason,state,revision,created_at FROM role_applications WHERE state=? ORDER BY created_at LIMIT 100', ['pending']);
     const mappings = await this.db.all('SELECT * FROM role_seats');
     const links = await this.db.all('SELECT sender,recipient FROM role_links ORDER BY sender,recipient');
-    const messages = await this.db.all(`SELECT m.*,s.state FROM role_messages m JOIN role_message_states s ON s.message_id=m.id ORDER BY m.seq DESC LIMIT 100`);
+    const messages = (await this.db.all<Row[]>(`SELECT m.*,s.state,s.taken_at,s.completed_at,s.completion FROM role_messages m JOIN role_message_states s ON s.message_id=m.id ORDER BY m.seq DESC LIMIT 100`)).map(m=>({...m,state:messageState(m.state),body:previewText(m.body,700),bodyTruncated:Buffer.byteLength(m.body)>700}));
     const events = await this.db.all('SELECT seq,role_id,kind,body,ts FROM role_events ORDER BY seq DESC LIMIT 100');
     return { revision, roles, pending, mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
+  }
+  async messagePreview(id:string,a?:TrustedCallContext){
+    this.admin(a);
+    const row=await this.db.get<Row>('SELECT m.*,s.state,s.taken_at,s.completed_at,s.completion FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.id=?',[id]);
+    if(!row)fail('Message unavailable');return {message:{...row!,state:messageState(row!.state)}};
   }
   async state(a?: TrustedCallContext, afterSeq?: number) {
     this.admin(a);
@@ -278,7 +309,7 @@ export class RoleStore {
           const message = await this.db.get<Row>('SELECT * FROM role_messages WHERE id=? AND recipient=?', [i.messageId, b!.role_id]);
           if (!message) fail('Message is not addressed to your character');
           if (i.state === 'resolved' && message.kind === 'request') fail('A request requires a final reply; reading/resolving is not a substitute', 'invalid_input');
-          await this.db.run("UPDATE role_message_states SET state=CASE WHEN state='resolved' THEN state ELSE ? END,updated_at=? WHERE message_id=?", [i.state, this.clock(), message.id]);
+          await this.db.run("UPDATE role_message_states SET state=CASE WHEN state IN ('resolved','processing') THEN state ELSE ? END,updated_at=? WHERE message_id=?", [i.state, this.clock(), message.id]);
           await this.event(b!.role_id, 'message_' + i.state, { messageId: message.id });
           if(message.office_id)await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)',[message.office_id,JSON.stringify({principal:actor.principal,roleId:b!.role_id}),i.state==='resolved'?'message_archive':'message_read',JSON.stringify({messageId:message.id}),this.clock()]);
           return { messageId: message.id, state: (await this.db.get<Row>('SELECT state FROM role_message_states WHERE message_id=?', [message.id]))!.state };
@@ -301,7 +332,7 @@ export class RoleStore {
         const id = randomUUID();
         const seq = await this.event(recipient.id, 'message_queued', { messageId: id, sender: sender!.id, recipient: recipient.id, kind: i.kind, requestId });
         await this.db.run('INSERT INTO role_messages(id,sender,recipient,kind,body,request_id,final,sender_name,recipient_name,office_id,seq,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', [id, sender!.id, recipient.id, i.kind, i.body, requestId, i.final ? 1 : 0, sender!.name, recipient.name, i.officeId ?? null, seq, this.clock()]);
-        await this.db.run('INSERT INTO role_message_states VALUES(?,?,?)', [id, 'queued', this.clock()]);
+        await this.db.run('INSERT INTO role_message_states(message_id,state,updated_at) VALUES(?,?,?)', [id, 'queued', this.clock()]);
         if(i.officeId)await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)',[i.officeId,JSON.stringify({principal:actor.principal,roleId:sender!.id}),'message',JSON.stringify({messageId:id,sender:sender!.id,recipient:recipient.id,senderName:sender!.name,recipientName:recipient.name,body:i.body}),this.clock()]);
         return { messageId: id, requestId: i.kind === 'request' ? id : requestId, seq, state: 'queued', nextAction: 'Delivery is durable, not proof the host is running. The recipient uses its inbox command to continue.' };
       });

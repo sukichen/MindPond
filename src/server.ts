@@ -167,7 +167,8 @@ app.get('/vendor/vis-network.min.js', (_req, res) => res.type('application/javas
 app.get('/licenses/third-party.txt', (_req, res) =>
   res.type('text/plain').sendFile(path.resolve(__dirname, '..', 'licenses', 'dependencies.txt')));
 
-app.use('/api/office-admin',officeWorkbench(graphMemory,{apiKey:API_KEY,operatorKey:OPERATOR_KEY,contextSecret:CONTEXT_SECRET,configFile:process.env.MINDPOND_MCP_ACCOUNTS}));
+const officeAdmin=officeWorkbench(graphMemory,{apiKey:API_KEY,operatorKey:OPERATOR_KEY,contextSecret:CONTEXT_SECRET,configFile:process.env.MINDPOND_MCP_ACCOUNTS});
+app.use('/api/office-admin',officeAdmin);
 
 // ---- auth middleware ----
 app.use('/api', (req, res, next) => {
@@ -959,6 +960,7 @@ async function main() {
   const shutdown = async () => {
     if (closing) return;
     closing = true;
+    officeAdmin.closeObservers();
     await graphMemory.offices.close();
     await graphMemory.collaboration.closeWaits();
     for (const stream of actionStreams) stream.end();

@@ -619,3 +619,13 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 /* Swivelling toward the room puts the backrest behind the resting person. The chair's
    collision rectangle stays fixed, including while a colleague walks past. */
 .office-desk:has(.office-person[data-facing=down][data-posture=seated]) .office-chair{z-index:6}
+
+/* Message lifecycle is visible without opening the full body. */
+.office-mail{border:1px solid #dce4d6;border-radius:10px;background:#fff;padding:14px 16px;margin:12px 0;overflow-wrap:anywhere}
+.office-mail>summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;list-style:none;color:#52665e;min-height:26px}
+.office-mail>summary::-webkit-details-marker{display:none}.office-mail>summary::after{content:'⌄';margin-left:auto}.office-mail[open]>summary::after{content:'⌃'}
+.office-mail>summary strong{font-size:12px;font-weight:500}.office-mail>summary small{color:#829087;font-size:10px}
+.office-mail-state{display:inline-block;border-radius:5px;padding:4px 8px;background:#f6edd8;color:#856927;white-space:nowrap;font-size:11px}
+.office-mail[data-state=processing] .office-mail-state{background:#e1edf8;color:#3e698a}.office-mail[data-state=archived] .office-mail-state{background:#e8eee6;color:#657960}
+.office-mail>.office-markdown{padding:6px 0}.office-mail>button{margin:4px 6px 0 0}.office-mail>h4{font-size:12px;margin:14px 0 0;color:#62795e}
+.office-diagnostics{margin:24px 0}.office-diagnostics .office-item{font-size:12px}

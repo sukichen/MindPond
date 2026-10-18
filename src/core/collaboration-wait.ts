@@ -30,7 +30,7 @@ export class CollaborationWaiter {
   private active=new Map<string,number>();
   private pending=new Set<Promise<unknown>>();
   private generation=0;
-  constructor(private hooks:WaitHooks, private resumeTool = 'work_wait', private limits={defaultMs:25000,maxMs:55000}){}
+  constructor(private hooks:WaitHooks, private resumeTool = 'work_wait', private limits:{defaultMs:number;maxMs:number;maxPerPrincipal?:number;maxGlobal?:number}={defaultMs:25000,maxMs:55000}){}
   notify(){this.generation++;for(const listener of [...this.listeners])listener();}
   async close(){this.stopping.abort();this.notify();await Promise.allSettled([...this.pending]);}
   private pause(ms:number,generation:number,signal:AbortSignal){
@@ -55,7 +55,7 @@ export class CollaborationWaiter {
     await runtime.authorize?.();
     await this.hooks.inspect(input,actor);
     const principal=actor!.principal;
-    if((this.active.get(principal)??0)>=8||[...this.active.values()].reduce((a,b)=>a+b,0)>=64)
+    if((this.active.get(principal)??0)>=(this.limits.maxPerPrincipal??8)||[...this.active.values()].reduce((a,b)=>a+b,0)>=(this.limits.maxGlobal??64))
       throw new MindPondError('temporarily_unavailable','Too many concurrent collaboration waits',{retryable:true,retryAfterMs:1000});
     this.active.set(principal,(this.active.get(principal)??0)+1);
     const id=randomUUID(),started=performance.now();

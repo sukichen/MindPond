@@ -217,3 +217,21 @@ export async function issueNetworkGrant(options: {
     await fs.unlink(configFile + '.lock');
   }
 }
+
+/** Reuse the issuance lock and atomic replacement; never broaden another grant. */
+export async function revokeNetworkAgent(configFile:string,agentId:string){
+  if(!/^[A-Za-z0-9_.:-]{1,128}$/.test(agentId))throw new Error('Invalid agentId');
+  const file=path.resolve(configFile);
+  let lock:Awaited<ReturnType<typeof fs.open>>;
+  try{lock=await fs.open(file+'.lock','wx',0o600);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return {removed:0};throw error;}
+  try{
+    const config=await readNetworkConfiguration(file).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+    if(!config)return {removed:0};
+    const grants=config.grants.filter(g=>g.agentId!==agentId),removed=config.grants.length-grants.length;
+    if(!removed)return {removed:0};
+    const temporary=file+'.'+randomBytes(8).toString('hex')+'.tmp';
+    try{await fs.writeFile(temporary,JSON.stringify({...config,grants},null,2)+'\n',{flag:'wx',mode:0o600});await fs.rename(temporary,file);}
+    finally{await fs.rm(temporary,{force:true});}
+    return {removed};
+  }finally{await lock.close();await fs.unlink(file+'.lock');}
+}

@@ -24,7 +24,7 @@
     logged: false,
     editing: null,
     editingProject: null,
-    poll: null,
+    poll: null, mail: null, mailGeneration: 0,
     authEpoch: 0,
     roleEditing: false,
     renderedFacilities: null,
@@ -32,6 +32,7 @@
     roleDraft: null, expanded: null, appView: 'officeRooms', roomTab: 'officeCanvas',
     scene: { scale: 1, x: 0, y: 0, autoFit: true, room: null }
   };
+  const mailRenderVersions = new WeakMap();
   const scenePlayer = new window.MindPondOfficeScene.Scene(el('officeScene'),el('officeWires'),el('officeSceneStatus'),()=>state.scene.scale);
   const officeStates = {
     active: '开放',
@@ -59,7 +60,8 @@
     submitted: '等待验收',
     blocked: '条件不足'
   };
-  const kinds = {message:'消息',message_read:'阅读消息',message_archive:'归档消息',container:'更新容器',
+  const mailStates={pending:'待处理',processing:'处理中',archived:'已处理（归档）'};
+  const kinds = {message_take:'领取消息',message_finish:'处理完成',message:'消息',message_read:'阅读消息',message_archive:'归档消息',container:'更新容器',
     inform: '通知',
     request: '请求答复',
     reply: '回复',
@@ -99,9 +101,9 @@
       body: JSON.stringify(body)
     });
     const data = await r.json();
-    if (!r.ok) throw Error(data.code === 'stale_version'
+    if (!r.ok) { const error=Error(data.code === 'stale_version'
       ? route.endsWith('/delete') ? '资料已被其他操作更新或删除。请重新打开角色或办公室，核对最新内容后再决定是否删除。' : '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。'
-      : data.error ?? '操作失败');
+      : data.error ?? '操作失败'); error.status=r.status; throw error; }
     return data;
   }
   function confirmAction(message, {destructive=false,title='确认操作'} = {}) {
@@ -153,64 +155,6 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  function template(agent, url) {
-    const env = 'MINDPOND_' + agent.id.replace(/[^A-Za-z0-9]/g, '_').toUpperCase() + '_TOKEN',
-      name = 'mindpond_' + agent.id.replace(/[^A-Za-z0-9_]/g, '_');
-    if (agent.host === 'codex')
-      return {
-        env,
-        place: '宿主原生 HTTP MCP 设置（.codex/config.toml）',
-        text: `[mcp_servers.${name}]\nurl = ${JSON.stringify(url)}\nbearer_token_env_var = ${JSON.stringify(env)}\ntool_timeout_sec = 65\n`,
-        docs: 'https://learn.chatgpt.com/docs/extend/mcp'
-      };
-    if (agent.host === 'opencode')
-      return {
-        env,
-        place: '宿主原生 HTTP MCP 设置（opencode.json）',
-        text: JSON.stringify(
-          {
-            mcp: {
-              [name]: {
-                type: 'remote',
-                url,
-                oauth: false,
-                headers: { Authorization: `Bearer {env:${env}}` },
-                timeout: 65000
-              }
-            }
-          },
-          null,
-          2
-        ),
-        docs: 'https://opencode.ai/docs/mcp-servers/'
-      };
-    if (agent.host === 'claude')
-      return {
-        env,
-        place: 'Claude Code 的 .mcp.json（只含变量引用）',
-        text: JSON.stringify(
-          {
-            mcpServers: {
-              [name]: {
-                type: 'http',
-                url,
-                headers: { Authorization: 'Bearer ${' + env + '}' },
-                timeout: 65000
-              }
-            }
-          },
-          null,
-          2
-        ),
-        docs: 'https://code.claude.com/docs/en/mcp'
-      };
-    return {
-      env,
-      place: '该宿主的原生 HTTP MCP 设置（语法需按客户端验证）',
-      text: `Streamable HTTP MCP URL: ${url}\nAuthentication: Bearer supplied by host secret setting\nSecret reference: ${env}\nTool timeout: at least 65 seconds\n`,
-      docs: null
-    };
-  }
   function connectionDetails(agent, box) {
     const details = make('details'),
       summary = make('summary', 'HTTP MCP 配置与凭据');
@@ -221,7 +165,8 @@
       box.append(details);
       return;
     }
-    const cfg = template(agent, url);
+    const cfg = state.data.connectionTemplates?.[agent.id];
+    if (!cfg) { details.append(make('p', '配置暂不可用，请重新登录并刷新连接设置。')); box.append(details); return; }
     const configPreview=make('pre',cfg.text);
     details.append(
       make('p', cfg.place),
@@ -231,6 +176,8 @@
         `由用户把凭据放入宿主秘密设置，使用变量名 ${cfg.env}。配置不会自动设置变量；不要让 agent 用 shell 寻找 token。环境变量若对 shell 可见，秘密隔离仍未实现。`
       )
     );
+    for (const warning of cfg.warnings) details.append(make('p', warning));
+    details.append(make('p', '消息等待最多 5 分钟，宿主调用期限配置为 6 分钟。修改后需重新连接 MCP；旧进程不会自动加载新配置。'));
     if (cfg.docs) {
       const a = make('a', '宿主官方配置文档');
       a.href = cfg.docs;
@@ -301,7 +248,7 @@
     if(epoch!==state.authEpoch)return;
     state.data = next;
     // A refresh can update the directory without replacing an open profile draft.
-    state.logged = true;
+    state.logged = true;startObserver();
     el('officeLogin').hidden = true;
     el('officeSettings').hidden = false;
     state.initializedView = true;
@@ -309,6 +256,7 @@
     el('officeNavRoomCount').textContent=String(state.data.offices.length);
     el('officeLoginStatus').textContent = '已登录用户管理';
     el('officeEndpoint').elements.mcpUrl.value = state.data.settings.mcpUrl ?? '';
+    renderDiagnostics();
     el('officeInstance').textContent =
       '实例 ' +
       state.data.settings.instanceId +
@@ -359,6 +307,11 @@
           await refresh();
         })
       );
+      const remove=button('删除连接',async()=>{
+        if(!(await confirmAction(`永久删除宿主连接「${agent.name}」并撤销其访问？办公室历史与记忆会保留。有关联角色或正在使用的工位时，需先移除它们。`,{destructive:true,title:'删除宿主连接'})))return;
+        const result=await api('agent/delete',{id:agent.id,expectedRevision:agent.revision});await refresh();
+        notice(result.credentialCleanupPending?'连接已删除，访问已撤销。私有凭据文件清理未完成，请检查配置文件权限或稍后重试管理删除。':'宿主连接已删除，访问已撤销。',Boolean(result.credentialCleanupPending));
+      });remove.className='office-danger';card.append(remove);
       box.append(card);
     }
     if (!state.data.agents.length)
@@ -371,6 +324,21 @@
     refreshSeatChoices();
     renderProjects();
 
+  }
+  function renderDiagnostics(){
+    const box=el('officeDiagnostics');box.replaceChildren(make('h3','连接诊断'));
+    box.append(make('p','这里只展示服务端观测证据。宿主正在运行、实际调用期限和跨机器可达性，需要在对应宿主验证。'));
+    if(!state.data.settings.mcpUrl)box.append(make('p','尚未保存中心 MCP 地址。'));
+    for(const agent of state.data.agents){
+      const roleList=(state.data.characters?.roles??[]).filter(r=>r.connector_id===agent.id);
+      const policy=state.data.credentialPolicies?.[agent.id];
+      const row=make('article');row.className='office-item';
+      row.append(make('strong',agent.name),make('p',`接入：${states[agent.state]??agent.state} · 已批准角色 ${roleList.length} 个`),make('p',agent.last_seen?'最近握手：'+new Date(agent.last_seen).toLocaleString():'尚未观察到握手'),make('p',agent.discovered_at?'工具发现：'+new Date(agent.discovered_at).toLocaleString():'尚未观察到协作工具发现'));
+      row.append(make('p',policy?`记忆授权：${policy.domains.map(d=>d.kind+'/'+d.id).join('、')}；办公室限制：${policy.assignmentIds===null?'未额外限制':policy.assignmentIds.length+' 个工位'}`:state.data.credentialPolicyError?'凭据策略读取失败，请检查私有配置权限。':'此 Web 进程未发现对应凭据策略；不据此推断 MCP 进程未配置。'));
+      for(const warning of state.data.connectionTemplates?.[agent.id]?.warnings??[])row.append(make('p',warning));
+      box.append(row);
+    }
+    box.append(make('p','共享凭据下的 roleContext 是会话关联，不是安全隔离。办公室成员资格与个人 / 团队记忆授权分别管理。'));
   }
   function renderRoomChoices() {
     const box = el('officeRoomList'); box.replaceChildren();
@@ -444,8 +412,11 @@
     }
     const messages = el('officeRoleMessages');messages.replaceChildren();
     for (const m of data.messages) {
-      const card = make('details'), summary = make('summary', `${m.sender_name ?? nameOf(m.sender)} → ${m.recipient_name ?? nameOf(m.recipient)} · ${m.kind} · ${m.state === 'queued' ? '未读' : m.state === 'read' ? '已读' : '已归档'}`);
-      card.append(summary, make('p', new Date(m.created_at).toLocaleString() + ' · ' + m.id), window.MindPondOfficeMarkdown.render(m.body));messages.append(card);
+      const card = make('details'), summary = make('summary', `${m.sender_name ?? nameOf(m.sender)} → ${m.recipient_name ?? nameOf(m.recipient)} · ${m.kind} · ${mailStates[m.state]??m.state}`);
+      card.append(summary, make('p', new Date(m.created_at).toLocaleString() + ' · ' + m.id), window.MindPondOfficeMarkdown.render(m.body));
+      if(m.bodyTruncated)card.append(make('p','此处是正文摘要。'));
+      if(m.completion)card.append(make('h4','处理反馈'),window.MindPondOfficeMarkdown.render(m.completion));
+      card.append(button('打开完整消息',async()=>{const epoch=state.authEpoch;const result=await api('role/message',{messageId:m.id});if(epoch===state.authEpoch&&state.logged)showDetail('角色消息 · '+(mailStates[result.message.state]??result.message.state),result.message);}));messages.append(card);
     }
     if (!data.messages.length) messages.append(make('p', '尚无角色消息。'));
   }
@@ -663,7 +634,7 @@
     state.roomTab=id;
     for(const tab of tabs){const selected=tab.dataset.roomTab===id;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;if(selected&&focus)tab.focus();}
     for(const panel of document.querySelectorAll('[data-room-panel]'))panel.hidden=panel.id!==id;
-    if(id!=='officeCanvas'){replayController.pause();scenePlayer.setActive(false);}
+    if(id!=='officeCanvas'){replayController.pause();scenePlayer.setActive(false);if(id==='officeMessagePanel'&&state.office)void run(()=>loadMail());}
     else requestAnimationFrame(()=>{scenePlayer.setActive(state.appView==='officeRooms');layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
   }
   function syncAppRoute(){showAppView(location.hash.slice(1)||'officeRooms',false);}
@@ -722,6 +693,8 @@
     },
     loading(done,total){el('officeReplayProgress').textContent=`正在读取历史事件：${done} / ${total}`;},
     loaded(meta,player){
+      el('officeReplayFrom').value=String(meta.fromSeq);el('officeReplayTo').value=String(meta.toSeq);
+      el('officeReplayBounds').textContent=(meta.threadId?'仅此对话':'所选区间')+` · ${meta.count} 个事件 · #${meta.fromSeq} 至 #${meta.toSeq}`;
       const rows=el('officeReplayRoles');rows.replaceChildren();
       for(const p of [...meta.participants,{key:'system',name:'用户 / 系统事件'}]){const label=make('label',p.name+' · 每件事（秒）'),input=make('input');input.type='number';input.min='.5';input.max='60';input.step='.5';input.value=player.durations.has(p.key)?String(player.durations.get(p.key)):'';input.placeholder=String(player.defaultSeconds)+'（默认）';input.setAttribute('aria-label',p.name+'每件事展示秒数');input.onchange=()=>{if(input.value===''){player.durations.delete(p.key);}else if(input.reportValidity())player.setDuration(p.key,input.valueAsNumber);};label.append(input);rows.append(label);}
       el('officeReplaySeek').max=String(player.events.length-1);el('officeReplaySeek').value='0';
@@ -729,7 +702,7 @@
     select(event,index,total,player){
       el('officeReplayNow').textContent=`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`;
       el('officeReplaySeek').value=String(index);const current=el('officeReplayCurrent');current.hidden=false;current.replaceChildren(make('h4',`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`),make('small',new Date(event.ts).toLocaleString()));
-      const body=event.body;current.append(typeof body.body==='string'?window.MindPondOfficeMarkdown.render(body.body):make('p',body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
+      const body=event.body;current.append(typeof body.body==='string'?window.MindPondOfficeMarkdown.render(body.body):make('p',body.result??body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
       if(body.why)current.append(make('p','原因：'+body.why));if(event.recipientKey)current.append(make('p','发送给：'+replayName(event.recipientKey)));
       current.append(button(event.detailAvailable?'查看完整事件':'查看事件详情',()=>event.detailAvailable?showRecord({eventSeq:event.seq},'事件 #'+event.seq):showDetail('事件 #'+event.seq,event)));
       for(const n of el('officeDesks').children)n.classList.toggle('replay-selected',n.dataset.replayKey===event.actorKey);
@@ -886,11 +859,11 @@
     name.name = 'label';
     name.required = false;
     name.maxLength = 120;
-    const role = make('input');role.type='hidden';role.name='role';role.value=data?.role??'member';
+    const role = input(data?.role??'member','例如：整理资料、核对证据');role.name='role';role.maxLength=80;
     row.append(
       label('角色人物 / 旧连接', agent),
       label('在这里的称呼 / 分工（自定义）', name),
-      role,
+      label('职责（自定义）',role),
       button('移除', () => row.remove())
     );
     el('officeSeatRows').append(row);
@@ -907,7 +880,7 @@
     finally { if (generation === state.generation) state.opening = false; }
     if (generation !== state.generation || !state.logged) return;
     scenePlayer.reset();
-    state.office = first;
+    state.office = first;state.mail=null;state.mailGeneration++;
     state.scene.autoFit = true;
     state.scene.room = id;
     state.itemsCursor = first.nextItemsAfterId;
@@ -990,15 +963,60 @@
     box.scrollIntoView({block:'nearest'});
   }
   function renderFacilities(data) {
-    if(state.renderedFacilities===data)return;
-    state.renderedFacilities=data;
-    const box=el('officeContainers'), messages=el('officeRoomMessages');box.replaceChildren();messages.replaceChildren();
+    const signature=JSON.stringify([state.office?.office.id,data?.revision,data?.containers,data?.messages]);
+    if(state.renderedFacilities===signature)return;
+    state.renderedFacilities=signature;
+    const box=el('officeContainers');box.replaceChildren();
     for(const c of data?.containers??[]){const row=make('article');row.className='office-item';row.append(make('strong',c.title),make('p','版本 '+c.revision),button('打开 / 编辑',async()=>{const room=state.office.office.id;const record=await api('containers',{action:'get',officeId:room,id:c.id});if(state.office?.office.id===room)editContainer(record);}));box.append(row);}
     if(!data?.containers?.length)box.append(make('p','这里还没有容器。需要时可以自行添加。'));
     if(data?.hasMore)box.append(button('查看更多容器',async()=>{const room=state.office.office.id;const page=await api('containers',{action:'list',officeId:room,afterId:data.nextAfterId});if(state.office?.office.id!==room)return;state.office.facilities={...data,containers:[...data.containers,...page.containers],hasMore:page.hasMore,nextAfterId:page.nextAfterId};renderFacilities(state.office.facilities);}));
-    for(const m of data?.messages??[]){const row=make('details');row.append(make('summary',m.sender_name+' → '+m.recipient_name+' · '+new Date(m.created_at).toLocaleString()),window.MindPondOfficeMarkdown.render(m.body));messages.append(row);}
-    if(!data?.messages?.length)messages.append(make('p','尚无办公室消息。'));
+    if(!state.mail || state.mail.room!==state.office.office.id){
+      state.mail={room:state.office.office.id,messages:data?.messages??[],hasMore:data?.messagesHasMore??false,nextBeforeSeq:data?.nextBeforeSeq??null,query:'',status:'all',threadId:null};
+      renderMail();
+    }else if(!state.mail.query&&state.mail.status==='all'&&!state.mail.threadId){
+      const known=new Map(state.mail.messages.map(m=>[m.id,m]));
+      for(const m of data?.messages??[])known.set(m.id,m);
+      const merged=[...known.values()].sort((a,b)=>b.seq-a.seq);
+      state.mail.messages=merged.slice(0,200);
+      if(merged.length>200){state.mail.hasMore=true;state.mail.nextBeforeSeq=state.mail.messages.at(-1).seq;}renderMail();
+    }
+
   }
+  function renderMail(){
+    const box=el('officeRoomMessages'),existing=new Map([...box.children].filter(n=>n.dataset.message).map(n=>[n.dataset.message,n])),nodes=[],mail=state.mail;
+    for(const m of mail?.messages??[]){
+      const previous=existing.get(m.id),version=JSON.stringify(m);
+      if(previous&&mailRenderVersions.get(previous)===version){nodes.push(previous);continue;}
+      const row=make('details');row.className='office-mail';row.dataset.message=m.id;row.dataset.state=m.state;row.open=previous?.open??false;mailRenderVersions.set(row,version);
+      const summary=make('summary'),badge=make('span',mailStates[m.state]??m.state);badge.className='office-mail-state';
+      summary.append(badge,make('strong',`${m.senderName} → ${m.recipientName}`),make('small',new Date(m.sentAt).toLocaleString()));
+      row.append(summary,window.MindPondOfficeMarkdown.render(m.body));
+      if(m.bodyTruncated)row.append(make('p','此处为摘要。打开完整消息查看全部正文。'));
+      if(m.result)row.append(make('h4','处理反馈'),window.MindPondOfficeMarkdown.render(m.result));
+      row.append(button('打开完整消息',async()=>{const room=state.office.office.id,generation=state.generation;const r=await api('message',{officeId:room,messageId:m.id});if(generation===state.generation&&state.logged)showDetail('消息 · '+(mailStates[r.message.state]??r.message.state),r.message);}));
+      row.append(button('查看后续回复',()=>loadMail({threadId:m.id,reset:true})));
+      row.append(button('回放这段对话',async()=>{const room=state.office.office.id,generation=state.generation;const meta=await api('replay',{action:'index',officeId:room,threadId:m.id});if(generation!==state.generation||!state.logged)return;setRoomTab('officeCanvas');el('officeReplay').open=true;await replayController.load(room,meta.firstSeq,meta.lastSeq,m.id);}));
+      nodes.push(row);
+    }
+    if(!mail?.messages.length)nodes.push(make('p','没有符合条件的消息。'));
+    if(mail?.hasMore)nodes.push(button('加载更早消息',()=>loadMail({more:true})));
+    for(let i=0;i<nodes.length;i++)if(box.children[i]!==nodes[i])box.insertBefore(nodes[i],box.children[i]??null);
+    while(box.children.length>nodes.length)box.lastElementChild.remove();
+    el('officeMessageStatus').textContent=(mail?.threadId?'正在查看一条消息及其后续回复':'已展示 '+(mail?.messages.length??0)+' 条')+(mail?.query||mail?.status!=='all'||mail?.threadId?' · 筛选结果保留，点“查找”刷新':'')+' · 每次最多保留200条 · 查看不领取或完成消息';
+  }
+  async function loadMail({more=false,threadId,reset=false}={}){
+    if(!state.office)return;
+    const room=state.office.office.id,generation=state.generation,request=++state.mailGeneration;
+    const previous=state.mail?.room===room?state.mail:null;
+    const query=reset?'':el('officeMessageQuery').value.trim(),status=reset?'all':el('officeMessageFilter').value;
+    const thread=threadId===undefined?(more?previous?.threadId:null):threadId;
+    const page=await api('messages',{officeId:room,state:status,...(query?{query}:{}),...(thread?{threadId:thread}:{}),...(more&&previous?.nextBeforeSeq?{beforeSeq:previous.nextBeforeSeq}:{})});
+    if(generation!==state.generation||request!==state.mailGeneration||!state.logged)return;
+    state.mail={room,query,status,threadId:thread,messages:more?[...previous.messages,...page.messages].slice(-200):page.messages,hasMore:page.hasMore,nextBeforeSeq:page.nextBeforeSeq};
+    if(reset){el('officeMessageQuery').value='';el('officeMessageFilter').value='all';}renderMail();
+  }
+  el('officeMessageSearch').addEventListener('submit',event=>{event.preventDefault();void run(()=>loadMail());});
+  el('officeMessageReset').onclick=()=>run(()=>loadMail({reset:true,threadId:null}));
   el('officeAddContainer').onclick=()=>{if(state.office)editContainer({id:'container-'+uuid(),title:'',content:'',revision:0});};
   function renderOffice() {
     if(replayController.active)return;
@@ -1059,7 +1077,7 @@
       );
     const removeOffice=button('永久删除办公室',()=>deleteRoom(o));removeOffice.className='office-danger';
     controls.append(removeOffice);
-    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, state.data.characters?.roles.map(r => [r.id, r.name])]);
+    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, state.data.characters?.roles.map(r => [r.id, r.name, r.state])]);
     if (state.deskSnapshot !== deskSnapshot) {
       state.deskSnapshot = deskSnapshot;
       const focusedSeat = document.activeElement?.closest('[data-seat]')?.dataset.seat;
@@ -1084,7 +1102,10 @@
       const body = make('span'),
         wait = data.waits.find((w) => w.seat_id === seat.id);
       const task = data.items.find((t) => t.owner === seat.id && t.status === 'claimed');
-      node.dataset.busy=String(Boolean(task));
+      const activity=data.facilities?.activity?.find(r=>r.seatId===seat.id);
+      const processing=Number(activity?.processing??0);
+      const disabled=characterForSeat(seat)?.state==='disabled';
+      node.dataset.busy=String(!disabled&&Boolean(task||processing));
       body.className='office-desk-caption';
       const shared = access?.mode === 'shared_worktree';
       body.append(
@@ -1092,9 +1113,13 @@
         make('small', `${characterForSeat(seat)?.name??seat.name} · ${roles[seat.role]??seat.role}`),
         make(
           'small',
-          wait
-            ? '最近报告：等待回复（窗口内）'
-            : task
+          disabled
+            ? `角色已停用${processing?' · '+processing+' 条处理中消息待恢复':''}`
+            : processing
+            ? `正在处理 ${processing} 条消息`
+            : wait
+              ? '最近报告：等待回复（窗口内）'
+              : task
               ? '已领取：' + task.title
               : '暂无正在处理的报告'
         ),
@@ -1109,13 +1134,12 @@
                 : '文件条件待确认'
         )
       );
-      const activity=data.facilities?.activity?.find(r=>r.seatId===seat.id);
       const pending=Number(activity?.pending??0);
       const station=window.MindPondOfficeScene.props(person);
-      if(task)person.dataset.facing='desk';
+      if(!disabled&&(task||processing))person.dataset.facing='desk';
       const papers=station.querySelector('.office-paper-stack');
       papers.style.setProperty('--paper-count',Math.min(12,pending));papers.hidden=!pending;
-      if(pending){papers.textContent=String(pending);body.append(make('small',`待整理消息 ${pending} 条（含已读未归档）`));}
+      if(pending){papers.textContent=String(pending);body.append(make('small',`待处理消息 ${pending} 条`));}
       if(activity?.waitingUntil>Date.now())body.append(make('small','正在等待消息（等待窗口内）'));
       node.append(station, body);
       desks.append(node);
@@ -1351,7 +1375,14 @@
       if (generation === state.generation) state.loading = false;
     }
   }
-  function schedule() {
+  function startObserver(){
+    if(state.eventStream||!window.EventSource)return;
+    const stream=new EventSource('./api/office-admin/events');state.eventStream=stream;
+    stream.addEventListener('change',()=>{if(state.logged&&!document.hidden)schedule(150);});
+    stream.onerror=()=>{if(state.logged)schedule(2500);};
+  }
+  function stopObserver(){state.eventStream?.close();state.eventStream=null;}
+  function schedule(delay = state.eventStream?.readyState===1?15000:2500) {
     clearTimeout(state.poll);
     const epoch = state.authEpoch;
     state.poll = setTimeout(async () => {
@@ -1389,18 +1420,20 @@
           }
           if (changedRooms) renderRoomChoices();
           await updateOffice();
+          if(state.appView==='officeSetup')renderDiagnostics();
           if (state.pollFailed) {
             notice('观察连接已恢复。历史记录已继续同步。');
             state.pollFailed = false;
           }
         } catch (error) {
           if (epoch !== state.authEpoch || !state.logged) return;
+          if(error.status===401){state.logged=false;state.authEpoch++;stopObserver();el('officeLogin').hidden=false;el('officeSettings').hidden=true;el('officeLoginStatus').textContent='管理会话已过期';notice('管理会话已过期，请重新登录。当前编辑草稿仍保留。',true);showAppView('officeSetup');return;}
           state.pollFailed = true;
           el('officeSync').textContent = '观察连接中断 · 正在重试，保留上次状态';
         }
       }
       if (epoch === state.authEpoch && state.logged) schedule();
-    }, 2500);
+    }, delay);
   }
   function submit(id, fn) {
     el(id).addEventListener('submit', (e) => {
@@ -1497,7 +1530,7 @@
       state.containerDirty = false;
       setExpanded(null);
       state.authEpoch++;
-      await api('logout');
+      await api('logout');stopObserver();
       replayController.close();state.replayIndexRoom=null;
       scenePlayer.reset();
       state.generation++;
@@ -1517,13 +1550,13 @@
       for(const id of ['officeApplications','officeCharacterList','officeRoleMessages','officeRoleLinks','officeRoleEvents'])el(id).replaceChildren();
       notice('已退出管理。');
     });
-  window.addEventListener('pagehide', () => {replayController.close();scenePlayer.reset();state.authEpoch++;clearTimeout(state.poll);});
-  window.addEventListener('pageshow', event => {if(event.persisted && state.logged)schedule();});
+  window.addEventListener('pagehide', () => {replayController.close();scenePlayer.reset();state.authEpoch++;stopObserver();clearTimeout(state.poll);});
+  window.addEventListener('pageshow', event => {if(event.persisted && state.logged){startObserver();schedule(0);}});
   syncAppRoute();
   api('state')
     .then(async () => {
       await refresh();
-      if(state.appView==='officeRooms'&&state.data.offices.length)await openOffice(state.data.offices[0].id);
+      if(state.appView==='officeRooms'&&state.data.offices.length){const chosen=state.data.offices.find(o=>o.state==='active')??state.data.offices[0];await openOffice(chosen.id);}
       schedule();
     })
     .catch(() => {el('officeShellStatus').textContent='请先登录管理';showAppView('officeSetup');});

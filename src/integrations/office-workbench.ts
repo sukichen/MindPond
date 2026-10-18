@@ -1,7 +1,8 @@
 /** Browser-only operator control plane. This router is never mounted on /mcp. */
 import express from 'express';
+import { officeConnection, OFFICE_CAPABILITIES } from './office-connection.js';
 import { z } from 'zod';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,7 +14,7 @@ import {
   officeConfigurationSchema,
   projectConfigurationSchema
 } from '../core/office-tools.js';
-import { issueNetworkGrant, readNetworkConfiguration } from './network-config.js';
+import { issueNetworkGrant, readNetworkConfiguration, revokeNetworkAgent } from './network-config.js';
 import { toStructuredError } from '../core/errors.js';
 import { parseContainerInput } from '../core/building-tools.js';
 import { roleReviewSchema, roleConfigureSchema, roleLinkSchema } from '../core/role-tools.js';
@@ -23,7 +24,6 @@ export function officeWorkbench(
   options: { apiKey: string; operatorKey: string; contextSecret: string; configFile?: string }
 ) {
   const router = express.Router(),
-    sessions = new Map<string, number>(),
     attempts = new Map<string, { n: number; until: number }>();
   const operator: TrustedCallContext = {
     v: 1,
@@ -32,6 +32,8 @@ export function officeWorkbench(
     issuedAt: 0,
     expiresAt: Number.MAX_SAFE_INTEGER
   };
+  const sessionHash = (key: string) => createHash('sha256').update(key).digest('hex');
+  const authorityHash = sessionHash(JSON.stringify([options.apiKey,options.operatorKey,options.contextSecret]));
   const equal = (a: unknown, b: string) =>
     typeof a === 'string' &&
     !!b &&
@@ -43,7 +45,8 @@ export function officeWorkbench(
     res.setHeader('Cache-Control', 'no-store');
     next();
   });
-  router.post('/login', (req, res) => {
+  router.post('/login', async (req, res, next) => {
+    try {
     if (!sameOrigin(req)) {
       res.status(403).json({ error: 'Open the workbench on its own origin' });
       return;
@@ -92,13 +95,11 @@ export function officeWorkbench(
       res.status(403).json({ error: '请填写用户管理凭据；agent 的 MCP token 不能登录管理页面。' });
       return;
     }
-    for (const [key, until] of sessions) if (until <= now) sessions.delete(key);
-    if (sessions.size >= 128) {
+    const key = randomBytes(32).toString('base64url');
+    if (!await graph.offices.managementSession('create',sessionHash(key),authorityHash,operator)) {
       res.status(429).json({ error: 'Too many management sessions' });
       return;
     }
-    const key = randomBytes(32).toString('base64url');
-    sessions.set(key, now + 12 * 3600000);
     res.cookie('mindpond_office_admin', key, {
       httpOnly: true,
       sameSite: 'strict',
@@ -107,14 +108,16 @@ export function officeWorkbench(
       maxAge: 12 * 3600000
     });
     res.json({ ok: true });
+    } catch(error) { next(error); }
   });
-  router.use((req, res, next) => {
+  router.use(async (req, res, next) => {
+    try {
     const key = (req.headers.cookie ?? '')
       .split(';')
       .map((s) => s.trim())
       .find((s) => s.startsWith('mindpond_office_admin='))
       ?.slice('mindpond_office_admin='.length);
-    if (!key || (sessions.get(key) ?? 0) <= Date.now()) {
+    if (!key || key.length > 128 || !await graph.offices.managementSession('get',sessionHash(key),authorityHash,operator)) {
       res.status(401).json({ error: '请先登录协作管理。' });
       return;
     }
@@ -123,6 +126,7 @@ export function officeWorkbench(
       return;
     }
     next();
+    } catch(error) { next(error); }
   });
   const route = (name: string, fn: (req: express.Request) => Promise<unknown>) =>
     router.post(name, async (req, res) => {
@@ -135,11 +139,38 @@ export function officeWorkbench(
           .json({ error: e.message, code: e.code, nextAction: e.nextAction });
       }
     });
+  // Notifications carry only a revision. All content still passes authenticated
+  // POST projections, and one bounded clock serves every observer in this router.
+  const observers=new Map<express.Response,{key:string;revision:number;heartbeat:number}>();
+  let observerTimer:ReturnType<typeof setInterval>|undefined,observing=false,observersClosed=false;
+  router.get('/events',async(req,res,next)=>{
+    try{
+      if(observersClosed){res.status(503).end();return;}
+      if(observers.size>=32){res.status(429).end();return;}
+      const raw=(req.headers.cookie??'').split(';').map(s=>s.trim()).find(s=>s.startsWith('mindpond_office_admin='))!.slice('mindpond_office_admin='.length);
+      const revision=await graph.building.observationRevision(operator);
+      if(observersClosed){res.status(503).end();return;}
+      if(observers.size>=32){res.status(429).end();return;}
+      res.set({'Content-Type':'text/event-stream','Cache-Control':'no-store','X-Accel-Buffering':'no'});res.flushHeaders();
+      res.write(`event: ready\ndata: ${revision}\n\n`);
+      observers.set(res,{key:sessionHash(raw),revision,heartbeat:Date.now()});
+      res.on('close',()=>{observers.delete(res);if(!observers.size){clearInterval(observerTimer);observerTimer=undefined;}});
+      if(!observerTimer)observerTimer=setInterval(()=>{if(observing)return;observing=true;void(async()=>{
+        const current=await graph.building.observationRevision(operator);
+        for(const [stream,entry] of observers){
+          if(stream.writableEnded||stream.destroyed)continue;
+          if(!await graph.offices.managementSession('get',entry.key,authorityHash,operator)){stream.end();continue;}
+          if(current!==entry.revision){entry.revision=current;if(!stream.write(`event: change\ndata: ${current}\n\n`))stream.end();}
+          else if(Date.now()-entry.heartbeat>=15000){entry.heartbeat=Date.now();if(!stream.write(': heartbeat\n\n'))stream.end();}
+        }
+      })().catch(()=>{for(const stream of observers.keys())stream.end();}).finally(()=>{observing=false;});},1000);
+    }catch(error){next(error);}
+  });
   route('/logout', async (req) => {
     const raw = (req.headers.cookie ?? '')
       .split(';')
       .find((s) => s.trim().startsWith('mindpond_office_admin='));
-    if (raw) sessions.delete(raw.trim().slice('mindpond_office_admin='.length));
+    if (raw) await graph.offices.managementSession('delete',sessionHash(raw.trim().slice('mindpond_office_admin='.length)),authorityHash,operator);
     return { ok: true };
   });
   route('/state', async (req) => {
@@ -156,8 +187,10 @@ export function officeWorkbench(
         credentialPolicyError = (error as NodeJS.ErrnoException).code !== 'ENOENT';
       }
     }
+    const registry = await graph.offices.registry(operator), settings = await graph.offices.settings(operator);
     return {
-      ...(await graph.offices.registry(operator)), settings: await graph.offices.settings(operator),
+      ...registry, settings, capabilities: OFFICE_CAPABILITIES,
+      connectionTemplates: settings.mcpUrl ? Object.fromEntries(registry.agents.map((a: any) => [a.id, officeConnection({host:a.host,id:a.id,url:settings.mcpUrl})])) : {},
       characters: await graph.roles.state(operator, req.body.roleAfterSeq),
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
@@ -174,8 +207,16 @@ export function officeWorkbench(
   );
   route('/role/review', req => graph.roles.review(roleReviewSchema.parse(req.body), operator));
   route('/role/state', req => graph.roles.state(operator,req.body.afterSeq));
+  route('/role/message',req=>graph.roles.messagePreview(officeConfigurationSchema.shape.id.parse(req.body.messageId),operator));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
   const deletionSchema = z.object({id:officeConfigurationSchema.shape.id,expectedRevision:z.number().int().min(1)}).strict();
+  route('/agent/delete',async req=>{
+    const i=deletionSchema.parse(req.body),result=await graph.offices.deleteAgent(i,operator);
+    // Database revocation comes first and remains authoritative even if the
+    // private configuration is temporarily locked/unavailable.
+    if(options.configFile)try{await revokeNetworkAgent(options.configFile,i.id);}catch{return {...result,credentialCleanupPending:true};}
+    return result;
+  });
   route('/role/delete', req => {
     const i=deletionSchema.parse(req.body);
     return graph.roles.deleteRole({roleId:i.id,expectedRevision:i.expectedRevision},operator);
@@ -183,6 +224,9 @@ export function officeWorkbench(
   route('/office/delete', req => graph.roles.deleteOffice(deletionSchema.parse(req.body),operator));
   route('/role/link', req => graph.roles.link(roleLinkSchema.parse(req.body), operator));
   route('/containers', req => graph.building.container(parseContainerInput(req.body),operator));
+  const mailSchema=z.object({officeId:officeConfigurationSchema.shape.id,beforeSeq:z.number().int().min(1).optional(),state:z.enum(['pending','processing','archived','all']).optional(),query:z.string().trim().min(1).max(200).optional(),correspondent:officeConfigurationSchema.shape.id.optional(),threadId:officeConfigurationSchema.shape.id.optional(),limit:z.number().int().min(1).max(50).optional(),contextBudgetBytes:z.number().int().min(2048).max(65536).optional()}).strict();
+  route('/messages', req=>graph.building.history(mailSchema.parse(req.body),operator));
+  route('/message',req=>graph.building.messagePreview(z.object({officeId:officeConfigurationSchema.shape.id,messageId:officeConfigurationSchema.shape.id}).strict().parse(req.body),operator));
   route('/view', async (req) => ({
     ...(await graph.offices.get(
       {
@@ -207,7 +251,7 @@ export function officeWorkbench(
     )),
     facilities: await graph.building.snapshot(officeConfigurationSchema.shape.id.parse(req.body.officeId),operator,req.body.facilityRevision)
   }));
-  const replaySchema=z.object({action:z.enum(['index','page']),officeId:officeConfigurationSchema.shape.id,fromSeq:z.number().int().min(1).optional(),toSeq:z.number().int().min(0).optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}).strict();
+  const replaySchema=z.object({action:z.enum(['index','page']),officeId:officeConfigurationSchema.shape.id,threadId:officeConfigurationSchema.shape.id.optional(),fromSeq:z.number().int().min(1).optional(),toSeq:z.number().int().min(0).optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}).strict();
   route('/replay',req=>graph.building.replay(replaySchema.parse(req.body),operator));
   route('/item/cancel', (req) => {
     const itemId = officeConfigurationSchema.shape.id.parse(req.body.itemId),
@@ -292,5 +336,8 @@ export function officeWorkbench(
       await fs.rm(directory, { recursive: true, force: true });
     }
   });
-  return router;
+  return Object.assign(router,{closeObservers(){
+    observersClosed=true;clearInterval(observerTimer);observerTimer=undefined;
+    for(const stream of observers.keys())stream.end();observers.clear();
+  }});
 }

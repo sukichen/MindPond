@@ -91,6 +91,7 @@ export class OfficeStore {
     CREATE TABLE IF NOT EXISTS office_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS office_agent_discovery(agent_id TEXT PRIMARY KEY,ts INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS office_agents(id TEXT PRIMARY KEY,principal TEXT NOT NULL,name TEXT NOT NULL,host TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,last_seen INTEGER,created_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS office_agent_tombstones(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,deleted_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS office_projects(id TEXT PRIMARY KEY,title TEXT NOT NULL,members TEXT NOT NULL,enabled INTEGER NOT NULL,revision INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS office_project_links(office_id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES office_projects(id));
     CREATE TABLE IF NOT EXISTS offices(id TEXT PRIMARY KEY,title TEXT NOT NULL,goal TEXT NOT NULL,acceptance TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,deadline INTEGER NOT NULL,max_rounds INTEGER NOT NULL,created_at INTEGER NOT NULL);
@@ -107,6 +108,7 @@ export class OfficeStore {
     CREATE TABLE IF NOT EXISTS office_items(id TEXT PRIMARY KEY,office_id TEXT NOT NULL REFERENCES offices(id),title TEXT NOT NULL,acceptance TEXT NOT NULL,owner TEXT NOT NULL,reviewer TEXT NOT NULL,parent_id TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL,epoch INTEGER NOT NULL,lease_hash TEXT,lease_until INTEGER,session_id TEXT,round_id TEXT,round_number INTEGER NOT NULL DEFAULT 0,code_version TEXT,material_id TEXT,transfer_to TEXT,transfer_epoch INTEGER);
     CREATE TABLE IF NOT EXISTS office_rounds(id TEXT PRIMARY KEY,item_id TEXT NOT NULL REFERENCES office_items(id),number INTEGER NOT NULL,code_version TEXT NOT NULL,material_id TEXT NOT NULL,state TEXT NOT NULL,result TEXT,UNIQUE(item_id,number));
     CREATE TABLE IF NOT EXISTS office_waits(id TEXT PRIMARY KEY,office_id TEXT NOT NULL REFERENCES offices(id),session_id TEXT NOT NULL,conditions TEXT NOT NULL,state TEXT NOT NULL,started_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS office_admin_sessions(key_hash TEXT PRIMARY KEY,authority_hash TEXT NOT NULL,expires_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS office_waits_active ON office_waits(office_id,state,expires_at);
   `);
     await this.db.run("INSERT OR IGNORE INTO office_meta VALUES('instanceId',?)", [randomUUID()]);
@@ -147,6 +149,7 @@ export class OfficeStore {
   async agentAuthority(a: Actor) {
     if (!a.principal || a.expiresAt <= this.clock()) return false;
     if (!a.agentId) return true; // Existing v1 accounts keep their existing tools only.
+    if(await this.db.get('SELECT 1 FROM office_agent_tombstones WHERE id=?',[a.agentId]))return false;
     const row = await this.db.get<Row>('SELECT * FROM office_agents WHERE id=?', [a.agentId]);
     if (!(a.agentId.startsWith('legacy:') && !row) &&
         (!row || row.principal !== a.principal || row.state !== 'active')) return false;
@@ -167,6 +170,7 @@ export class OfficeStore {
   async configureAgent(i: Row, a?: Actor) {
     this.admin(a);
     return this.write(async () => {
+      if(await this.db.get('SELECT 1 FROM office_agent_tombstones WHERE id=?',[i.id]))fail('Connection was permanently deleted; register a new connection ID','invalid_input');
       const old = await this.db.get<Row>('SELECT * FROM office_agents WHERE id=?', [i.id]);
       if ((old?.revision ?? 0) !== i.expectedRevision)
         fail('Agent settings changed', 'stale_version');
@@ -202,13 +206,50 @@ export class OfficeStore {
     this.admin(a);
     return {
       agents: await this.db.all(
-        'SELECT a.*,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id ORDER BY a.created_at DESC LIMIT 128'
+        "SELECT a.*,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id WHERE a.state<>'deleted' ORDER BY a.created_at DESC LIMIT 128"
       ),
       projects: (
         await this.db.all<Row[]>('SELECT * FROM office_projects ORDER BY title LIMIT 128')
       ).map((p) => ({ ...p, members: JSON.parse(p.members) })),
       offices: await this.db.all('SELECT * FROM offices ORDER BY created_at DESC LIMIT 200')
     };
+  }
+  async deleteAgent(i:{id:string;expectedRevision:number},a?:Actor){
+    this.admin(a);
+    return this.write(async()=>{
+      const deleted=await this.db.get<Row>('SELECT revision FROM office_agent_tombstones WHERE id=?',[i.id]);
+      if(deleted){if(deleted.revision!==i.expectedRevision)fail('Connection changed or was deleted; refresh','stale_version');return {deleted:true,id:i.id};}
+      const old=await this.db.get<Row>('SELECT * FROM office_agents WHERE id=?',[i.id]);
+      if(!old||old.revision!==i.expectedRevision)fail('Connection changed or was deleted; refresh','stale_version');
+      if(await this.db.get('SELECT 1 FROM character_roles WHERE connector_id=?',[i.id]))fail('此连接仍关联角色，请先在“角色与申请”中删除不再使用的角色，再删除连接。','invalid_input');
+      if(await this.db.get('SELECT 1 FROM office_seats WHERE agent_id=? AND enabled=1',[i.id]))fail('此连接仍被办公室使用，请先编辑相关办公室，移除此连接的参与工位。','invalid_input');
+      await this.db.run('INSERT INTO office_agent_tombstones VALUES(?,?,?)',[i.id,i.expectedRevision,this.clock()]);
+      // Disabled historical seats retain a minimal FK target, never a usable
+      // connection. Active directories and authorization exclude it permanently.
+      if(await this.db.get('SELECT 1 FROM office_seats WHERE agent_id=?',[i.id]))
+        await this.db.run("UPDATE office_agents SET name='已删除连接',host='generic-http-mcp',state='deleted',revision=revision+1,last_seen=NULL WHERE id=?",[i.id]);
+      else await this.db.run('DELETE FROM office_agents WHERE id=?',[i.id]);
+      await this.db.run('DELETE FROM office_agent_discovery WHERE agent_id=?',[i.id]);
+      await this.db.run("UPDATE role_applications SET state='cancelled',revision=revision+1 WHERE connector_id=? AND state='pending'",[i.id]);
+      await this.db.run("INSERT INTO role_events(role_id,kind,body,ts) VALUES(NULL,'connector_deleted',?,?)",[JSON.stringify({connectorId:i.id}),this.clock()]);
+      const projects=await this.db.all<Row[]>('SELECT * FROM office_projects WHERE EXISTS(SELECT 1 FROM json_each(members) WHERE value=?)',[i.id]);
+      for(const p of projects)await this.db.run('UPDATE office_projects SET members=?,revision=revision+1 WHERE id=?',[JSON.stringify(JSON.parse(p.members).filter((id:string)=>id!==i.id)),p.id]);
+      await this.audit(null,a!,'agent_deleted',{agentId:i.id});
+      return {deleted:true,id:i.id};
+    });
+  }
+  /** Only hashes are persisted. Authority changes fence sessions after a restart. */
+  async managementSession(action:'create'|'get'|'delete', keyHash:string, authorityHash:string, a?:Actor) {
+    this.admin(a);
+    if (!/^[a-f0-9]{64}$/.test(keyHash) || !/^[a-f0-9]{64}$/.test(authorityHash))
+      throw new Error('Invalid management session digest');
+    if(action==='get')return !!await this.db.get('SELECT 1 FROM office_admin_sessions WHERE key_hash=? AND authority_hash=? AND expires_at>?',[keyHash,authorityHash,this.clock()]);
+    return this.write(async()=>{
+      await this.db.run('DELETE FROM office_admin_sessions WHERE expires_at<=? OR authority_hash<>?',[this.clock(),authorityHash]);
+      if(action==='delete'){await this.db.run('DELETE FROM office_admin_sessions WHERE key_hash=?',[keyHash]);return true;}
+      if((await this.db.get<Row>('SELECT COUNT(*) n FROM office_admin_sessions'))!.n>=128)return false;
+      await this.db.run('INSERT INTO office_admin_sessions VALUES(?,?,?)',[keyHash,authorityHash,this.clock()+12*3600000]);return true;
+    });
   }
   private async audit(
     officeId: string | null,
@@ -254,7 +295,7 @@ export class OfficeStore {
       const old = await this.db.get<Row>('SELECT * FROM office_projects WHERE id=?', [i.id]);
       if ((old?.revision ?? 0) !== i.expectedRevision) fail('Project changed', 'stale_version');
       for (const id of i.members)
-        if (!(await this.db.get('SELECT 1 FROM office_agents WHERE id=?', [id])))
+        if (!(await this.db.get("SELECT 1 FROM office_agents WHERE id=? AND state<>'deleted'", [id])))
           fail('Project members must be registered agents', 'invalid_input');
       await this.db.run(
         'INSERT INTO office_projects VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,members=excluded.members,enabled=excluded.enabled,revision=excluded.revision',

@@ -60,7 +60,7 @@ try {
     const a = await connect('cli'), b = await connect('cli'), c = await connect('other');
     assert(a.getInstructions()?.includes(COLLABORATION_LEARNING),'new MCP agents receive concise learning guidance at initialization');
     assert(Buffer.byteLength(COLLABORATION_LEARNING)<512,'the collaboration reminder stays bounded');
-    const raw = (client: Client, name: string, input: any = {}) => client.callTool({ name, arguments: input },undefined,{timeout:name==='office_wait'?360000:60000});
+    const raw = (client: Client, name: string, input: any = {}) => client.callTool({ name, arguments: name==='office_receive'?{action:'list',...input}:input },undefined,{timeout:name==='office_wait'?360000:60000});
     const call = async (client: Client, name: string, input: any = {}) => { const result = await raw(client, name, input); assert(!result.isError, JSON.stringify(result)); return JSON.parse((result.content[0] as any).text); };
     const tools = (await a.listTools()).tools.map(t => t.name);
     for (const tool of ['office_receive', 'office_message', 'office_wait', 'office_container'])
@@ -102,7 +102,8 @@ try {
         const timeout=await full;
         assert.equal(timeout.status,'timeout');assert.equal(timeout.resume.waitMs,300000);assert(timeout.elapsedMs>=299000&&timeout.elapsedMs<315000);
         console.log('PASS actual default office_wait: held open five minutes, then returned timeout with resumable public context');
-        await ca('office_message',{action:'archive',messageId:arrived.message.id,key:'archive-long-arrival'});
+        await ca('office_message',{action:'take',messageId:arrived.message.id,key:'take-long-arrival'});
+        await ca('office_message',{action:'finish',messageId:arrived.message.id,result:'Long wait verified',key:'archive-long-arrival'});
     }
     assert(Array.isArray(await ca('memory_spaces')), 'public correlation must not alter array-shaped memory responses');
     const seats = [{ id: 'a-seat', agentId: 'cli', roleId: ra.roleId, label: 'Whatever A does', role:'observer' }, { id: 'b-seat', agentId: 'cli', roleId: rb.roleId, label: 'Whatever B does' }];
@@ -118,10 +119,13 @@ try {
     assert.equal(received.messages[0].body, input.body);
     assert.equal(received.messages[0].metadata.status, 'whatever');
     assert.equal(received.officePending, undefined, 'no task recommendation or recovery package');
-    await cb('office_message', { action: 'read', messageId: sent.messageId, key: 'read' });
-    assert.equal((await cb('office_receive')).messages[0].state, 'read', 'reading does not consume');
-    await cb('office_message', { action: 'archive', messageId: sent.messageId, key: 'archive' });
-    assert.equal((await cb('office_message', { action: 'read', messageId: sent.messageId, key: 'late-read' })).state, 'archived', 'read never resurrects archived mail');
+    await cb('office_message', { action: 'take', messageId: sent.messageId, key: 'read' });
+    assert.equal((await cb('office_receive')).messages[0].state, 'processing', 'taken work remains recoverable');
+    await cb('office_message', { action: 'finish', messageId: sent.messageId, result:'Processed with evidence', key: 'archive' });
+    assert((await raw(b,'office_message',{action:'take',messageId:sent.messageId,key:'late-take',roleContext:rb.roleContext})).isError,'take never resurrects archived mail');
+    const automaticFeedback=(await ca('office_receive')).messages.find((m:any)=>m.kind==='completion');
+    await ca('office_message',{action:'take',messageId:automaticFeedback.id,key:'take-feedback'});
+    await ca('office_message',{action:'finish',messageId:automaticFeedback.id,result:'Feedback received',key:'finish-feedback'});
     assert.equal((await cb('office_receive')).messages.length, 0, 'archive needs no final reply');
     assert.equal((await ca('office_receive', { direction: 'sent' })).messages[0].id, sent.messageId);
     const reply = await cb('office_message', { action: 'send', replyTo: sent.messageId, body: 'A normal reply.', key: 'reply' });
@@ -167,7 +171,7 @@ try {
     assert((await raw(a, 'office_container', { ...save, officeId: 'another', key: 'collision', roleContext: ra.roleContext })).isError, 'global ID collision cannot mutate another room');
     const userView = await (await post('view', { officeId: 'empty' })).json();
     assert.equal(userView.facilities.containers.length, 1);
-    assert.equal(userView.facilities.messages.length, 2);
+    assert.equal(userView.facilities.messages.length, 3);
     assert.equal((await (await post('view',{officeId:'empty',facilityRevision:userView.facilities.revision})).json()).facilities.unchanged,true);
     assert.equal(userView.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,0,'archived mail is not pending');
     assert.equal(userView.facilities.activity.find((r:any)=>r.roleId===ra.roleId).pending,1,'room-only pending count excludes other correspondence');
@@ -182,9 +186,10 @@ try {
     let afterAck=await (await post('view',{officeId:'empty',afterSeq:afterRole.nextCursor,facilityRevision:afterRole.facilities.revision})).json();
     assert(afterAck.events.some((e:any)=>e.kind==='message_read'&&e.actor.roleId===rb.roleId));
     assert.equal(afterAck.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,1,'read mail remains on desk until archived');
-    await cb('office_message',{action:'archive',messageId:roleSent.messageId,key:'remove-from-desk'});
+    await cb('office_message',{action:'take',messageId:roleSent.messageId,key:'take-role-mail'});
+    await cb('office_message',{action:'finish',messageId:roleSent.messageId,result:'Role mail processed',key:'remove-from-desk'});
     afterAck=await (await post('view',{officeId:'empty',afterSeq:afterAck.nextCursor,facilityRevision:afterAck.facilities.revision})).json();
-    assert(afterAck.events.some((e:any)=>e.kind==='message_archive'));
+    assert(afterAck.events.some((e:any)=>e.kind==='message_finish'));
     assert.equal(afterAck.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,0);
     // Only the role mailbox is part of the current office UI and message protocol.
     const collected:string[]=[];let cursor=0;

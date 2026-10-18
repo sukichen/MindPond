@@ -3,14 +3,14 @@
   'use strict';
   class Player {
     constructor({scene,fetchPage,view,prepare,restore}){Object.assign(this,{scene,fetchPage,view,prepare,restore});this.active=false;this.loading=false;this.playing=false;this.paused=false;this.epoch=0;this.events=[];this.index=0;this.durations=new Map();this.defaultSeconds=2;this.speed=1;}
-    async load(officeId,fromSeq,toSeq){
+    async load(officeId,fromSeq,toSeq,threadId){
       if(!Number.isSafeInteger(fromSeq)||fromSeq<1||!Number.isSafeInteger(toSeq)||toSeq<fromSeq)throw Error('请选择有效的起止事件，起点不能晚于终点。');
       this.cancel();const epoch=this.epoch;this.loading=true;this.view.change(this);
       try{
-        const meta=await this.fetchPage({action:'index',officeId,fromSeq,toSeq});if(epoch!==this.epoch)return;
+        const meta=await this.fetchPage({action:'index',officeId,fromSeq,toSeq,...(threadId?{threadId}:{})});if(epoch!==this.epoch)return;
         if(meta.count>5000||meta.participantsLimited)throw Error('这个区间太长，请缩小起止事件范围后再载入。');
         const end=Math.min(toSeq,meta.lastSeq??0);let cursor=fromSeq-1;const events=[];
-        while(cursor<end){const page=await this.fetchPage({action:'page',officeId,fromSeq,toSeq:end,afterSeq:cursor,limit:100});if(epoch!==this.epoch)return;
+        while(cursor<end){const page=await this.fetchPage({action:'page',officeId,fromSeq,toSeq:end,afterSeq:cursor,limit:100,...(threadId?{threadId}:{})});if(epoch!==this.epoch)return;
           if(page.events.some((e,n)=>!Number.isSafeInteger(e.seq)||e.seq<=(n?page.events[n-1].seq:cursor)||e.seq<fromSeq||e.seq>end))throw Error('事件分页顺序异常，请重新载入。');
           events.push(...page.events);if(events.length>5000)throw Error('回放区间过长，请缩小范围。');
           if(!page.hasMore)break;if(!Number.isSafeInteger(page.nextCursor)||page.nextCursor<=cursor)throw Error('事件分页没有前进，请重新载入。');cursor=page.nextCursor;this.view.loading(events.length,meta.count);

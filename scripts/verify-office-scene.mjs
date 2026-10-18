@@ -90,7 +90,10 @@ assert.equal(person.dataset.facing,'desk');assert.equal(person.dataset.idle,unde
 advance(1500);assert.equal(person.dataset.facing,'desk','ambient clock cannot overwrite real work');assert.equal(second.dataset.facing,'down','unrelated roles continue resting');
 const foreground=animations.at(-1);foreground.resolve();await new Promise(r=>setImmediate(r));advance(1500);
 assert.equal(person.dataset.facing,'down','rest resumes after the foreground event');
-seats[0].dataset.busy='true';advance(100);assert.equal(person.dataset.facing,'desk','a reported claimed task keeps its worker facing the computer');delete seats[0].dataset.busy;
+seats[0].dataset.busy='true';advance(1500);assert.equal(person.dataset.facing,'desk','claimed messages keep the worker facing the computer');
+const workObserved=new Set();for(let i=0;i<4;i++){advance(2700);workObserved.add(person.dataset.pose);advance(9000);advance(2700);}
+assert.deepEqual([...workObserved].filter(Boolean).sort(),['think','typing','write'],'a persistent processing state cycles through all three work actions');
+delete seats[0].dataset.busy;advance(1500);assert.equal(person.dataset.facing,'down','last completion releases the work pose back to rest');
 ambient.beginReplay();assert.equal(idleIntervals.size,0,'history has no ambient rest competing with its recorded clock');ambient.endReplay();assert.equal(idleIntervals.size,1);
 ambient.setMotion(false);assert.equal(idleIntervals.size,0);ambient.setMotion(true);assert.equal(idleIntervals.size,1);
 document.hidden=true;listeners.visibilitychange();assert.equal(idleIntervals.size,0);document.hidden=false;listeners.visibilitychange();assert.equal(idleIntervals.size,1);
