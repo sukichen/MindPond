@@ -189,15 +189,12 @@
     details.append(
       make('p', '模板按官方文档生成；实际宿主版本及逐聊天隔离仍需你所在环境验证。OAuth 尚未实现。')
     );
-    details.append(make('p','同一个宿主连接可以用于多个聊天。提供原生会话信息时自动关联；否则申请后保留公开 roleContext 并在后续 MCP 调用中携带。不需要额外启动器或配置目录。'));
+    details.append(make('p','同一宿主可用于多个聊天。OpenCode 需安装上方会话插件，才能按真实聊天关联角色。同一聊天重连可恢复；没有可靠聊天标识时，请调用 role_sync 并由用户核对激活编号。'));
     const policy = state.data.credentialPolicies?.[agent.id];
-    const initialPersonal = policy?.domains.find(d => d.kind === 'personal')?.id ?? agent.principal;
-    const personal = input(initialPersonal, '明确允许访问的个人记忆范围');
-    details.append(label('个人记忆范围 ID（填写已有范围，或创建独立范围）', personal));
     const initialRestrictions = (policy?.assignmentIds ?? []).join(',');
     const restrictions = input(initialRestrictions, '仅允许的工位 ID，逗号分隔；清空将解除工位限制');
     details.append(label('高级：限制可用分工', restrictions));
-    details.append(make('p', '重新签发默认保留现有记忆范围与工位限制。修改记忆范围将替换现有领域授权；清空已有工位列表将解除限制。'));
+    details.append(make('p', '角色知识由聊天绑定决定，不需要填写记忆范围。重新签发保留现有工位限制；清空已有工位列表将解除限制。'));
     const issue = button(
       agent.state === 'pending' ? '签发并下载一次性凭据' : '重新签发并下载（旧凭据失效）',
       async () => {
@@ -210,12 +207,9 @@
         const restrictionsChanged = assignmentIds.join(',') !== initialRestrictions;
         if (policy?.assignmentIds?.length && restrictionsChanged && !assignmentIds.length &&
           !(await confirmAction('清空后此凭据可以选择该 agent 的所有已授权工位。确认解除工位限制？'))) return;
-        if (policy && personal.value !== initialPersonal &&
-          !(await confirmAction('这会将原有记忆领域授权替换为指定的个人范围。确认修改？'))) return;
         const response = await api('credential', {
           id: agent.id,
           expectedRevision: agent.revision,
-          ...(!policy || personal.value !== initialPersonal ? { personalId: personal.value } : {}),
           ...(restrictionsChanged ? { assignmentIds: assignmentIds.length ? assignmentIds : null } : {})
         });
         download(response.token + '\n', agent.id + '.token');
@@ -336,13 +330,13 @@
       const policy=state.data.credentialPolicies?.[agent.id];
       const row=make('article');row.className='office-item';
       row.append(make('strong',agent.name),make('p',`接入：${states[agent.state]??agent.state} · 已批准角色 ${roleList.length} 个`),make('p',agent.last_seen?'最近握手：'+new Date(agent.last_seen).toLocaleString():'尚未观察到握手'),make('p',agent.discovered_at?'工具发现：'+new Date(agent.discovered_at).toLocaleString():'尚未观察到协作工具发现'));
-      row.append(make('p',policy?`记忆授权：${policy.domains.map(d=>d.kind+'/'+d.id).join('、')}；办公室限制：${policy.assignmentIds===null?'未额外限制':policy.assignmentIds.length+' 个工位'}`:state.data.credentialPolicyError?'凭据策略读取失败，请检查私有配置权限。':'此 Web 进程未发现对应凭据策略；不据此推断 MCP 进程未配置。'));
+      row.append(make('p',policy?`协作连接策略已读取；办公室限制：${policy.assignmentIds===null?'未额外限制':policy.assignmentIds.length+' 个工位'}。角色记忆通过独立 Memory 连接访问。`:state.data.credentialPolicyError?'凭据策略读取失败，请检查私有配置权限。':'此 Web 进程未发现对应凭据策略；不据此推断 MCP 进程未配置。'));
       for(const report of (state.data.hostReports??[]).filter(h=>roleList.some(r=>r.id===h.role_id))){const p=JSON.parse(report.payload);row.append(make('p',`宿主自检：${p.client} · 角色 ${roleList.find(r=>r.id===report.role_id)?.name??report.role_id} · 服务端实等 ${(p.measuredWaitMs/1000).toFixed(1)} 秒 · ${p.clientReceived?'宿主已确认收到结果':'尚未确认收到结果'} · ${Date.now()-report.observed_at>120000?'当前运行未知':'最近有通信证据'}`));}
       row.append(button('下载宿主自检指引',()=>download('在需要验证的聊天中调用 office_host action=probe，waitMs=300000。收到 probeId 后调用 action=confirm、probeId 和 clientRoundTripMs。或在该宿主环境使用 mindpond-office-doctor --url <MCP地址> --token-env <秘密环境变量名> --session <原会话标识> --long-wait。不要把凭据发到聊天。不同客户端须分别实测。',agent.id+'-doctor.txt')));
       for(const warning of state.data.connectionTemplates?.[agent.id]?.warnings??[])row.append(make('p',warning));
       box.append(row);
     }
-    box.append(make('p','共享凭据下的 roleContext 是会话关联，不是安全隔离。办公室成员资格与个人 / 团队记忆授权分别管理。'));
+    box.append(make('p','角色记忆只对当前绑定的角色开放。人类添加的知识是保留来源的独立副本；办公室成员资格不会自动共享记忆。'));
   }
   function renderRoomChoices() {
     const box = el('officeRoomList'); box.replaceChildren();
@@ -396,12 +390,21 @@
       card.append(make('strong', app.name), make('span', '待审核 · ' + app.principal), make('p', app.introduction), make('small', '查看申请 →'));
       pending.append(card);
     }
-    if (!data.pending.length) pending.append(make('p', '没有待审核申请。'));
+    if (!awaiting) pending.append(make('p', '没有待审核申请或待激活聊天。'));
     for(const request of data.connections??[]){
-      const card=make('article'),select=document.createElement('select');
+      const card=make('article'),select=document.createElement('select');card.className='office-activation-card';
       const roles=data.roles.filter(r=>r.state==='active'&&r.principal===request.principal&&r.connector_id===request.connector_id);
+      const host=state.data.agents?.find(a=>a.id===request.connector_id);
+      select.setAttribute('aria-label','为聊天 '+request.id.slice(0,8)+' 选择角色');select.append(new Option('请选择已有角色',''));
       for(const role of roles)select.append(new Option(role.name,role.id));
-      card.append(make('strong','聊天等待激活 · '+request.id.slice(0,8)),make('p','选择已有角色后，其旧聊天绑定会撤销；消息和记忆保留。'),select,button('激活已有角色',async()=>{const role=roles.find(r=>r.id===select.value);if(!role)throw Error('此宿主还没有可激活的角色，请先申请新角色。');if(!await confirmAction('将 '+role.name+' 绑定到此聊天，并撤销其旧绑定？'))return;await api('role/activate',{requestId:request.id,roleId:role.id,expectedRevision:role.revision});await refresh();}));pending.append(card);
+      const activate=button('确认激活',async()=>{
+        const role=roles.find(r=>r.id===select.value);if(!role)throw Error('请选择已有角色');
+        if(!await confirmAction('请在原聊天核对激活编号 '+request.id.slice(0,8)+'。将“'+role.name+'”交给此聊天后，旧聊天绑定会撤销，消息和知识保留。'))return;
+        await api('role/activate',{requestId:request.id,roleId:role.id,expectedRevision:role.revision});await refresh();
+      });activate.disabled=true;select.onchange=()=>{activate.disabled=!select.value;};
+      card.append(make('strong','待激活聊天 · '+request.id.slice(0,8)),make('p','连接：'+(host?.name||request.connector_id)+' · 最近请求 '+new Date(request.last_seen).toLocaleString()),make('p','先让原聊天显示 role_sync 返回的激活编号，核对一致后再选择角色。'),select,activate);
+      if(!roles.length)card.append(make('p','此连接还没有已有角色。请让原聊天申请一个新角色，再在这里批准。'));
+      const detail=document.createElement('details');detail.append(make('summary','核对完整聊天信息'),make('p','激活编号：'+request.id),make('p','连接编号：'+request.connector_id),make('p','聊天关联：'+request.runtime_id));card.append(detail);pending.append(card);
     }
     renderRoleDirectory();
     const form = el('officeRoleLink');

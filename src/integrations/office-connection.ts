@@ -12,6 +12,14 @@ export const OFFICE_CAPABILITIES = {
   memory: 'Separate Memory MCP binds to this chat’s approved role. Humans see all knowledge; roles only their own or human-assigned independent copies.'
 } as const;
 
+/** Both endpoints share a public prefix. Reject ambiguous paths instead of
+ * exporting an apparently valid configuration for the wrong service. */
+export function memoryMcpEndpoint(value:string) {
+  const url=new URL(value);
+  if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash||! /\/mcp\/?$/.test(url.pathname)||/\/memory\/mcp\/?$/.test(url.pathname))throw new Error('Office MCP address must end in /mcp and contain no credentials, query or fragment');
+  url.pathname=url.pathname.replace(/\/mcp\/?$/,'/memory/mcp');return url.href;
+}
+
 export function officeConnection(o: { host: string; id: string; url: string; tokenEnv?: string; sessionLabel?: string; name?: string }): {
   env: string; name: string; warnings: string[]; capabilities: typeof OFFICE_CAPABILITIES;
   place: string; text: string; docs: string | null; config?: Record<string, unknown>;files?:Record<string,string>;
@@ -30,7 +38,7 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
     ...(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? ['这是本机地址，其他机器需要可达的中心地址。'] : [])
   ];
   const memoryName=o.name==='mindpond_office'?'mindpond_memory':compact('mindpond_memory_'+o.id.replace(/[^A-Za-z0-9_]/g,'_'));
-  const memoryUrl=o.url.replace(/\/mcp\/?$/,'/memory/mcp');
+  const memoryUrl=memoryMcpEndpoint(o.url);
   const base = { env, name, warnings, capabilities: OFFICE_CAPABILITIES };
   if (o.host === 'codex') return { ...base, place: 'Codex .codex/config.toml', docs: 'https://learn.chatgpt.com/docs/config-file/config-reference',
     text: [name,memoryName].map((entry,i)=>`[mcp_servers.${entry}]\nurl = ${JSON.stringify(i===0?o.url:memoryUrl)}\nbearer_token_env_var = ${JSON.stringify(env)}\n${o.sessionLabel ? `http_headers = { "X-MindPond-Session" = ${JSON.stringify(o.sessionLabel)} }\n` : ''}tool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS}\n`).join('\n') };

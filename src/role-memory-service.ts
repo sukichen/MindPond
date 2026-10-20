@@ -47,7 +47,7 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
             throw new MindPondError('scope_denied', 'Remote memory requires a registered host chat role or a role credential; human memory is available through the local user connection.');
         return { kind: 'user', id: 'default' };
     }
-    function tool(name: string, description: string, shape: any, fn: (a: any, owner: MemoryOwner) => Promise<unknown>) {
+    function tool(name: string, description: string, shape: any, fn: (a: any, owner: MemoryOwner, guard:()=>Promise<void>) => Promise<unknown>) {
         server.registerTool(name, { description, inputSchema: z.object(shape).strict() }, async (a: any, extra: any) => {
             if (closing)
                 return { isError: true, content: [{ type: 'text' as const, text: 'Memory connection is closing' }] };
@@ -56,8 +56,9 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
             calls.add(pending);
             try {
                 const owner = await identity(extra._meta);
-                const data = await fn(a, owner);
-                await options.authorize?.();
+                const guard=async()=>{const current=await identity(extra._meta);if(current.kind!==owner.kind||current.id!==owner.id)throw new MindPondError('scope_denied','The chat role changed; synchronize identity before continuing');};
+                const data = await fn(a, owner, guard);
+                await guard();
                 return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] };
             }
             catch (e) {
@@ -82,9 +83,9 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
     tool('memory_save_policy', 'Read concise saving guidance and configured knowledge dimensions.', {}, async () => ({ instructions, dimensionPolicy: await graph.getDimensionPolicy(), rules: 'One useful self-contained lesson. Preserve sources, versions, failures and uncertainty. No credentials or routine chatter. Find duplicates before saving; never select another identity.' }));
     tool('memory_use_report', 'Record actual use or rejection of recalled lessons with evidence; does not measure benefit by itself.', { reportId: key, recallId: id, task: content, outcome: z.enum(['success', 'partial', 'failed', 'unknown']), observations: z.array(z.object({ memoryId: id, disposition: z.enum(['used', 'rejected', 'unassessed']), reason: z.string().min(1).max(2000) })).min(1).max(20) }, async (a, o) => { for (const row of a.observations)
         await get(row.memoryId, o); return graph.reportMemoryUse({ ...a, reportId: 'owner-use:' + createHash('sha256').update(JSON.stringify([o, a.reportId])).digest('hex'), hostId: o.kind + ':' + o.id }, await context(o)); });
-    tool('memory_save', 'Save a durable lesson to your bound owner. Stable key prevents duplicate retries.', { ...write, idempotencyKey: key }, async (a, o) => { const domain = await graph.memoryOwners.domain(o), dimensions = a.dimensions ?? [(await graph.getDimensionPolicy()).defaultDimension]; return graph.saveMemory(a.content, { ...a, dimensions, domain, memberships: dimensions.map((memoryType: string) => ({ spaceId: 'memory', memoryType })) }); });
-    tool('memory_update', 'Update authorized knowledge optimistically; include the actual current updatedAt.', { ...write, content: content.optional(), nodeId: id, expectedUpdatedAt: z.number().int(), reason: z.string().min(1).max(2000) }, async (a, o) => { await get(a.nodeId, o); return graph.editMemory(a.nodeId, { ...a, context: await context(o) }); });
-    tool('memory_delete', 'Permanently delete one memory in your authorized knowledge.', { nodeId: id, reason: z.string().min(1).max(2000) }, async (a, o) => { await get(a.nodeId, o); await graph.deleteNode(a.nodeId, a.reason, undefined, await context(o)); return { deleted: true }; });
+    tool('memory_save', 'Save a durable lesson to your bound owner. Stable key prevents duplicate retries.', { ...write, idempotencyKey: key }, async (a, o, guard) => { const domain = await graph.memoryOwners.domain(o), dimensions = a.dimensions ?? [(await graph.getDimensionPolicy()).defaultDimension]; return graph.saveMemory(a.content, { ...a, dimensions, domain, memberships: dimensions.map((memoryType: string) => ({ spaceId: 'memory', memoryType })) },{authorize:guard}); });
+    tool('memory_update', 'Update authorized knowledge optimistically; include the actual current updatedAt.', { ...write, content: content.optional(), nodeId: id, expectedUpdatedAt: z.number().int(), reason: z.string().min(1).max(2000) }, async (a, o, guard) => { await get(a.nodeId, o); return graph.editMemory(a.nodeId, { ...a, context: await context(o) },guard); });
+    tool('memory_delete', 'Permanently delete one memory in your authorized knowledge.', { nodeId: id, reason: z.string().min(1).max(2000) }, async (a, o, guard) => { await get(a.nodeId, o); await graph.deleteNode(a.nodeId, a.reason, undefined, await context(o),guard); return { deleted: true }; });
     tool('memory_directory', 'List knowledge previews with bounded pagination; memory_get reads the body.', { offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(50).optional() }, async (a, o) => { const r = await graph.listNodes({ ...a,limit:a.limit??10, ...(o.kind === 'user' ? { operatorAll: true } : await context(o)), activeOnly: true }); return {owner:o,total:r.total,nextOffset:(a.offset??0)+r.nodes.length<r.total?(a.offset??0)+r.nodes.length:null,memories:await Promise.all(r.nodes.map(async n=>({id:n.id,owner:await graph.memoryOwners.owner(n),preview:n.content.slice(0,240),bodyAvailable:n.content.length>240,updatedAt:n.updatedAt,dimensions:n.dimensions,importance:n.importance})))}; });
     return { server, beginShutdown() { closing = true; }, async close() { closing = true; await Promise.allSettled([...calls]); await server.close(); } };
 }

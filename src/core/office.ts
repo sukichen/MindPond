@@ -123,7 +123,7 @@ export class OfficeStore {
         parsed.password ||
         parsed.search ||
         parsed.hash ||
-        !parsed.pathname.endsWith('/mcp')
+        !parsed.pathname.endsWith('/mcp') || parsed.pathname.endsWith('/memory/mcp')
       )
         fail('Use an HTTP(S) /mcp URL without embedded credentials', 'invalid_input');
       await this.write(() =>

@@ -133,7 +133,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       // saved session memory remains readable after this additive rollout.
       if(current.runtimeMode==='opencode_metadata') current.sessionId='net-native:'+current.runtimeId;
       auditContext=current;
-      const activation=toolProfile==='office'&&current.agentId&&current.runtimeId?await graphMemory.roles.connectionRequest(current):null;
+      const activation=toolProfile==='office'&&name==='role_sync'&&current.agentId&&current.runtimeId?await graphMemory.roles.connectionRequest(current):null;
       const roleIdentity=activation?null:await graphMemory.roles.identity(current);
       if(options.pinnedRoleId&&(name==='role_application'||roleIdentity&&roleIdentity.roleId!==options.pinnedRoleId))throw new MindPondError('scope_denied','This credential is fixed to its approved role; use user activation to reconnect it.');
       if(roleIdentity) {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {memoryMcpEndpoint} from './integrations/office-connection.js';
 import {officeWorkbench} from './integrations/office-workbench.js';
 import { assemblePresentedRecall, recallEntry } from './core/context-assembly.js';
 import { authorizeOrganizationAccess } from './core/organization-access.js';
@@ -136,6 +137,11 @@ const pipeline = new MemoryPipelineManager(graphMemory, undefined);
 const consolidation = new MemoryConsolidation(graphMemory, undefined);
 
 const app = express();
+const trustedProxy=process.env.MEMORY_TRUST_PROXY;
+if(trustedProxy){
+  if(trustedProxy==='loopback')app.set('trust proxy','loopback');
+  else throw new Error('MEMORY_TRUST_PROXY supports only loopback; keep the web listener on loopback behind a local reverse proxy');
+}
 app.use(express.json({ limit: '2mb' }));
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -172,6 +178,7 @@ app.use('/api/office-admin',officeAdmin);
 
 // ---- auth middleware ----
 app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control','no-store');
   if (!API_KEY) return next();
   if (keyMatches(req.header('x-api-key'), API_KEY)) return next();
   res.status(401).json({ error: 'unauthorized: missing/invalid x-api-key' });
@@ -179,7 +186,12 @@ app.use('/api', (req, res, next) => {
 
 // ---- R03: bind the trusted call context (strict mode when configured) ----
 app.use('/api', (req, res, next) => {
-  if (!CONTEXT_SECRET) return next(); // legacy: request parameters carry the context
+  if (!CONTEXT_SECRET) {
+    // Without signed agent contexts these REST routes belong to the human
+    // manager. A service key alone cannot bypass a configured management key.
+    if (OPERATOR_KEY && !requireOperator(req,res)) return;
+    return next();
+  }
   const header = req.header('x-mindpond-context');
   if (!header) {
     if(process.env.MEMORY_ALLOW_ANONYMOUS!=='1' && !keyMatches(req.header('x-operator-key'),OPERATOR_KEY)) {
@@ -233,9 +245,29 @@ function failErr(res: express.Response, err: unknown, fallbackStatus = 500) {
 
 // ---- routes ----
 app.get('/health', (_req, res) => ok(res, { service: 'mindpond', port: PORT, mode: 'service (no LLM inside)' }));
-app.get('/api/memory/owners',async(req,res)=>{if(!requireOperator(req,res))return;try{const settings=await graphMemory.offices.settings({v:1,operator:true,principal:'human',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});ok(res,{roles:await graphMemory.memoryOwners.roles(),user:{kind:'user',id:'default'},memoryMcpUrl:settings.mcpUrl?settings.mcpUrl.replace(/\/mcp\/?$/,'/memory/mcp'):undefined});}catch(e){failErr(res,e);}});
-app.post('/api/memory/assign',async(req,res)=>{if(!requireOperator(req,res))return;try{const a=z.object({memoryIds:z.string().min(1).max(160).array().min(1).max(50),roleId:z.string().uuid()}).strict().parse(req.body);ok(res,await graphMemory.memoryOwners.allocate(a.memoryIds,a.roleId));}catch(e){failErr(res,e);}});
-app.post('/api/memory/role-credential',async(req,res)=>{if(!requireOperator(req,res))return;try{const a=z.object({roleId:z.string().uuid()}).strict().parse(req.body);ok(res,await graphMemory.memoryOwners.issue(a.roleId));}catch(e){failErr(res,e);}});
+const humanOperator={v:1 as const,operator:true,principal:'human',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+async function publicMemoryEndpoint(){
+  const settings=await graphMemory.offices.settings(humanOperator);
+  if(!settings.mcpUrl)return null;
+  try{return memoryMcpEndpoint(settings.mcpUrl);}catch{return null;}
+}
+app.get('/api/memory/owners',async(req,res)=>{
+  if(!requireOperator(req,res))return;
+  try{ok(res,{roles:await graphMemory.memoryOwners.roles(),user:{kind:'user',id:'default'},memoryMcpUrl:await publicMemoryEndpoint()});}catch(e){failErr(res,e);}
+});
+app.post('/api/memory/assign',async(req,res)=>{
+  if(!requireMemoryManager(req,res))return;
+  try{const a=z.object({memoryIds:z.string().min(1).max(160).array().min(1).max(50),roleId:z.string().uuid()}).strict().parse(req.body);ok(res,await graphMemory.memoryOwners.allocate(a.memoryIds,a.roleId));}catch(e){failErr(res,e);}
+});
+app.post('/api/memory/role-credential',async(req,res)=>{
+  if(!requireMemoryManager(req,res))return;
+  try{
+    const a=z.object({roleId:z.string().uuid(),replaceExisting:z.boolean().optional()}).strict().parse(req.body);
+    const memoryMcpUrl=await publicMemoryEndpoint();
+    if(!memoryMcpUrl)throw new MindPondError('invalid_input','请先在协作办公室的“连接设置”保存可达的 Office MCP 地址，再生成角色配置。');
+    ok(res,{...await graphMemory.memoryOwners.issue(a.roleId,a.replaceExisting===true),memoryMcpUrl});
+  }catch(e){failErr(res,e);}
+});
 app.get('/api/memory/retrieval/profiles',async(_req,res)=>{try{ok(res,await graphMemory.retrievalProfiles());}catch(error){failErr(res,error);}});
 app.get('/api/memory/retrieval/devices',async(_req,res)=>{try{ok(res,await graphMemory.retrievalDevices());}catch(error){failErr(res,error);}});
 app.post('/api/memory/retrieval/build',async(req,res)=>{
@@ -460,10 +492,17 @@ function resolveContext(req: express.Request, src: unknown, res: express.Respons
 /** Operator-only surfaces (audit log, global graph, dedupe, maintenance,
  * pipeline jobs) require the operator capability in strict mode. */
 function requireOperator(req: express.Request, res: express.Response): boolean {
-  if (!CONTEXT_SECRET) return true; // legacy single-user mode
+  if (keyMatches(req.header('x-operator-key'),OPERATOR_KEY)) return true;
+  if (!CONTEXT_SECRET && !OPERATOR_KEY) return true; // local single-user mode without a management key
   if (req.trusted?.operator) return true;
-  failErr(res, new MindPondError('scope_denied', 'operator capability requires a trusted operator context'), 403);
+  failErr(res, new MindPondError('scope_denied', '请在“管理登录”填写有效的用户管理密钥。角色 MCP 凭据不能用于管理此页面。'), 403);
   return false;
+}
+function requireMemoryManager(req:express.Request,res:express.Response){
+  if(!requireOperator(req,res))return false;
+  const origin=req.header('origin');
+  if(origin&&origin!==`${req.protocol}://${req.header('host')}`){failErr(res,new MindPondError('scope_denied','请在当前管理页面中执行此操作。'),403);return false;}
+  return true;
 }
 function coreContext(ctx: EntryContext): DomainReadContext | undefined {
   return ctx === 'operator' ? undefined : ctx;
@@ -481,7 +520,7 @@ app.get('/api/memory/node/:id', async (req, res) => {
   try {
     const node = await graphMemory.getNodeById(req.params.id, { trackAccess: req.query.trackAccess === '1', context: coreContext(ctx) });
     if (!node) return fail(res, 404, `node not found: ${req.params.id}`);
-    ok(res, { node: { ...node, embedding: undefined,owner:await graphMemory.memoryOwners.owner(node) }, memberships: await graphMemory.getMemberships(node.id), associations: await graphMemory.listAssociations(node.id, { context: coreContext(ctx) }) });
+    ok(res, { node: { ...node, ...await graphMemory.memoryOwners.present(node), embedding: undefined }, memberships: await graphMemory.getMemberships(node.id), associations: await graphMemory.listAssociations(node.id, { context: coreContext(ctx) }) });
   } catch (err) {
     failErr(res, err);
   }
@@ -549,7 +588,7 @@ app.get('/api/memory/list', async (req, res) => {
     const wantsOperator = req.query.scope === 'operator';
     const operator = CONTEXT_SECRET ? (wantsOperator ? (req.trusted?.operator ?? false) : false) : wantsOperator;
     if (CONTEXT_SECRET && wantsOperator && !operator) {
-      failErr(res, new MindPondError('scope_denied', 'operator capability requires a trusted operator context'), 403);
+      failErr(res, new MindPondError('scope_denied', '请在“管理登录”填写有效的用户管理密钥。角色 MCP 凭据不能用于管理此页面。'), 403);
       return;
     }
     let sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
@@ -799,7 +838,7 @@ for(const op of hostOperations(graphMemory)) app.post(op.path, async(req,res)=>{
       else if ('sessionId' in shape) body.sessionId = narrowTrustedSession(req.trusted, body.sessionId);
       if ('domains' in shape) body.domains = narrowTrustedDomains(req.trusted, body.domains, body.sessionId);
       if ('domain' in shape) body.domain = narrowTrustedDomain(req.trusted, normalizeDomain(body.domain, body.sessionId), body.sessionId);
-      if (body.scope === 'operator' && !req.trusted.operator) throw new MindPondError('scope_denied', 'operator capability requires a trusted operator context');
+      if (body.scope === 'operator' && !req.trusted.operator) throw new MindPondError('scope_denied', '请在“管理登录”填写有效的用户管理密钥。角色 MCP 凭据不能用于管理此页面。');
     }
     const result=await op.run(op.schema.parse(body),callerContext(req,body),req.trusted??(!CONTEXT_SECRET?{v:1,principal:'local-operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}:undefined),{signal:abort.signal});
     await graphMemory.logAction({action:'host_tool_completed',nodeId:typeof body.nodeId==='string'?body.nodeId:undefined,domain:req.trusted&&!req.trusted.operator?(req.trusted.sessionId?{kind:'session',id:req.trusted.sessionId}:req.trusted.domains?.[0]):undefined,reason:JSON.stringify({tool:op.name})});

@@ -28,7 +28,7 @@ export class MemoryOwners {
         return { kind: 'personal' as const, id: 'default' }; await this.role(owner.id); await this.db.run('INSERT OR IGNORE INTO memory_role_namespaces VALUES(?,?)', [owner.id, 'agent:' + owner.id]); return { kind: 'personal' as const, id: 'agent:' + owner.id }; }
     async owner(node: MemoryNode): Promise<MemoryOwner> { const r = await this.db.get('SELECT role_id FROM memory_role_namespaces WHERE domain_id=?', [node.domain.id]); return node.domain.kind === 'personal' && r ? { kind: 'agent', id: r.role_id } : { kind: 'user', id: 'default' }; }
     async present(node: MemoryNode) { const { embedding, domain, sessionId, ...rest } = node; const provenance=await this.db.get('SELECT source_id sourceId,source_revision sourceRevision,source_hash sourceHash,created_at assignedAt FROM memory_allocations WHERE copy_id=?',[node.id]); return { ...rest, owner: await this.owner(node),...(provenance?{provenance}: {}) }; }
-    async roles() { return this.db.all("SELECT id,name,state FROM character_roles ORDER BY name,id"); }
+    async roles() { return this.db.all("SELECT r.id,r.name,r.state,EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential FROM character_roles r ORDER BY r.name,r.id"); }
     async allocate(memoryIds: string[], roleId: string) {
         const sources = new Map<string, MemoryNode>();
         for (const id of [...new Set(memoryIds)]) {
@@ -55,17 +55,20 @@ export class MemoryOwners {
                 const digest = createHash('sha256').update(n.content).digest('hex');
                 const originalRefs=n.sourceRefs??[];
                 const sourceRefs=originalRefs.length<64?[...originalRefs,{uri:'mindpond:memory/'+id,revision:String(n.updatedAt),fingerprint:'sha256:'+digest,context:'Human-assigned independent copy; later edits do not modify the source.'}]:originalRefs;
-                const saved = await this.graph.saveMemory(n.content, { domain, dimensions: n.dimensions, importance: n.importance, tags: n.tags, source: 'external', anchors: (n.anchors ?? []).filter(a => a.status === 'active' && n.content.includes(a.basis)).slice(0, 6).map(a => ({ text: a.text, basis: a.basis, spaceId: 'memory', memoryType: (n.dimensions ?? [n.dimension]).includes(a.memoryType) ? a.memoryType : n.dimension })), memberships: (n.dimensions ?? [n.dimension]).filter(d => d !== 'event').map(memoryType => ({ spaceId: 'memory', memoryType })), sourceRefs, idempotencyKey: 'allocation:' + roleId + ':' + id + ':after:' + (old?.copy_id ?? 'initial') });
-                await this.write(async () => { await this.db.run('INSERT OR REPLACE INTO memory_allocations VALUES(?,?,?,?,?,?,?)', [randomUUID(), id, n.updatedAt, digest, roleId, saved.id, Date.now()]); });
+                const saved = await this.graph.saveMemory(n.content, { domain, dimensions: n.dimensions, importance: n.importance, tags: n.tags, source: 'external', anchors: (n.anchors ?? []).filter(a => a.status === 'active' && n.content.includes(a.basis)).slice(0, 6).map(a => ({ text: a.text, basis: a.basis, spaceId: 'memory', memoryType: (n.dimensions ?? [n.dimension]).includes(a.memoryType) ? a.memoryType : n.dimension })), memberships: (n.dimensions ?? [n.dimension]).filter(d => d !== 'event').map(memoryType => ({ spaceId: 'memory', memoryType })), sourceRefs, idempotencyKey: 'allocation:' + roleId + ':' + id + ':after:' + (old?.copy_id ?? 'initial') },{
+                    authorize:async()=>{await this.role(roleId);},
+                    saved:async copyId=>{await this.db.run('INSERT OR REPLACE INTO memory_allocations VALUES(?,?,?,?,?,?,?)',[randomUUID(),id,n.updatedAt,digest,roleId,copyId,Date.now()]);}
+                });
                 copies.push({ sourceId: id, copyId: saved.id, sourceRevision: n.updatedAt });
             }
             return { roleId, copies, independentCopies: true };
         })();
     }
-    async issue(roleId: string) { return this.write(async () => { await this.role(roleId); await this.db.run("UPDATE memory_role_credentials SET state='revoked' WHERE role_id=?", [roleId]); const token = 'mpr_' + randomBytes(32).toString('base64url'), id = randomUUID(); await this.db.run("INSERT INTO memory_role_credentials VALUES(?,?,?,'active',?)", [id, roleId, createHash('sha256').update(token).digest('hex'), Date.now()]); return { id, roleId, token, notice: 'Store in the host secret configuration, never in chat. Rotation revokes the previous role memory credential.' }; }); }
+    async issue(roleId: string, allowRotation=false) { return this.write(async () => { await this.role(roleId); if(!allowRotation&&await this.db.get("SELECT 1 FROM memory_role_credentials WHERE role_id=? AND state='active'",[roleId]))throw new MindPondError('stale_version','该角色已有专用连接配置。请明确确认替换；替换后旧配置立即失效。'); await this.db.run("UPDATE memory_role_credentials SET state='revoked' WHERE role_id=?", [roleId]); const token = 'mpr_' + randomBytes(32).toString('base64url'), id = randomUUID(); await this.db.run("INSERT INTO memory_role_credentials VALUES(?,?,?,'active',?)", [id, roleId, createHash('sha256').update(token).digest('hex'), Date.now()]); return { id, roleId, token, notice: 'Store in the host secret configuration, never in chat. Rotation revokes the previous role memory credential.' }; }); }
     async credential(token: string) { const r = await this.db.get("SELECT id,role_id FROM memory_role_credentials WHERE token_hash=? AND state='active'", [createHash('sha256').update(token).digest('hex')]); if (!r)
         return null; try {
-        await this.role(r.role_id);
+        const role=await this.role(r.role_id);
+        if(!await this.graph.offices.agentAuthority({v:1,principal:role.principal,agentId:role.connector_id,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}))return null;
         return r;
     }
     catch {

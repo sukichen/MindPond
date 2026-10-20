@@ -306,7 +306,7 @@ export function createNetworkMcpApp(
           if(params?._meta)delete params._meta['mindpond/verifiedSessionID'];
           if(args.hostContext!==undefined){const session=verifyHostSession(args.hostContext,params.name,args,req.header('authorization')?.replace(/^Bearer /,'')??'');delete args.hostContext;params._meta={...params._meta,'mindpond/verifiedSessionID':session};}
           const session=params?._meta?.['mindpond/verifiedSessionID']??params?._meta?.['ai.opencode/sessionID'];
-          if(pinnedMemoryRole&&session){const r=await graph.memoryOwners.role(pinnedMemoryRole.role_id);const b=await graph.roles.identity({v:1,principal:r.principal,agentId:r.connector_id,transport:'http-mcp',runtimeId:roleRuntimeId(r.principal,r.connector_id,'opencode',session),issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});if(!b||b.roleId!==r.id)throw new MindPondError('scope_denied','This chat is not bound to the credential’s role');}
+          if(pinnedMemoryRole&&session){const r=await graph.memoryOwners.role(pinnedMemoryRole.role_id);const b=await graph.roles.identity({v:1,principal:r.principal,agentId:r.connector_id,transport:'http-mcp',runtimeId:roleRuntimeId(r.principal,r.connector_id,'opencode',session),issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});if((b&&b.roleId!==r.id)||(!b&&params.name!=='role_sync'))throw new MindPondError('scope_denied','This chat is not bound to the credential’s role; call Office role_sync to request user activation');}
         }
         await c.transport.handleRequest(req, res, req.body);
       } finally {

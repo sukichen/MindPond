@@ -96,6 +96,7 @@ export class RoleStore {
   }
   async connectionRequest(a:TrustedCallContext){return this.write(async()=>{
     const actor=this.actor(a);if(!await this.offices.agentAuthority(actor))fail('Host credential disabled','scope_denied');if(await this.db.get("SELECT 1 FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.runtime_id=? AND b.principal=? AND b.connector_id=? AND b.state='active' AND r.state='active'",[actor.runtimeId,actor.principal,actor.agentId]))return null;
+    if(await this.db.get("SELECT 1 FROM role_applications WHERE principal=? AND connector_id=? AND runtime_id=? AND state='pending'",[actor.principal,actor.agentId,actor.runtimeId]))return null;
     await this.db.run('DELETE FROM role_connection_requests WHERE last_seen<?',[this.clock()-86400000]);
     const old=await this.db.get<Row>('SELECT * FROM role_connection_requests WHERE runtime_id=? AND principal=? AND connector_id=?',[actor.runtimeId,actor.principal,actor.agentId]);
     if(old){await this.db.run('UPDATE role_connection_requests SET last_seen=? WHERE id=?',[this.clock(),old.id]);return {id:old.id,expiresAt:this.clock()+86400000};}
@@ -113,6 +114,8 @@ export class RoleStore {
     if(old&&old.role_id!==role.id)fail('This session already belongs to another role','invalid_input');
     if(old)await this.db.run("UPDATE role_bindings SET state='active',epoch=epoch+1,last_seen=? WHERE id=?",[this.clock(),old.id]);
     else await this.db.run("INSERT INTO role_bindings VALUES(?,?,?,?,?,1,'active',?)",[randomUUID(),request.principal,request.connector_id,request.runtime_id,role.id,this.clock()]);
+    await this.db.run('UPDATE character_roles SET revision=revision+1 WHERE id=?',[role.id]);
+    await this.db.run("UPDATE role_applications SET state='cancelled',revision=revision+1 WHERE principal=? AND connector_id=? AND runtime_id=? AND state='pending'",[request.principal,request.connector_id,request.runtime_id]);
     await this.db.run('DELETE FROM role_connection_requests WHERE id=?',[request.id]);
     await this.db.run('DELETE FROM office_response_pages');
     await this.event(role.id,'user_activated_connection',{requestId:i.requestId});return {roleId:role.id,activated:true};
@@ -137,6 +140,7 @@ export class RoleStore {
         if (count!.n >= 100) fail('Pending application limit reached', 'invalid_input');
         const id = randomUUID();
         await this.db.run('INSERT INTO role_applications VALUES(?,?,?,?,?,?,?,?,?,1,NULL,?)', [id, actor.principal, actor.agentId, actor.runtimeId, actor.runtimeMode ?? 'explicit_context', i.name, i.introduction, i.reason, 'pending', this.clock()]);
+        await this.db.run('DELETE FROM role_connection_requests WHERE principal=? AND connector_id=? AND runtime_id=?',[actor.principal,actor.agentId,actor.runtimeId]);
         await this.event(null, 'application_submitted', { applicationId: id, principal: actor.principal, connectorId: actor.agentId });
         return { applicationId: id, state: 'pending', nextAction: 'The user can approve in MindPond → 协作办公室 → 待审核. role_sync reads the approval state; retain the public roleContext if provided.' };
       });

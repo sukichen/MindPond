@@ -116,7 +116,13 @@ try {
     const spoof: any = await memory.callTool({ name: 'memory_identity', arguments: {}, _meta: { 'mindpond/verifiedSessionID': 'chat-a' } });
     assert(spoof.isError, 'server discards unverified internal metadata');
     delete process.env.MINDPOND_FIXTURE_SESSION_TOKEN;
-    await graph.memoryOwners.issue(a.roleId);
+    const newChat=await call(pinOffice,'role_sync',{},'pinned-new-chat');
+    assert.equal(newChat.data.state,'unregistered');assert(newChat.data.activation?.id,'pinned connection must expose a user activation request before accessing a new chat');
+    const currentRole=(await graph.roles.registry(admin)).roles.find((r:any)=>r.id===a.roleId);
+    await graph.roles.activate({requestId:newChat.data.activation.id,roleId:a.roleId,expectedRevision:currentRole.revision},admin);
+    assert.equal((await call(pinned,'memory_identity',{},'pinned-new-chat')).data.owner.id,a.roleId);
+    await assert.rejects(()=>call(pinned,'memory_identity',{},'chat-a'),(e:any)=>e.code===403,'the old chat loses role access after activation');
+    await graph.memoryOwners.issue(a.roleId,true);
     await assert.rejects(() => call(pinned, 'memory_identity'), (e: any) => e.code === 401, 'rotated credential is rejected on an already-open session');
     console.log('PASS separate office/memory catalogs; native multi-chat identity beats static header; role-only read/write, independent source-linked copies, human global recall, reconnect recovery and credential revocation');
 }

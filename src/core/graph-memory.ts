@@ -52,6 +52,12 @@ import {OfficeCollaboration} from './office-collaboration.js';
 import {OfficeTaskStore} from './office-tasks.js';
 import {MemoryOwners} from './memory-owners.js';
 
+/** Trusted service callbacks run while the SQLite writer lock is held.
+ * Kept outside model arguments and receipt hashes. */
+export interface MemoryWriteHooks {
+  authorize?: () => Promise<void>;
+  saved?: (id:string) => Promise<void>;
+}
 export interface MemoryEditPatch {
   dimensions?:KnowledgeDimension[]; replaceMembershipIds?:string[]; anchors?:MemoryAnchor[]; content?:string; importance?:number;
   tags?:string[]; verified?:boolean; expectedUpdatedAt?:number; expectedContent?:string;
@@ -1627,7 +1633,7 @@ export class GraphMemory {
     domain?: MemoryDomainRef; teamAuthorization?: string;
     memberships?: Array<{ spaceId: string; memoryType?: string }>; related?: RelatedMemory[];
     sourceRefs?: SourceReference[]; idempotencyKey?: string;
-  } = {}) {
+  } = {}, hooks:MemoryWriteHooks = {}) {
     if (typeof content !== 'string' || !content.trim() || content.length > MEMORY_SAVE_LIMITS.content)
       throw new Error('content must contain 1–100000 characters');
     content = content.trim();
@@ -1672,6 +1678,7 @@ export class GraphMemory {
     return this.withWriteLock(async () => {
       await this.db!.exec('BEGIN IMMEDIATE');
       try {
+        await hooks.authorize?.();
         // An external writer may have committed since our last search. Do not
         // acknowledge its generation merely because this save also commits.
         await this.assertTeamWrite(domain, options.teamAuthorization, 'save');
@@ -1685,6 +1692,7 @@ export class GraphMemory {
               if (prior.request_hash !== legacyRequestHash) throw new MindPondError('idempotency_conflict', 'save idempotencyKey reuse with a different payload', { retryable: false, nextAction: '先按原 key 查回执；同 key 仅可重放相同载荷，修改必须用新 key 或显式修订' });
               await this.db!.run('UPDATE memory_receipts SET request_hash=? WHERE key=?',[requestHash,receiptKey]);
             }
+            await hooks.saved?.(JSON.parse(prior.payload).id);
             await this.db!.exec('COMMIT'); return JSON.parse(prior.payload) as {id:string;memberships:MemoryMembership[];edgesCreated:number;edgesRejected:number;edgesEvicted:number};
           }
           // Pre-upgrade rows live under the unscoped `save:<key>`. Same-domain
@@ -1699,6 +1707,7 @@ export class GraphMemory {
               // fall through: independent save for this domain
             } else if (legacyPrior.request_hash === requestHash || legacyPrior.request_hash === legacyRequestHash) {
               await this.db!.run('INSERT OR REPLACE INTO memory_receipts(key,request_hash,payload) VALUES (?,?,?)',[receiptKey,requestHash,legacyPrior.payload]);
+              await hooks.saved?.(JSON.parse(legacyPrior.payload).id);
               await this.db!.exec('COMMIT'); return JSON.parse(legacyPrior.payload) as {id:string;memberships:MemoryMembership[];edgesCreated:number;edgesRejected:number;edgesEvicted:number};
             } else {
               throw new MindPondError('idempotency_conflict', 'save idempotencyKey reuse with a different payload', { retryable: false, nextAction: '先按原 key 查回执；同 key 仅可重放相同载荷，修改必须用新 key 或显式修订' });
@@ -1737,6 +1746,7 @@ export class GraphMemory {
         await this.db!.run("UPDATE memory_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'index_generation'");
         const generation = Number((await this.db!.get<{value:string}>("SELECT value FROM memory_meta WHERE key='index_generation'"))?.value);
         const indexNode = this.rowToNode((await this.db!.get<NodeRow>(`SELECT ${NODE_COLUMNS_NO_EMBEDDING} FROM nodes WHERE id=?`, [id]))!);
+        await hooks.saved?.(id);
         await this.db!.exec('COMMIT');
         if (embedding.length) this.vectorIndex.add({id, vector: embedding, metadata: this.indexMetadata(indexNode)});
         if (zhEmbedding.length) this.zhVectorIndex?.add({id, vector: zhEmbedding, metadata: this.indexMetadata(indexNode)});
@@ -2360,9 +2370,10 @@ export class GraphMemory {
       expectedUpdatedAt:options.expectedUpdatedAt,reason:options.reason,teamAuthorization:options.teamAuthorization,context:options.context},options.revisionId);
   }
 
-  async editMemory(nodeId: string, patch: MemoryEditPatch) { return this.editMemoryImpl(nodeId,patch); }
+  async editMemory(nodeId: string, patch: MemoryEditPatch, authorize?:()=>Promise<void>) { return this.editMemoryImpl(nodeId,patch,undefined,authorize); }
 
-  private async editMemoryImpl(nodeId:string,patch:MemoryEditPatch,restoreRevisionId?:string) {
+  private async editMemoryImpl(nodeId:string,patch:MemoryEditPatch,restoreRevisionId?:string,authorize?:()=>Promise<void>) {
+    await authorize?.();
     const editKey=patch.idempotencyKey ? 'edit:'+nodeId+':'+textField(patch.idempotencyKey,'idempotencyKey',256) : undefined;
     const editHash=editKey ? digest({nodeId,...patch,idempotencyKey:undefined}) : undefined;
     if(editKey) {
@@ -2401,6 +2412,7 @@ export class GraphMemory {
     return this.withWriteLock(async () => {
       await this.db!.exec('BEGIN IMMEDIATE');
       try {
+        await authorize?.();
         const before = await this.getNodeById(nodeId, { trackAccess: false });
         if (!before) throw new Error('Memory not found');
         if (patch.context) await this.assertNodeInReadableDomains(before, patch.context);
@@ -3570,8 +3582,9 @@ export class GraphMemory {
     return node;
   }
 
-  async deleteNode(nodeId: string, reason?: string, teamAuthorization?: string, context?: DomainReadContext): Promise<void> {
+  async deleteNode(nodeId: string, reason?: string, teamAuthorization?: string, context?: DomainReadContext, authorize?:()=>Promise<void>): Promise<void> {
     return this.growthWrite(async () => {
+    await authorize?.();
     if (!this.db) throw new Error('Database not initialized');
     const node = await this.getNodeById(nodeId, { trackAccess: false });
     if (node && context) await this.assertNodeInReadableDomains(node, context);
