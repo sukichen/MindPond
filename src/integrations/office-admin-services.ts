@@ -3,9 +3,8 @@ import { MindPondError } from '../core/errors.js';
 import type { GraphMemory } from '../core/graph-memory.js';
 import type { TrustedCallContext } from '../core/trust.js';
 import type { Request } from 'express';
-import { readNetworkConfiguration } from './network-config.js';
 const id = z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/);
-export function officeAdminServices(graph: GraphMemory, route: (name: string, fn: (req: Request) => Promise<unknown>) => void, operator: TrustedCallContext, configFile?: string) {
+export function officeAdminServices(graph: GraphMemory, route: (name: string, fn: (req: Request) => Promise<unknown>) => void, operator: TrustedCallContext) {
     const office = z.object({ officeId: id });
     const coordinate = z.number().finite().min(0).max(50000);
     route('/layout', req => graph.officeCollaboration.captureLayout(office.extend({ width: coordinate, height: coordinate, seats: z.object({ id, roleId: id.nullable(), x: coordinate, y: coordinate, width: coordinate.optional(), height: coordinate.optional() }).array().max(200) }).strict().parse(req.body), operator));
@@ -23,15 +22,7 @@ export function officeAdminServices(graph: GraphMemory, route: (name: string, fn
     route('/control', req => graph.officeCollaboration.requestControl(z.object({ roleId: id, action: z.enum(['pause', 'stop', 'resume']), reason: z.string().trim().min(1).max(1000) }).strict().parse(req.body), operator));
     route('/permissions', async (req) => {
         const input = z.object({ roleId: id }).strict().parse(req.body), result = await graph.officeCollaboration.permissions(input, operator);
-        let memoryGrants: unknown = 'No private account configuration available in this Web process';
-        if (configFile) {
-            try {
-                const config = await readNetworkConfiguration(configFile);
-                memoryGrants = config.grants.filter(g => g.agentId === result.role!.connector_id && g.principal === result.role!.principal).map(g => ({ principal: g.principal, domains: g.domains, assignmentIds: g.assignmentIds ?? null }));
-            } catch {
-                memoryGrants = 'Private host grant configuration is unavailable; actual memory permissions remain unknown';
-            }
-        }
+        const memoryGrants=[{domains:[{kind:'agent',id:input.roleId}]}];
         return { ...result, memoryGrants };
     });
     route('/delete-impact', req => graph.officeCollaboration.impact(z.object({ kind: z.enum(['office', 'role', 'agent']), id }).strict().parse(req.body), operator));

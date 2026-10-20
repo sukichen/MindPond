@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const state = { spaces: [], dimensions:null, view: 'search', page: 0, selected: new Map(), memory: null,
   task: null, request: null, plan: null, logCursor: null, search: null, network: null, workContext: null, taskLeases: new Map() };
 const busy = new WeakSet();
+const assignmentSelection=new Map();let memoryRoles=[],memoryMcpUrl='http://127.0.0.1:7904/memory/mcp';
 const text = (tag, value, cls) => { const n = document.createElement(tag); n.textContent = value ?? ''; if (cls) n.className = cls; return n; };
 const empty = (title, note) => { const n = text('div', '', 'empty'); n.append(text('strong', title), text('span', note)); return n; };
 const badge = (value, cls = '') => text('span', value, 'badge ' + cls);
@@ -60,14 +61,19 @@ function scope(prefix) {
   return { spaceId: $(prefix + 'Space').value || undefined, memoryType: $(prefix + 'Type').value || undefined };
 }
 async function refreshMeta() {
-  const [stats, scopes, config] = await Promise.all([api('./api/memory/stats'), api('./api/memory/spaces'),api('./api/memory/dimensions')]);
+  const [stats, scopes, config,owners] = await Promise.all([api('./api/memory/stats'), api('./api/memory/spaces'),api('./api/memory/dimensions'),api('./api/memory/owners')]);
+  memoryRoles=owners.roles;memoryMcpUrl=owners.memoryMcpUrl||memoryMcpUrl;
+  const previousOwner=$('searchOwner').value;
+  $('searchOwner').replaceChildren(new Option('人类视角 · 全部记忆',''),...memoryRoles.map(r=>new Option('角色 · '+r.name,r.id)));
+  if(memoryRoles.some(r=>r.id===previousOwner))$('searchOwner').value=previousOwner;
+  $('assignmentRole').replaceChildren(...memoryRoles.filter(r=>r.state==='active').map(r=>new Option(r.name,r.id)));
   await refreshRetrieval();
   state.dimensions=config.configuration;
   for(const d of state.dimensions.definitions)DIM_COLORS[d.id]=d.color;
   renderDimensionLegend();renderDimensionFilters();
   state.spaces = scopes.spaces;
-  $('stats').textContent = stats.stats.total + ' 条记忆 · ' + new Set(state.spaces.map(s => s.spaceId)).size + ' 个空间';
-  for (const prefix of ['search', 'library', 'org', 'graph']) {
+  $('stats').textContent = stats.stats.total + ' 条记忆 · 人类可查看全部';
+  for (const prefix of ['library', 'org', 'graph']) {
     options(prefix + 'Space', [...new Set(state.spaces.map(s => s.spaceId))], prefix === 'org' ? '选择空间' : '全部空间');
     types(prefix);
   }
@@ -99,14 +105,15 @@ function card(n, result = false) {
   const c = text('article', '', 'card'), header = text('div', '', 'row between'), tags = text('div', '', 'row');
   tags.append(badge(n.layer));if(n.spaceId)tags.append(badge(n.spaceId));
   for(const id of n.dimensions?.length?n.dimensions:[n.dimension].filter(Boolean)){const b=badge(dimensionLabel(id),'dimension-badge');b.dataset.dimensionId=id;b.style.setProperty('--dimension-color',dimensionDefinition(id)?.color||'#8a9a8e');b.title=id+' · '+(dimensionDefinition(id)?.description||'');tags.append(b);}
-  if (n.domain) tags.append(badge(n.domain.kind + ' / ' + n.domain.id));
+  if(n.owner)tags.append(badge(n.owner.kind==='user'?'人类记忆':'角色 · '+(memoryRoles.find(r=>r.id===n.owner.id)?.name||'历史角色')));
   if(n.profiles?.length)tags.append(badge('画像','direct'));
   if(n.freshness)tags.append(badge(freshnessName(n.freshness.status),n.freshness.status==='needs_review'?'review':''));
   if(result)c.dataset.review=n.freshness?.status==='needs_review'?'yes':'no';
   if (n.memoryType) tags.append(badge(n.memoryType));
   if (result) tags.append(badge(n.depth === 0 ? '直接命中 · 入口' : '第 ' + n.depth + ' 波带出', n.depth === 0 ? 'direct' : 'ripple'));
   header.append(tags, button('查看 / 编辑', () => openMemory(n.id)));
-  c.append(header, text('div', n.content, 'content'));
+  const rendered=window.MindPondOfficeMarkdown.render(n.content);rendered.classList.add('memory-markdown');c.append(header,rendered);
+  if(result){const label=text('label','分配给角色','check'),box=document.createElement('input');box.type='checkbox';box.checked=assignmentSelection.has(n.id);box.onchange=()=>{if(box.checked)assignmentSelection.set(n.id,n);else assignmentSelection.delete(n.id);$('assignSelected').disabled=!assignmentSelection.size;$('assignmentCount').textContent='已选择 '+assignmentSelection.size+' 条记忆';};label.prepend(box);c.append(label);}
   const footer = text('div', '', 'row between');
   footer.append(text('span', '重要度 ' + n.importance + ' · ' + (n.tags || []).join(' / '), 'muted'));
   if (result) footer.append(text('span', 'score ' + n.score.toFixed(4), 'score'));
@@ -115,11 +122,9 @@ function card(n, result = false) {
 }
 $('searchForm').onsubmit = e => { e.preventDefault(); run(search, e.submitter); };
 async function search() {
-  const domainId = $('searchDomainId').value.trim();
-  const domain = domainId ? { kind: $('searchDomainKind').value, id: domainId } : undefined;
+  assignmentSelection.clear();$('assignSelected').disabled=true;$('assignmentCount').textContent='勾选记忆后可分配独立副本';
   const request = { retrievalProfile:$('searchProfile').value||undefined,vectorAlgorithm:$('searchAlgorithm').value||undefined,reranker:$('searchReranker').value||undefined,dimension:$('searchDimension').value||undefined, query: $('query').value.trim(), limit: +$('searchLimit').value, maxDepth: +$('searchDepth').value,
-    minScore: +$('searchScore').value, sessionId: $('searchSession').value || undefined,
-    domains: domain ? [domain] : undefined, sourceContext: $('sourceContext').value.trim() || undefined, includeL0: $('includeL0').checked, ...scope('search') };
+    minScore: +$('searchScore').value,ownerRoleId:$('searchOwner').value||undefined, sourceContext: $('sourceContext').value.trim() || undefined, includeL0: $('includeL0').checked };
   if (!request.query) return;
   $('searchSummary').textContent = '正在执行混合检索与涟漪扩散…';
   const started = performance.now();
@@ -205,9 +210,9 @@ async function openMemory(id) {
   $('reviewAnchors').checked=false;
   $('anchorStatus').textContent=(data?.node.anchors||[]).filter(a=>a.status==='needs_review').length+' 个入口待复核';
   $('memoryTags').value = (data?.node.tags || []).join(', '); $('newScope').hidden = !!id;
-  $('newSpace').value = $('librarySpace').value; $('newType').value = $('libraryType').value;
+  $('newSpace').value='memory';$('newType').value=state.dimensions?.defaultDimension||'work';for(const id of ['newSpace','newType','newDomainKind','newDomainId','newTeamAuthorization'])$(id).closest('label').hidden=true;
   $('newDomainKind').value = data?.node.domain?.kind || 'personal'; $('newDomainId').value = data?.node.domain?.id || 'default'; $('newTeamAuthorization').value = '';
-  $('memoryScope').textContent = data ? 'Domain：' + data.node.domain.kind + ' / ' + data.node.domain.id + '；正文编辑影响所有空间成员：' + data.memberships.map(m => m.spaceId + ' / ' + m.memoryType + (m.active ? '' : '（来源）')).join('；') : '创建一条完整记忆，并明确它所属的 domain、空间与类型。';
+  $('memoryScope').textContent=data?(data.node.owner?.kind==='agent'?'角色记忆 · '+(memoryRoles.find(r=>r.id===data.node.owner.id)?.name||'历史角色'):'人类记忆')+'。独立副本的修改不会同步到来源。':'创建人类记忆；保存后可以选择添加独立副本给角色。';
   $('nodeLog').hidden = !id; $('deleteArea').hidden = !id; $('deleteConfirm').checked = false; $('deleteMemory').disabled = true;
   $('memoryRelations').replaceChildren();
   if (!$('memoryDialog').open) $('memoryDialog').showModal();
@@ -884,7 +889,7 @@ async function copy(value) {
 for (const n of document.querySelectorAll('[data-view]')) n.onclick = () => run(() => show(n.dataset.view));
 $('openGraphPage').onclick = () => { sessionStorage.setItem('mindpond:graph-api-key',$('apiKey').value); sessionStorage.setItem('mindpond:graph-operator-key',$('operatorKey').value); location.href='./graph'; };
 for (const n of document.querySelectorAll('[data-close]')) n.onclick = () => $(n.dataset.close).close();
-for (const prefix of ['search', 'library', 'org', 'graph']) $(prefix + 'Space').onchange = () => {
+for (const prefix of ['library', 'org', 'graph']) $(prefix + 'Space').onchange = () => {
   types(prefix);
   if (prefix === 'library') { state.page = 0; state.selected.clear(); selectionChanged(); run(loadLibrary); }
 };
@@ -1028,3 +1033,8 @@ async function refreshRetrieval(){
 }
 on('refreshRetrieval',refreshRetrieval);
 on('probeDevices',async()=>{const result=await api('./api/memory/retrieval/devices');$('retrievalDevices').textContent=JSON.stringify(result,null,2);$('retrievalDevices').hidden=false;});
+
+on('assignSelected',()=>{$('assignmentNote').textContent='将 '+assignmentSelection.size+' 条记忆作为独立副本添加给所选角色。';$('assignmentDialog').showModal();});
+on('roleMemoryConfig',()=>{$('assignmentNote').textContent='用于没有可靠聊天 ID 的宿主。此凭据固定到一个角色，连接重建后仍能识别身份。支持原生聊天 ID 的宿主也可用独立 memory MCP 自动识别已绑定角色。';$('assignmentDialog').showModal();});
+on('confirmAssignment',async()=>{if(!assignmentSelection.size)throw Error('先勾选需要添加的记忆');if(assignmentSelection.size>50)throw Error('每次最多添加50条记忆');await api('./api/memory/assign',{memoryIds:[...assignmentSelection.keys()],roleId:$('assignmentRole').value});$('assignmentDialog').close();await refreshMeta();notice('独立副本已添加，原记忆保持不变。');});
+on('downloadRoleMemory',async()=>{const r=await api('./api/memory/role-credential',{roleId:$('assignmentRole').value});const config={roleId:r.roleId,mcp:{mindpond_memory:{type:'remote',url:memoryMcpUrl,oauth:false,headers:{Authorization:'Bearer '+r.token},timeout:360000}}};const blob=new Blob([JSON.stringify(config,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='mindpond-role-memory.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice('角色专用配置已下载。不要发送到聊天或上传仓库。');});

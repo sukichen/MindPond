@@ -107,7 +107,7 @@ try {
     other = await connect('opencode'),
     restricted = await connect('restricted');
   await denied(a, 'work_workspaces');
-  const brief=await call(a,'memory_brief',{task:'Check independent office collaboration'});assert.equal(brief.collaboration.identity.agentId,'codex');assert(!('updates' in brief.collaboration));
+  await denied(a,'memory_brief',{task:'Memory is a separate role-scoped connection'});
   assert(a.getInstructions()?.includes('office_receive'));
   assert((await a.listTools()).tools.some((t) => t.name === 'work_guide_get'));
   assert.equal((await call(a, 'work_bootstrap')).context, null);
@@ -413,16 +413,7 @@ try {
   const observed = await call(a, 'work_office_get', { officeId: 'office' });
   assert(!JSON.stringify(observed).includes(claim.leaseToken));
   assert(!JSON.stringify(observed).includes('lease_hash'));
-  const saved = await call(a, 'memory_save', {
-    workSessionId: dev.workSessionId,
-    content: 'Private unfinished development hypothesis.',
-    dimensions: ['work']
-  });
-  await denied(a, 'memory_get', { workSessionId: review.workSessionId, nodeId: saved.id });
-  assert.equal(
-    (await call(a, 'memory_get', { workSessionId: dev.workSessionId, nodeId: saved.id })).id,
-    saved.id
-  );
+  await denied(a,'memory_save',{content:'Office transport cannot write memory'});
   const rc = await connect('codex');
   assert.equal(
     (
@@ -433,11 +424,7 @@ try {
     ).context.workSessionId,
     dev.workSessionId
   );
-  assert.equal(
-    (await call(rc, 'memory_get', { workSessionId: dev.workSessionId, nodeId: saved.id })).id,
-    saved.id,
-    'memory scope survives MCP connection changes'
-  );
+  await denied(rc,'memory_get',{nodeId:'not-on-office-catalog'});
   const revokeWait = restricted
     .callTool({
       name: 'work_office_wait',

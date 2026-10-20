@@ -89,17 +89,9 @@ try {
     ).context.workSessionId;
   }
   const available = (await cs.dev.listTools()).tools.map((t: any) => t.name);
-  const rules = await call(cs.dev, 'memory_protocol_rules', {});
   assert(!available.includes('work_inbox'));
+  assert(available.every((n:string)=>!n.startsWith('memory_')),'office does not expose memory tools');
   assert(!cs.dev.getInstructions().includes('work_inbox'));
-  assert(!JSON.stringify(rules).includes('work_inbox'));
-  assert.equal(
-    (await call(cs.dev, 'memory_protocol_rules', { sinceVersion: rules.version })).upToDate,
-    true
-  );
-  const caps = await call(cs.dev, 'memory_capabilities');
-  assert.equal(caps.collaborationVersion, 'office-building.v1');
-  assert(!JSON.stringify(caps).includes('work_inbox'));
   const resource = await cs.dev.readResource({ uri: 'mindpond://protocol/rules' });
   assert(!JSON.stringify(resource).includes('work_inbox'));
   report('v2 discovery names hidden legacy tools', {

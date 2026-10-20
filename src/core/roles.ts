@@ -38,6 +38,7 @@ export class RoleStore {
       CREATE TABLE IF NOT EXISTS role_links(sender TEXT NOT NULL REFERENCES character_roles(id),recipient TEXT NOT NULL REFERENCES character_roles(id),PRIMARY KEY(sender,recipient));
       CREATE TABLE IF NOT EXISTS role_seats(seat_id TEXT PRIMARY KEY REFERENCES office_seats(id),role_id TEXT NOT NULL REFERENCES character_roles(id));
       CREATE TABLE IF NOT EXISTS role_office_contexts(binding_id TEXT NOT NULL REFERENCES role_bindings(id),seat_id TEXT NOT NULL REFERENCES office_seats(id),work_session_id TEXT NOT NULL REFERENCES office_sessions(id),PRIMARY KEY(binding_id,seat_id));
+      CREATE TABLE IF NOT EXISTS role_connection_requests(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL);
     `);
     await this.write(async()=>{
       const columns=await this.db.all<Row[]>('PRAGMA table_info(role_messages)');
@@ -83,6 +84,7 @@ export class RoleStore {
     if ((a.roleId !== undefined && a.roleId !== b.role_id) ||
         (a.roleBindingId !== undefined && a.roleBindingId !== b.id) ||
         (a.roleBindingEpoch !== undefined && a.roleBindingEpoch !== b.epoch)) fail('Character binding changed; refresh identity', 'scope_denied');
+    if(this.clock()-b.last_seen>60000)await this.db.run('UPDATE role_bindings SET last_seen=? WHERE id=?',[this.clock(),b.id]);
     return b;
   }
   private async badge(a: TrustedCallContext, b: Row) {
@@ -92,6 +94,29 @@ export class RoleStore {
     const b = await this.binding(a, false);
     return b ? this.badge(a!, b) : null;
   }
+  async connectionRequest(a:TrustedCallContext){return this.write(async()=>{
+    const actor=this.actor(a);if(!await this.offices.agentAuthority(actor))fail('Host credential disabled','scope_denied');if(await this.db.get("SELECT 1 FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.runtime_id=? AND b.principal=? AND b.connector_id=? AND b.state='active' AND r.state='active'",[actor.runtimeId,actor.principal,actor.agentId]))return null;
+    await this.db.run('DELETE FROM role_connection_requests WHERE last_seen<?',[this.clock()-86400000]);
+    const old=await this.db.get<Row>('SELECT * FROM role_connection_requests WHERE runtime_id=? AND principal=? AND connector_id=?',[actor.runtimeId,actor.principal,actor.agentId]);
+    if(old){await this.db.run('UPDATE role_connection_requests SET last_seen=? WHERE id=?',[this.clock(),old.id]);return {id:old.id,expiresAt:this.clock()+86400000};}
+    if((await this.db.get('SELECT COUNT(*) n FROM role_connection_requests')).n>=1024||(await this.db.get('SELECT COUNT(*) n FROM role_connection_requests WHERE connector_id=?',[actor.agentId])).n>=100)throw new MindPondError('temporarily_unavailable','Pending activation capacity reached; resolve or wait for old requests to expire');
+    const id=randomUUID();await this.db.run('INSERT INTO role_connection_requests VALUES(?,?,?,?,?,?)',[id,actor.principal,actor.agentId,actor.runtimeId,this.clock(),this.clock()]);await this.event(null,'connection_activation_requested',{requestId:id});return {id,expiresAt:this.clock()+86400000};
+  });}
+  async activate(i:Row,a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
+    const request=await this.db.get<Row>('SELECT * FROM role_connection_requests WHERE id=? AND last_seen>?',[i.requestId,this.clock()-86400000]);
+    if(!request)fail('Connection activation request expired or missing','not_found');
+    const role=await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'",[i.roleId]);
+    if(!role||role.principal!==request.principal||role.connector_id!==request.connector_id)fail('Choose an active role belonging to this authenticated host','invalid_input');
+    if(role.revision!==i.expectedRevision)fail('Role changed; refresh before activating','stale_version');
+    await this.db.run("UPDATE role_bindings SET state='revoked',epoch=epoch+1 WHERE role_id=?",[role.id]);
+    const old=await this.db.get<Row>('SELECT * FROM role_bindings WHERE principal=? AND connector_id=? AND runtime_id=?',[request.principal,request.connector_id,request.runtime_id]);
+    if(old&&old.role_id!==role.id)fail('This session already belongs to another role','invalid_input');
+    if(old)await this.db.run("UPDATE role_bindings SET state='active',epoch=epoch+1,last_seen=? WHERE id=?",[this.clock(),old.id]);
+    else await this.db.run("INSERT INTO role_bindings VALUES(?,?,?,?,?,1,'active',?)",[randomUUID(),request.principal,request.connector_id,request.runtime_id,role.id,this.clock()]);
+    await this.db.run('DELETE FROM role_connection_requests WHERE id=?',[request.id]);
+    await this.db.run('DELETE FROM office_response_pages');
+    await this.event(role.id,'user_activated_connection',{requestId:i.requestId});return {roleId:role.id,activated:true};
+  });}
   async application(i: Row, a?: TrustedCallContext) {
     const actor = this.actor(a);
     return this.write(async () => {
@@ -173,6 +198,7 @@ export class RoleStore {
       const roleId = randomUUID(), bindingId = randomUUID();
       await this.db.run("INSERT INTO character_roles VALUES(?,?,?,?,?,'active',1,NULL,?)", [roleId, app.principal, app.connector_id, i.name ?? app.name, i.introduction ?? app.introduction, this.clock()]);
       await this.db.run("INSERT INTO role_bindings VALUES(?,?,?,?,?,1,'active',?)", [bindingId, app.principal, app.connector_id, app.runtime_id, roleId, this.clock()]);
+      await this.db.run('DELETE FROM role_connection_requests WHERE runtime_id=?',[app.runtime_id]);
       await this.db.run("UPDATE role_applications SET state='approved',revision=revision+1,role_id=? WHERE id=?", [roleId, app.id]);
       await this.event(roleId, 'approved', { applicationId: app.id, profileRevision: 1 });
       return { state: 'approved', roleId, bindingId };
@@ -227,13 +253,13 @@ export class RoleStore {
     // Capture BEFORE reading rows: another process may commit while we read.
     // A stale snapshot then leaves a newer revision to fetch on the next poll.
     const revision=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM role_events'))!.n;
-    const roles = await this.db.all<Row[]>('SELECT r.*,b.id binding_id,b.epoch,b.last_seen FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id ORDER BY r.created_at,r.id LIMIT 500');
+    const roles = await this.db.all<Row[]>("SELECT r.*,b.id binding_id,b.epoch,b.last_seen FROM character_roles r LEFT JOIN role_bindings b ON b.id=(SELECT id FROM role_bindings WHERE role_id=r.id ORDER BY (state='active') DESC,last_seen DESC,id LIMIT 1) ORDER BY r.created_at,r.id LIMIT 500");
     const pending = await this.db.all('SELECT id,principal,connector_id,mode,name,introduction,reason,state,revision,created_at FROM role_applications WHERE state=? ORDER BY created_at LIMIT 100', ['pending']);
     const mappings = await this.db.all('SELECT * FROM role_seats');
     const links = await this.db.all('SELECT sender,recipient FROM role_links ORDER BY sender,recipient');
     const messages = (await this.db.all<Row[]>(`SELECT m.*,s.state,s.taken_at,s.completed_at,s.completion FROM role_messages m JOIN role_message_states s ON s.message_id=m.id ORDER BY m.seq DESC LIMIT 100`)).map(m=>({...m,state:messageState(m.state),body:previewText(m.body,700),bodyTruncated:Buffer.byteLength(m.body)>700}));
     const events = await this.db.all('SELECT seq,role_id,kind,body,ts FROM role_events ORDER BY seq DESC LIMIT 100');
-    return { revision, roles, pending, mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
+    return { revision, roles, pending, connections:await this.db.all('SELECT * FROM role_connection_requests WHERE last_seen>? ORDER BY last_seen DESC LIMIT 100',[this.clock()-86400000]), mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
   }
   async messagePreview(id:string|{messageId?:string;seq?:number},a?:TrustedCallContext){
     this.admin(a);

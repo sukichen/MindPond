@@ -144,6 +144,7 @@ try {
   const unusedIssue=await (await req('credential',{id:'unused',expectedRevision:1})).json();
   const applicant={v:1 as const,principal:'unused-owner',agentId:'unused',runtimeId:'pending-unused',transport:'http-mcp' as const,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
   await graph.roles.application({action:'submit',name:'Pending',introduction:'Fixture',reason:'Fixture',key:'pending-unused'},applicant);
+  await graph.roles.connectionRequest(applicant);
   const deletion={id:'unused',expectedRevision:3};
   assert.equal((await req('agent/delete',deletion,{Origin:'https://untrusted.example'})).status,403);
   assert.equal((await req('agent/delete',{...deletion,expectedRevision:4})).status,409);
@@ -152,6 +153,7 @@ try {
   assert.equal((await req('agent/delete',deletion)).status,200,'a retry can finish private grant cleanup safely');
   const afterDeletion=await (await req('state')).json();
   assert(!afterDeletion.agents.some((a:any)=>a.id==='unused'));
+  assert(!afterDeletion.characters.connections.some((r:any)=>r.connector_id==='unused'),'deletion also clears pending activation');
   assert(!afterDeletion.characters.pending.some((a:any)=>a.connector_id==='unused'));
   assert(!(await readNetworkConfiguration(config)).grants.some(g=>g.agentId==='unused'));
   assert.equal(await graph.offices.agentAuthority(applicant),false,'deletion fences already issued calls');

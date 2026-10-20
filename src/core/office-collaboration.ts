@@ -48,9 +48,8 @@ export class OfficeCollaboration {
         const row = await this.db.get<Row>('SELECT domain_kind,domain_id FROM nodes WHERE id=?', [id]);
         if (!row)
             return null;
-        if (!a.operator && ![...trustedDomainSet(a).values()].some(d => d.kind === row.domain_kind && d.id === row.domain_id))
-            return null;
-        return this.graph.getNodeById(id, { trackAccess: false, context: a.operator ? undefined : { sessionId: a.sessionId, domains: [...trustedDomainSet(a).values()] } });
+        if (!a.operator) {const binding=await this.identity(a);const domain=await this.graph.memoryOwners.domain({kind:'agent',id:binding.role_id});if(row.domain_kind!==domain.kind||row.domain_id!==domain.id)return null;}
+        return this.graph.getNodeById(id, { trackAccess: false, context: a.operator ? undefined : {domains:[await this.graph.memoryOwners.domain({kind:'agent',id:(await this.identity(a)).role_id})]} });
     }
     async room(officeId: string, a?: TrustedCallContext, writing = false) {
         const room = await this.db.get<Row>('SELECT * FROM offices WHERE id=?', [officeId]);

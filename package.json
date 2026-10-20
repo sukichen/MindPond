@@ -87,9 +87,11 @@
     "verify:office-message-cycle": "tsx scripts/verify-office-message-cycle.ts",
     "verify:office-connection": "tsx scripts/verify-office-connection.ts",
     "eval:office-collaboration": "tsx scripts/eval-office-collaboration.ts",
-    "verify:office-collaboration": "tsx scripts/verify-office-collaboration.ts && tsx scripts/verify-office-evaluation.ts",
+    "verify:office-collaboration": "tsx scripts/verify-office-collaboration.ts && tsx scripts/verify-office-evaluation.ts && tsx scripts/verify-role-memory.ts",
     "eval:office-judge": "tsx scripts/judge-office-collaboration.ts",
-    "verify:office-native-host": "tsx scripts/verify-office-native-host.ts"
+    "verify:office-native-host": "tsx scripts/verify-office-native-host.ts",
+    "verify:role-memory": "tsx scripts/verify-role-memory.ts",
+    "verify:opencode-role-session": "tsx scripts/verify-opencode-role-session.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",
@@ -184,7 +186,8 @@
     "web/guide/14-experience.jpg",
     "web/guide/15-controls.jpg",
     "web/guide/16-replay-filters.jpg",
-    "web/guide/17-live-counts.jpg"
+    "web/guide/17-live-counts.jpg",
+    "docs/role-memory.md"
   ],
   "license": "MIT",
   "repository": {

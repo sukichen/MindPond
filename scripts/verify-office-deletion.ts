@@ -76,8 +76,8 @@ try {
     const completed=await graph.building.message({action:'send',officeId:'keep-room',recipient:b.roleId,body:'请整理交通方案需要进一步确认的事项。',key:'cycle-completed'},a);
     await graph.building.message({action:'take',messageId:completed.messageId,key:'cycle-completed-take'},b);
     await graph.building.message({action:'finish',messageId:completed.messageId,result:'已整理待确认事项：出发日期、车次和住宿价格。没有把未核验价格当成事实。',key:'cycle-completed-finish'},b);
-    const demoActor={...b,domains:[{kind:'personal' as const,id:'default'}]};
-    const lesson=await graph.saveMemory('隔离旅行演示：先固定出发日期，再核对交通与住宿报价；没有核验的价格必须明确标成待确认。该经验来自虚构演示，不能当成真实行程资料。',{domain:{kind:'personal',id:'default'},memberships:[{spaceId:'demo-travel',memoryType:'work'}],sourceRefs:[{uri:'fixture:travel-review',context:'Fictional demonstration',revision:'demo-v1'}]});
+    const demoActor=b;
+    const lesson=await graph.saveMemory('隔离旅行演示：先固定出发日期，再核对交通与住宿报价；没有核验的价格必须明确标成待确认。该经验来自虚构演示，不能当成真实行程资料。',{domain:await graph.memoryOwners.domain({kind:'agent',id:b.roleId!}),memberships:[{spaceId:'demo-travel',memoryType:'work'}],sourceRefs:[{uri:'fixture:travel-review',context:'Fictional demonstration',revision:'demo-v1'}]});
     await graph.officeCollaboration.publish({kind:'learning',officeId:'keep-room',title:'先确认日期，再核查价格',memoryId:lesson.id,messageId:processing.messageId,outcome:'used',evidence:'对照讨论，发现日期尚未确定，因此保留交通与住宿报价为待确认。',key:'guide-learning'},demoActor);
     await graph.officeCollaboration.publish({kind:'handoff',officeId:'keep-room',title:'两天一夜路线交接',summary:'已整理景点顺序与交通核验入口，出发日期和报价仍需确认。',materialIds:[kept.material.materialId],checks:['已检查景点动线，减少折返','报价未核验，明确保留不确定性'],unresolved:['出发日期','最终车次与住宿价格'],nextSteps:['用户确认日期后核对官方交通与住宿信息'],key:'guide-handoff'},b);
     await graph.officeCollaboration.publish({kind:'marker',officeId:'keep-room',title:'先确认日期，再确定交通',summary:'演示决定：不把未核验价格写成事实。',key:'guide-marker'},b);

@@ -56,7 +56,8 @@ try {
     await new Promise<void>(r => server.once('listening', r));
     const port = (server.address() as any).port;
     allowedHosts.push('127.0.0.1:' + port);
-    async function connect(id: string) { const c = new Client({ name: 'generic-fixture', version: '1' }); clients.push(c); await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer ' + tokens[id] } } })); return c; }
+    const sessionLabels=new Map<Client,string>();
+    async function connect(id: string) { const c = new Client({ name: 'generic-fixture', version: '1' }); clients.push(c);sessionLabels.set(c,'fixture-chat-'+clients.length); await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: 'Bearer ' + tokens[id],'X-MindPond-Session':sessionLabels.get(c)! } } })); return c; }
     const a = await connect('cli'), b = await connect('cli'), c = await connect('other');
     assert(a.getInstructions()?.includes(COLLABORATION_LEARNING),'new MCP agents receive concise learning guidance at initialization');
     assert(Buffer.byteLength(COLLABORATION_LEARNING)<512,'the collaboration reminder stays bounded');
@@ -64,7 +65,7 @@ try {
     const call = async (client: Client, name: string, input: any = {}) => {
       let result=await raw(client,name,input),payload=JSON.parse((result.content[0] as any).text);
       if(payload.paged){let full='',offset=0;
-        for(let n=0;n<1000;n++){const page=await raw(client,'office_context',{action:'page',id:payload.id,offset,roleContext:input.roleContext});assert(!page.isError);const p=JSON.parse((page.content[0] as any).text);full+=p.text;if(p.nextOffset===null)break;assert(p.nextOffset>offset);offset=p.nextOffset;}
+        for(let n=0;n<1000;n++){const page=await raw(client,'office_context',{action:'page',id:payload.id,offset});assert(!page.isError);const p=JSON.parse((page.content[0] as any).text);full+=p.text;if(p.nextOffset===null)break;assert(p.nextOffset>offset);offset=p.nextOffset;}
         result=JSON.parse(full);payload=JSON.parse((result.content[0] as any).text);
       }
       assert(!result.isError,JSON.stringify(result));return payload;
@@ -77,31 +78,31 @@ try {
     for (const [client, key] of [[a, 'one'], [b, 'two'], [c, 'three']] as const) {
         const input = { action: 'submit', name: key, introduction: 'User-defined character', reason: 'Fixture application', key: 'apply' };
         const application = await call(client, 'role_application', input);
-        assert(application.roleContext, 'MCP-only application must supply a public continuation reference');
+        assert(!(await client.listTools()).tools.some(t=>'roleContext' in (t.inputSchema.properties??{})),'models cannot select identity');
         assert.equal((await call(client, 'role_application', input)).applicationId, application.applicationId);
         const approved = await graph.roles.review({ applicationId: application.applicationId, expectedRevision: 1, action: 'approve' }, admin);
-        assigned.push({ ...approved, roleContext: application.roleContext });
+        assigned.push({ ...approved, sessionLabel:sessionLabels.get(client) });
     }
     const [ra, rb, rc] = assigned;
-    assert.notEqual(ra.roleContext, rb.roleContext);
-    assert((await raw(b, 'role_sync')).isError, 'missing correlation must never choose another session implicitly');
-    const introduction=await call(a, 'role_sync', { roleContext: ra.roleContext });
+    assert.notEqual(ra.sessionLabel, rb.sessionLabel);
+    assert.equal((await call(b,'role_sync')).identity.roleId,rb.roleId,'header restores only its own role');
+    const introduction=await call(a, 'role_sync', {});
     assert.equal(introduction.identity.roleId, ra.roleId);
     assert(introduction.instructions.includes(COLLABORATION_LEARNING),'role_sync restores the guidance after context loss');
-    assert.equal((await call(b, 'role_sync', { roleContext: rb.roleContext })).identity.roleId, rb.roleId);
-    const ca = (name: string, input: any = {}) => call(a, name, { ...input, roleContext: ra.roleContext });
-    const cb = (name: string, input: any = {}) => call(b, name, { ...input, roleContext: rb.roleContext });
-    const cc = (name: string, input: any = {}) => call(c, name, { ...input, roleContext: rc.roleContext });
+    assert.equal((await call(b, 'role_sync', {})).identity.roleId, rb.roleId);
+    const ca = (name: string, input: any = {}) => call(a, name, input);
+    const cb = (name: string, input: any = {}) => call(b, name, input);
+    const cc = (name: string, input: any = {}) => call(c, name, input);
     const waitSchema=(await a.listTools()).tools.find(t=>t.name==='office_wait')!.inputSchema;
     assert.equal((waitSchema.properties!.waitMs as any).maximum,300000);
     if(process.argv.includes('--long-wait')){
         // Exercise the real stdio→HTTP bridge past the SDK's former 60-second deadline,
         // while an independent HTTP call proves the default five-minute timeout.
         const bridge=new Client({name:'long-wait-fixture',version:'1'});clients.push(bridge);
-        await bridge.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp-remote.js'),'--url',`http://127.0.0.1:${port}/mcp`,'--token-file',path.join(dir,'cli.token')],stderr:'pipe'}));
+        await bridge.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp-remote.js'),'--url',`http://127.0.0.1:${port}/mcp`,'--token-file',path.join(dir,'cli.token'),'--session',ra.sessionLabel],stderr:'pipe'}));
         const start=Date.now();
         const full=cb('office_wait');
-        const bridged=call(bridge,'office_wait',{roleContext:ra.roleContext});
+        const bridged=call(bridge,'office_wait');
         const sentLate=new Promise<void>((resolve,reject)=>setTimeout(()=>{void cb('office_message',{action:'send',recipient:ra.roleId,body:'Arrived after sixty seconds',key:'long-arrival'}).then(()=>resolve(),reject);},65000));
         const arrived=await bridged;await sentLate;
         assert.equal(arrived.status,'matched');assert(Date.now()-start>=64000);assert.equal(arrived.message.body,'Arrived after sixty seconds');
@@ -112,7 +113,7 @@ try {
         await ca('office_message',{action:'take',messageId:arrived.message.id,key:'take-long-arrival'});
         await ca('office_message',{action:'finish',messageId:arrived.message.id,result:'Long wait verified',key:'archive-long-arrival'});
     }
-    assert(Array.isArray(await ca('memory_spaces')), 'public correlation must not alter array-shaped memory responses');
+    assert(!(await a.listTools()).tools.some(t=>t.name.startsWith('memory_')),'office catalog excludes memory reads and writes');
     const seats = [{ id: 'a-seat', agentId: 'cli', roleId: ra.roleId, label: 'Whatever A does', role:'observer' }, { id: 'b-seat', agentId: 'cli', roleId: rb.roleId, label: 'Whatever B does' }];
     const room = await post('office', { id: 'empty', title: 'Our room', expectedRevision: 1, state: 'active', seats });
     assert.equal(room.status, 200, await room.clone().text());
@@ -121,7 +122,7 @@ try {
     const input = { action: 'send', recipient: rb.roleId, officeId: 'empty', body: 'A normal message, no workflow implied.', metadata: { customLabel: 'question', status: 'whatever' }, key: 'send-one' };
     const sent = await ca('office_message', input);
     assert.equal((await ca('office_message', input)).messageId, sent.messageId);
-    assert((await raw(a, 'office_message', { ...input, body: 'changed', roleContext: ra.roleContext })).isError);
+    assert((await raw(a, 'office_message', { ...input, body: 'changed' })).isError);
     let received = await cb('office_receive', { limit: 1 });
     assert.equal(received.messages[0].body, input.body);
     assert.equal(received.messages[0].metadata.status, 'whatever');
@@ -129,7 +130,7 @@ try {
     await cb('office_message', { action: 'take', messageId: sent.messageId, key: 'read' });
     assert.equal((await cb('office_receive')).messages[0].state, 'processing', 'taken work remains recoverable');
     await cb('office_message', { action: 'finish', messageId: sent.messageId, result:'Processed with evidence', key: 'archive' });
-    assert((await raw(b,'office_message',{action:'take',messageId:sent.messageId,key:'late-take',roleContext:rb.roleContext})).isError,'take never resurrects archived mail');
+    assert((await raw(b,'office_message',{action:'take',messageId:sent.messageId,key:'late-take'})).isError,'take never resurrects archived mail');
     const automaticFeedback=(await ca('office_receive')).messages.find((m:any)=>m.kind==='completion');
     await ca('office_message',{action:'take',messageId:automaticFeedback.id,key:'take-feedback'});
     await ca('office_message',{action:'finish',messageId:automaticFeedback.id,result:'Feedback received',key:'finish-feedback'});
@@ -141,23 +142,23 @@ try {
     assert.equal(waiting.status, 'matched', 'reply before wait remains observable');
     const idle = await cb('office_wait', { waitMs: 100 });
     assert.equal(idle.status, 'timeout');assert.equal(idle.pending, true);
-    assert.equal(idle.resume.waitMs, 100);assert.equal(idle.resume.roleContext, rb.roleContext);
+    assert.equal(idle.resume.waitMs, 100);assert.equal(idle.resume.roleContext, undefined);
     // Retry the exact public continuation through MCP: an unrelated message must not satisfy it.
     const pendingReply = await ca('office_wait', { replyTo: sent.messageId, afterSeq: reply.seq, waitMs: 100 });
     assert.equal(pendingReply.status, 'timeout');assert.equal(pendingReply.resume.replyTo, sent.messageId);
-    assert.equal(pendingReply.resume.requestId, undefined);assert.equal(pendingReply.resume.roleContext, ra.roleContext);
+    assert.equal(pendingReply.resume.requestId, undefined);assert.equal(pendingReply.resume.roleContext, undefined);
     await cb('office_message', { action:'send',recipient:ra.roleId,body:'Unrelated conversation',key:'unrelated-wait' });
     const stillPending=await call(a,'office_wait',pendingReply.resume);
     assert.equal(stillPending.status,'timeout','resume must preserve the exact reply filter');
     await cb('office_message',{action:'send',replyTo:sent.messageId,officeId:null,body:'Later reply after timeout',key:'later-reply'});
     const resumed=await call(a,'office_wait',stillPending.resume);
     assert.equal(resumed.status,'matched');assert.equal(resumed.message.body,'Later reply after timeout');
-    assert((await raw(c, 'office_message', { action: 'get', messageId: sent.messageId, roleContext: rc.roleContext })).isError);
-    assert((await raw(a, 'office_message', { action: 'send', recipient: rc.roleId, body: 'not permitted', key: 'cross', roleContext: ra.roleContext })).isError);
+    assert((await raw(c, 'office_message', { action: 'get', messageId: sent.messageId })).isError);
+    assert((await raw(a, 'office_message', { action: 'send', recipient: rc.roleId, body: 'not permitted', key: 'cross' })).isError);
     await graph.roles.link({ sender: ra.roleId, recipient: rc.roleId, enabled: true }, admin);
     const cross = await ca('office_message', { action: 'send', recipient: rc.roleId, body: 'Explicitly permitted', key: 'cross' });
     await cc('office_message', { action: 'send', replyTo: cross.messageId, body: 'Exact return channel', key: 'return' });
-    assert((await raw(c, 'office_message', { action: 'send', recipient: ra.roleId, body: 'New unsolicited conversation', key: 'reverse', roleContext: rc.roleContext })).isError);
+    assert((await raw(c, 'office_message', { action: 'send', recipient: ra.roleId, body: 'New unsolicited conversation', key: 'reverse' })).isError);
     const material = await ca('office_material', { action: 'publish', officeId: 'empty', title: 'Any text', content: 'Notes without a task or reviewer.', key: 'shelf' });
     assert.equal((await cb('office_material', { action: 'get', officeId: 'empty', materialId: material.materialId })).chunk.content, 'Notes without a task or reviewer.');
     const verbatim='  Exact whitespace\n'+'🌱'.repeat(5000)+'\n';
@@ -170,19 +171,19 @@ try {
     assert.equal((await ca('office_container', save)).revision, 1);
     assert.equal((await ca('office_container', save)).revision, 1);
     assert.deepEqual((await cb('office_container', { action: 'get', officeId: 'empty', id: 'custom-board' })).content, data);
-    const changes = await Promise.all([a, b].map((client, n) => raw(client, 'office_container', { ...save, content: { changedBy: n }, expectedRevision: 1, key: 'edit-' + n, roleContext: n ? rb.roleContext : ra.roleContext })));
+    const changes = await Promise.all([a, b].map((client, n) => raw(client, 'office_container', { ...save, content: { changedBy: n }, expectedRevision: 1, key: 'edit-' + n })));
     assert.equal(changes.filter(r => !r.isError).length, 1, 'concurrent edits cannot silently overwrite');
-    assert((await raw(c, 'office_container', { action: 'get', officeId: 'empty', id: 'custom-board', roleContext: rc.roleContext })).isError);
+    assert((await raw(c, 'office_container', { action: 'get', officeId: 'empty', id: 'custom-board' })).isError);
     const other = await post('office', { id: 'another', title: 'Another room', expectedRevision: 0, state: 'active', seats: [{ id: 'another-a', agentId: 'cli', roleId: ra.roleId, label: 'A' }] });
     assert.equal(other.status, 200);
-    assert((await raw(a, 'office_container', { ...save, officeId: 'another', key: 'collision', roleContext: ra.roleContext })).isError, 'global ID collision cannot mutate another room');
+    assert((await raw(a, 'office_container', { ...save, officeId: 'another', key: 'collision' })).isError, 'global ID collision cannot mutate another room');
     const userView = await (await post('view', { officeId: 'empty' })).json();
     assert.equal(userView.facilities.containers.length, 1);
     assert.equal(userView.facilities.messages.length, 3);
     assert.equal((await (await post('view',{officeId:'empty',facilityRevision:userView.facilities.revision})).json()).facilities.unchanged,true);
     assert.equal(userView.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,0,'archived mail is not pending');
     assert.equal(userView.facilities.activity.find((r:any)=>r.roleId===ra.roleId).pending,1,'room-only pending count excludes other correspondence');
-    const actorFor=(r:any)=>({v:1 as const,principal:'owner',agentId:'cli',transport:'http-mcp' as const,runtimeId:roleRuntimeId('owner','cli','explicit',r.roleContext),roleId:r.roleId,roleBindingId:r.bindingId,roleBindingEpoch:1,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+    const actorFor=(r:any)=>({v:1 as const,principal:'owner',agentId:'cli',transport:'http-mcp' as const,runtimeId:roleRuntimeId('owner','cli','header',r.sessionLabel),roleId:r.roleId,roleBindingId:r.bindingId,roleBindingEpoch:1,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
     const roleInput={action:'send',kind:'inform',recipient:rb.roleId,officeId:'empty',body:'A role message must reach the office animation',key:'role-event'};
     const roleSent=await graph.roles.exchange(roleInput,actorFor(ra));
     await graph.roles.exchange(roleInput,actorFor(ra));
@@ -205,10 +206,10 @@ try {
       collected.push(...page.messages.map((m:any)=>m.id));cursor=page.nextCursor;if(!page.hasMore)break;
     }
     assert(collected.includes(reply.messageId));assert.equal(new Set(collected).size,collected.length,'role mailbox paging must not repeat or skip messages');
-    assert((await raw(a,'office_message',{action:'get',messageId:'office:removed',roleContext:ra.roleContext})).isError);
+    assert((await raw(a,'office_message',{action:'get',messageId:'office:removed'})).isError);
     assert.equal((await post('office',{id:'empty',title:'Our room',expectedRevision:2,state:'paused'})).status,200);
     assert.equal((await cb('office_material',{action:'get',officeId:'empty',materialId:material.materialId})).chunk.content,'Notes without a task or reviewer.');
-    assert((await raw(a,'office_material',{action:'publish',officeId:'empty',title:'Denied',content:'Paused',key:'paused',roleContext:ra.roleContext})).isError);
+    assert((await raw(a,'office_material',{action:'publish',officeId:'empty',title:'Denied',content:'Paused',key:'paused'})).isError);
     const directReply=await cb('office_message',{action:'send',replyTo:sent.messageId,officeId:null,body:'Continue correspondence outside the room',key:'outside'});
     assert.equal((await ca('office_message',{action:'get',messageId:directReply.messageId})).message.officeId,null);
     const body = (await ca('office_message', { action: 'get', messageId: sent.messageId })).message;

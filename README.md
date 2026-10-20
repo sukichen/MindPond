@@ -6,13 +6,19 @@
 
 通过 HTTP、MCP 或 TypeScript 库接入。MindPond 的服务端不调用 LLM、不持有模型 key；宿主 agent 负责判断和生成，MindPond 负责存储、范围限制、版本校验和审计。
 
+## 记忆归属与办公室
+
+一个服务器当前服务一个人类用户。人类可以搜索全部记忆；agent 对应批准的 Office 角色，只能读写自己的知识。搜索默认不按工作空间隔离。人类选中知识添加给角色时，创建保留来源与版本的独立副本。
+
+Office MCP 与 Memory MCP 分开配置。OpenCode 多聊天通过宿主会话插件区分角色，重连保留绑定；没有可靠聊天标识时支持用户手动激活或角色专用凭据。配置与示例见[角色记忆与会话接入](docs/role-memory.md)。
+
 ## 快速开始
 
 ```bash
 npm ci
 npm run build
 npm start                  # 工作台与 HTTP API，默认 http://127.0.0.1:7903
-npm run mcp                # MCP stdio，供宿主启动
+npm run mcp                # 人类 Memory MCP stdio；角色使用独立 HTTP Memory 连接
 npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP 回归
 ```
 
@@ -42,7 +48,7 @@ Codex CLI / OpenCode CLI 还可通过原生 HTTP MCP 在聊天中申请角色，
 - [跨 agent 生长契约](docs/host-growth-contract.md)：生命周期、接口字段与迁移边界；旧宿主专用章节按通用协议逐步迁移。
 - [工作台与宿主接入](docs/workbench-and-host.md)：人工操作与 host 协作流程。
 
-这些提示词直接从运行时代码和新安装默认配置导出；运行时以当前数据库的维度与自定义提示词为准。npm run check 会检查是否漂移。MCP 工具只保留简短规则，完整写入规范通过 memory_save_policy 按需读取。阶段改进可用 memory_finish 批量保存、修订与反馈；memory_directory / memory_event_search / memory_history 分别提供目录、原始场景和动作历史。HTTP 使用 GET /api/memory/save-policy。
+这些提示词直接从运行时代码和新安装默认配置导出；运行时以当前数据库的维度与自定义提示词为准。npm run check 会检查是否漂移。MCP 工具只保留简短规则，完整写入规范通过 memory_save_policy 按需读取。独立 Memory MCP 提供 memory_brief/search/get、save/update/delete、directory、save_policy 与 use_report。下述高级批处理、捕获和整理规范供显式维护工具使用，不属于 Office 工具目录。HTTP 使用 GET /api/memory/save-policy。
 
 一条记忆建议按“对象与范围 → 事实/决策/操作 → 条件与方法 → 结果与依据 → 例外与限制 → 来源与时间”组织。只写有依据的部分，也可以用包含相同信息的连贯段落；不强迫填满模板，不为固定字数省掉条件，也不把操作过程拆成大量碎片。
 

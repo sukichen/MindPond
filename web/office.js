@@ -177,6 +177,7 @@
       )
     );
     for (const warning of cfg.warnings) details.append(make('p', warning));
+    for(const [filename,source] of Object.entries(cfg.files??{}))details.append(make('p','将会话插件保存到项目 '+filename+'，或用户配置目录 plugins/。插件从宿主配置取得凭据，不发送给模型。'),button('下载 OpenCode 会话插件',async()=>{const blob=new Blob([source],{type:'text/javascript'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename.split('/').at(-1);a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}));
     details.append(make('p', '消息等待最多 5 分钟，宿主调用期限配置为 6 分钟。修改后需重新连接 MCP；旧进程不会自动加载新配置。'));
     if (cfg.docs) {
       const a = make('a', '宿主官方配置文档');
@@ -386,8 +387,9 @@
     if (!data) return;
     const pending = el('officeApplications'), list = el('officeCharacterList');
     pending.replaceChildren(); list.replaceChildren();
-    el('officePendingCount').textContent = data.pending.length;
-    el('officeNavPending').textContent=String(data.pending.length);el('officeNavPending').hidden=!data.pending.length;
+    const awaiting=data.pending.length+(data.connections?.length??0);
+    el('officePendingCount').textContent = awaiting;
+    el('officeNavPending').textContent=String(awaiting);el('officeNavPending').hidden=!awaiting;
     for (const app of data.pending) {
       const card = button('', () => openRoleInspector(app, true));
       card.className = 'office-application-card';
@@ -395,6 +397,12 @@
       pending.append(card);
     }
     if (!data.pending.length) pending.append(make('p', '没有待审核申请。'));
+    for(const request of data.connections??[]){
+      const card=make('article'),select=document.createElement('select');
+      const roles=data.roles.filter(r=>r.state==='active'&&r.principal===request.principal&&r.connector_id===request.connector_id);
+      for(const role of roles)select.append(new Option(role.name,role.id));
+      card.append(make('strong','聊天等待激活 · '+request.id.slice(0,8)),make('p','选择已有角色后，其旧聊天绑定会撤销；消息和记忆保留。'),select,button('激活已有角色',async()=>{const role=roles.find(r=>r.id===select.value);if(!role)throw Error('此宿主还没有可激活的角色，请先申请新角色。');if(!await confirmAction('将 '+role.name+' 绑定到此聊天，并撤销其旧绑定？'))return;await api('role/activate',{requestId:request.id,roleId:role.id,expectedRevision:role.revision});await refresh();}));pending.append(card);
+    }
     renderRoleDirectory();
     const form = el('officeRoleLink');
     for (const name of ['sender', 'recipient']) {

@@ -50,6 +50,7 @@ import {RoleStore} from './roles.js';
 import {OfficeBuilding} from './office-building.js';
 import {OfficeCollaboration} from './office-collaboration.js';
 import {OfficeTaskStore} from './office-tasks.js';
+import {MemoryOwners} from './memory-owners.js';
 
 export interface MemoryEditPatch {
   dimensions?:KnowledgeDimension[]; replaceMembershipIds?:string[]; anchors?:MemoryAnchor[]; content?:string; importance?:number;
@@ -157,6 +158,8 @@ export interface MemoryAssociation {
 }
 
 export interface MemoryQuery {
+  /** Human service only; never accepted from agent tool arguments. */
+  operatorAll?:boolean;
   retrievalProfile?:string;
   vectorAlgorithm?:'exact'|'hnsw';
   reranker?:string;
@@ -411,6 +414,7 @@ export class GraphMemory {
   roles!: RoleStore;
   building!: OfficeBuilding;
   officeCollaboration!: OfficeCollaboration;
+  memoryOwners!:MemoryOwners;
   officeTaskStore(actor:import('./trust.js').TrustedCallContext){return new OfficeTaskStore(this.db!,this,work=>this.growthWrite(work),actor);}
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
@@ -1127,12 +1131,14 @@ export class GraphMemory {
     await this.collaboration.init();
     this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
     await this.offices.init();
-    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['init','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','officeContext','link','receive','exchange']);
+    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','init','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','officeContext','link','receive','exchange']);
     await this.roles.init();
     this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay']);
     await this.building.init();
     this.officeCollaboration=this.coordinator.service(new OfficeCollaboration(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock),['init','publish','records','handoffContext','relations','controls','requestControl','responsePage','boundResponse','layout','captureLayout','observations','permissions','impact','exportPage','operations']);
     await this.officeCollaboration.init();
+    this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential']);
+    await this.memoryOwners.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');
@@ -4433,14 +4439,14 @@ export class GraphMemory {
       if (!dimensions.some(d=>d===node.dimension || node.dimensions?.includes(d as KnowledgeDimension))) return false;
     }
     const readable = this.queryDomains(query);
-    if (!readable.some(domain => sameDomain(domain, node.domain))) return false;
+    if (!query.operatorAll && !readable.some(domain => sameDomain(domain, node.domain))) return false;
     if (query.tags?.length && !query.tags.some(tag => node.tags.includes(tag))) return false;
     return true;
   }
 
   private async isNodeReadable(node: MemoryNode, query: MemoryQuery, enforceDimension = true): Promise<boolean> {
     if (!this.matchesNodeScope(node, query, enforceDimension)) return false;
-    if (node.domain.kind !== 'session') return true;
+    if (query.operatorAll || node.domain.kind !== 'session') return true;
     const status = await this.db!.get<any>("SELECT status FROM memory_domains WHERE kind='session' AND id=?", [node.domain.id]);
     return status?.status === 'active' || status?.status === 'paused';
   }
@@ -4467,9 +4473,9 @@ export class GraphMemory {
     const clauses = ['active = 1', `memory_id IN (${nodeIds.map(() => '?').join(',')})`];
     const params: unknown[] = [...nodeIds];
     const domains = this.queryDomains(query);
-    clauses.push('EXISTS (SELECT 1 FROM nodes dn LEFT JOIN memory_domains dd ON dd.kind=dn.domain_kind AND dd.id=dn.domain_id WHERE dn.id=memory_memberships.memory_id AND (' +
+    if(!query.operatorAll)clauses.push('EXISTS (SELECT 1 FROM nodes dn LEFT JOIN memory_domains dd ON dd.kind=dn.domain_kind AND dd.id=dn.domain_id WHERE dn.id=memory_memberships.memory_id AND (' +
       domains.map(() => '(dn.domain_kind=? AND dn.domain_id=? AND (dn.domain_kind != \'session\' OR dd.status IN (\'active\',\'paused\')))').join(' OR ') + '))');
-    for (const domain of domains) params.push(domain.kind, domain.id);
+    if(!query.operatorAll)for (const domain of domains) params.push(domain.kind, domain.id);
     if (query.spaceId) {
       const spaces = Array.isArray(query.spaceId) ? query.spaceId : [query.spaceId];
       clauses.push(`space_id IN (${spaces.map(() => '?').join(',')})`);
@@ -4809,7 +4815,7 @@ export class GraphMemory {
 
   private queryScopeCacheKey(query: MemoryQuery): string {
     return JSON.stringify({
-      dimension: query.dimension, layer: query.layer, includeL0: !!query.includeL0,includeEvents:!!query.includeEvents,eventOnly:!!query.eventOnly,
+      operatorAll:!!query.operatorAll,dimension: query.dimension, layer: query.layer, includeL0: !!query.includeL0,includeEvents:!!query.includeEvents,eventOnly:!!query.eventOnly,
       includeSuperseded: !!query.includeSuperseded, tags: query.tags?.slice().sort(), sessionId: query.sessionId,
       domains: this.queryDomains(query),
       spaceId: query.spaceId, memoryType: query.memoryType,

@@ -3,6 +3,8 @@ import type { Database } from 'sqlite';
 /** Operator-only hard deletion. The caller owns one BEGIN IMMEDIATE
  * transaction, including revision checks and the durable deletion audit. */
 export async function deleteRoleData(db: Database, roleId: string) {
+  await db.run('DELETE FROM memory_role_credentials WHERE role_id=?',[roleId]);
+  await db.run('DELETE FROM role_connection_requests WHERE runtime_id IN (SELECT runtime_id FROM role_bindings WHERE role_id=?)',[roleId]);
   await db.run('DELETE FROM office_response_pages');
   await db.run('DELETE FROM office_exports');
   for(const table of ['office_probe_leases','office_wait_queue'])await db.run(`DELETE FROM ${table} WHERE binding_id IN (SELECT id FROM role_bindings WHERE role_id=?)`,[roleId]);

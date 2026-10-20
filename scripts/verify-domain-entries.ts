@@ -143,7 +143,7 @@ class McpClient {
   static async start(dir: string): Promise<McpClient> {
     const proc = spawn(process.execPath, ['--import', 'tsx', path.resolve('src/mcp.ts')], {
       cwd: process.cwd(),
-      env: { ...childEnv(dir), MINDPOND_LOG_STDERR: '1' },
+      env: { ...childEnv(dir), MINDPOND_TOOL_PROFILE:'full', MINDPOND_LOG_STDERR: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stderr = '';
@@ -272,7 +272,7 @@ async function main(): Promise<void> {
     ok(profNoCtx.status === 400 && /domain context/i.test(String(profNoCtx.body?.error)),
       `profile/get without context → 400 domain context (got ${profNoCtx.status} ${JSON.stringify(profNoCtx.body)})`);
 
-    console.log('--- HTTP: list/search defaults never read sessions; widening rejected ---');
+    console.log('--- HTTP: legacy scoped list, human global search and contradictory selectors ---');
     const listDefault = await http(port, 'GET', '/api/memory/list');
     const defaultIds: string[] = (listDefault.body?.nodes ?? []).map((n: any) => n.id);
     ok(!defaultIds.includes(s1.id) && !defaultIds.includes(s2.id), `list default excludes session nodes`);
@@ -286,7 +286,7 @@ async function main(): Promise<void> {
     ok(searchWiden.status !== 200, `search widening S1 while declaring S2 → reject (got ${searchWiden.status})`);
     const searchDefault = await http(port, 'POST', '/api/memory/search', { query: 'wifi password' });
     const hitIds: string[] = (searchDefault.body?.results ?? []).map((r: any) => r.id);
-    ok(!hitIds.includes(s1.id), `search default must not return session S1 content (got ${JSON.stringify(hitIds)})`);
+    ok(hitIds.includes(s1.id), `human search spans old session/workspace storage (got ${JSON.stringify(hitIds)})`);
     const searchOwn = await http(port, 'POST', '/api/memory/search', { query: 'wifi password', sessionId: 'S1' });
     ok((searchOwn.body?.results ?? []).some((r: any) => r.id === s1.id), `search with sessionId=S1 finds the S1 note`);
 

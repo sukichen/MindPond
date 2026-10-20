@@ -7,7 +7,6 @@ import path from 'node:path';
 import express from 'express';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createHash } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { GraphMemory } from '../src/core/graph-memory.js';
@@ -76,16 +75,15 @@ try {
   const raw = (c: Client, name: string, args: Record<string, unknown> = {}, meta?: Record<string, unknown>) => c.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) });
   const call = async (c: Client, name: string, args: Record<string, unknown> = {}, meta?: Record<string, unknown>) => { const r = await raw(c, name, args, meta);assert(!r.isError, JSON.stringify(r));return decode(r); };
   const [a, b, other, noContext] = await Promise.all([connect('codex', 'chat-a'), connect('codex', 'chat-b'), connect('opencode', 'chat-c'), connect('codex')]);
-  const existingNamespace='net:'+createHash('sha256').update('owner\0codex').digest('hex').slice(0,40)+':'+createHash('sha256').update('chat-a').digest('hex').slice(0,40);
-  assert.equal((await call(a,'memory_capabilities')).mcpConnection.sessionId,existingNamespace,'preserve pre-role header session namespace');
+  assert((await a.listTools()).tools.every(t=>!t.name.startsWith('memory_')),'Office has no memory catalog');
   assert((await noContext.listTools()).tools.some(t => t.name === 'role_application'));
-  assert((await raw(noContext, 'role_sync')).isError, 'missing context must not infer latest character');
+  const unbound=await call(noContext,'role_sync');assert.equal(unbound.state,'unregistered');assert(unbound.activation?.id,'unbound transport requires user activation');
   const apply = (c: Client, name: string, key: string) => call(c, 'role_application', { action: 'submit', name, introduction: 'Maintains MindPond and checks observable evidence.', reason: 'User requested this character.', key });
   const appA = await apply(a, '小栗', 'apply-a'), appB = await apply(b, '小麦', 'apply-b'), appC = await apply(other, '小桃', 'apply-c');
   assert.equal((await apply(a, '小栗', 'apply-a')).applicationId, appA.applicationId);
   assert((await raw(a, 'role_application', { action: 'submit', name: 'changed', introduction: 'changed', reason: 'changed', key: 'apply-a' })).isError);
   assert.equal((await call(a, 'role_sync')).state, 'pending');
-  const pendingInbox=await call(a,'role_receive');assert.equal(pendingInbox.state,'pending');assert.equal(pendingInbox.messages.length,0,'pending identity is explained in one call, without granting mailbox access');
+  assert((await raw(a,'office_receive',{action:'list'})).isError,'pending identity cannot read a mailbox; role_sync explains approval state');
   // Browser route is user-only; agents cannot approve their own applications.
   assert(!(await a.listTools()).tools.some(t => /review|approve/.test(t.name) && t.name.startsWith('role_')));
   const app = express();app.use(express.json());app.use('/api/office-admin', officeWorkbench(graph, { apiKey: '', operatorKey: 'fixture-operator', contextSecret: '', configFile }));
@@ -103,7 +101,6 @@ try {
   assert.equal((await req('role/review', { applicationId: appA.applicationId, expectedRevision: 1, action: 'approve' })).status, 409);
   const [roleA, roleB, roleC] = approved.map(x => x.roleId);
   assert.equal((await call(a, 'role_sync')).identity.roleId, roleA);
-  assert.equal((await call(a,'memory_capabilities')).mcpConnection.sessionId,existingNamespace,'approval does not hide existing session memories');
   assert.equal((await call(b, 'role_sync')).identity.roleId, roleB);
   assert.notEqual(roleA, roleB);
   const reconnected = await connect('codex', 'chat-a');
@@ -114,36 +111,28 @@ try {
   await graph.roles.review({ applicationId: nativeApp.applicationId, expectedRevision: 1, action: 'approve' }, admin);
   assert.equal((await call(noContext, 'role_sync', {}, metaA)).state, 'active');
   assert.equal((await call(noContext, 'role_sync', {}, metaB)).state, 'unregistered');
-  const nativeMemory=await call(noContext,'memory_save',{content:'Synthetic native session private observation.',dimensions:['work']},metaA);
-  assert((await raw(noContext,'memory_get',{nodeId:nativeMemory.id},metaB)).isError,'native metadata must isolate session memories on a multiplexed transport');
-  assert.equal((await call(a, 'role_sync', {}, metaB)).identity.roleId, roleA, 'explicit header wins over metadata');
+  assert.equal((await call(a, 'role_sync', {}, metaB)).state, 'unregistered', 'real chat metadata wins over installation header');
   // Profile changes appear on ordinary calls without a model-maintained token/id.
   assert.equal((await req('role/configure', { roleId: roleA, expectedRevision: 1, name: '栗子', introduction: 'Maintainer. Reproduce a failure before reporting a fix.', state: 'active' })).status, 200);
-  const ordinary = await raw(a, 'memory_capabilities');
+  const ordinary = await raw(a, 'office_directory');
   const badge = ordinary.content.map((x: any) => x.type === 'text' ? JSON.parse(x.text) : {}).find((x: any) => x.mindpondIdentity);
   assert.equal(badge.mindpondIdentity.name, '栗子');assert.equal(badge.mindpondIdentity.profileRevision, 2);
-  const repeated=await raw(a,'memory_capabilities');
+  const repeated=await raw(a,'office_directory');
   const repeatedBadge=repeated.content.map((x:any)=>x.type==='text'?JSON.parse(x.text):{}).find((x:any)=>x.mindpondIdentity);
   assert.equal(repeatedBadge.profileChanged,false);assert.equal(repeatedBadge.mindpondIdentity.introduction,undefined,'routine calls do not repeat long introductions');
   assert.match((await call(a,'role_sync')).identity.introduction,/Reproduce/,'explicit sync always restores full profile');
-  const messageInput = { action: 'send', recipient: roleB, kind: 'request', body: 'Please verify the synthetic change. No filesystem sharing is assumed.', key: 'request-one' };
-  const sent = await call(a, 'role_exchange', messageInput);
-  assert.equal((await call(a, 'role_exchange', messageInput)).messageId, sent.messageId);
-  const inbox = await call(b, 'role_receive');assert.equal(inbox.messages.length, 1);assert.equal(inbox.messages[0].sender_name, '栗子');
-  await call(b, 'role_exchange', { action: 'ack', messageId: sent.messageId, state: 'read', key: 'read-one' });
-  assert.equal((await call(b, 'role_receive')).messages[0].state, 'read', 'read keeps the pending file');
-  assert((await raw(b, 'role_exchange', { action: 'ack', messageId: sent.messageId, state: 'resolved', key: 'bad-resolve' })).isError);
-  assert((await raw(a, 'role_exchange', { action: 'ack', messageId: sent.messageId, state: 'read', key: 'other-read' })).isError);
-  await call(b, 'role_exchange', { action: 'send', recipient: roleA, kind: 'reply', requestId: sent.requestId, final: true, body: 'The synthetic validation passed with stated evidence.', key: 'final-reply' });
-  assert.equal((await call(b, 'role_receive')).messages.length, 0);
-  assert.equal((await call(a, 'role_receive')).messages[0].request_id, sent.requestId);
-  // Cross-account new messages are explicitly authorized; exact request replies
-  // have a return channel without blanket reverse contact permission.
-  assert((await raw(a, 'role_exchange', { ...messageInput, recipient: roleC, key: 'cross-denied' })).isError);
-  assert.equal((await req('role/link', { sender: roleA, recipient: roleC, enabled: true })).status, 200);
-  const cross = await call(a, 'role_exchange', { ...messageInput, recipient: roleC, key: 'cross' });
-  await call(other, 'role_exchange', { action: 'send', recipient: roleA, kind: 'reply', requestId: cross.requestId, final: true, body: 'Confirmed by the intended receiver.', key: 'cross-reply' });
-  assert((await raw(other, 'role_exchange', { ...messageInput, recipient: roleA, key: 'reverse-denied' })).isError);
+  const messageInput={action:'send',recipient:roleB,body:'Verify the synthetic change.',key:'request-one'};
+  const sent=await call(a,'office_message',messageInput);
+  assert.equal((await call(a,'office_message',messageInput)).messageId,sent.messageId);
+  const inbox=await call(b,'office_receive',{key:'take-one'});assert(inbox.messages.some((m:any)=>m.id===sent.messageId));
+  assert((await raw(a,'office_message',{action:'finish',messageId:sent.messageId,result:'wrong receiver',key:'wrong'})).isError);
+  await call(b,'office_message',{action:'finish',messageId:sent.messageId,result:'Verified with synthetic evidence.',key:'finish-one'});
+  assert(!(await call(b,'office_receive',{action:'list'})).messages.some((m:any)=>m.id===sent.messageId));
+  assert((await raw(a,'office_message',{...messageInput,recipient:roleC,key:'cross-denied'})).isError);
+  assert.equal((await req('role/link',{sender:roleA,recipient:roleC,enabled:true})).status,200);
+  const cross=await call(a,'office_message',{...messageInput,recipient:roleC,key:'cross'});
+  await call(other,'office_message',{action:'send',replyTo:cross.messageId,body:'Confirmed by receiver.',key:'cross-reply'});
+  assert((await raw(other,'office_message',{...messageInput,recipient:roleA,key:'reverse-denied'})).isError);
   // Real office controls accept characters and auto-resolve a bound context.
   const room = { id: 'role-room', title: 'Synthetic role validation', goal: 'Check a synthetic task.', acceptance: 'Report actual evidence.', expectedRevision: 0, state: 'active', deadline: Date.now() + 3600000, maxRounds: 3, seats: [{ id: 'role-worker', agentId: 'codex', roleId: roleA, label: 'Maintainer', role: 'worker' }, { id: 'role-reviewer', agentId: 'codex', roleId: roleB, label: 'Verifier', role: 'reviewer' }] };
   assert.equal((await req('office', room)).status, 200);
@@ -152,11 +141,6 @@ try {
   const aSession = aOffice.sessions.find((s: any) => s.seat_id === 'role-worker').id;
   assert((await raw(b, 'work_material', { action: 'publish', workSessionId: aSession, label: 'Invalid', version: 'v1', content: 'Wrong role', key: 'bad-material' })).isError);
   assert.equal((await call(b, 'work_office_get', { officeId: 'role-room' })).office.id, 'role-room');
-  const officeRequest=await call(b,'work_office_exchange',{action:'send',officeId:'role-room',recipient:'role-worker',kind:'request',body:'Verify the synthetic office inbox path.',key:'office-request'});
-  const officeInbox=await call(a,'role_receive');
-  assert(officeInbox.officePending.some((x:any)=>x.messageId===officeRequest.messageId&&x.officeId==='role-room'),'the CLI inbox must expose legacy office messages over HTTP MCP');
-  await call(a,'work_office_exchange',{action:'send',officeId:'role-room',recipient:'role-reviewer',kind:'reply',requestId:officeRequest.messageId,final:true,body:'Synthetic office path checked.',key:'office-final'});
-  assert(!(await call(a,'role_receive')).officePending.some((x:any)=>x.messageId===officeRequest.messageId),'completed office requests leave the unified inbox');
   // Disable fences contexts and memory calls carrying an obsolete role.
   assert.equal((await req('role/configure', { roleId: roleA, expectedRevision: 2, name: '栗子', introduction: 'Disabled fixture role.', state: 'disabled' })).status, 200);
   assert((await raw(a, 'role_sync')).isError);assert((await raw(a, 'work_material', { action: 'publish', workSessionId: aSession, label: 'Late', version: 'v1', content: 'Rejected', key: 'late' })).isError);
@@ -206,7 +190,7 @@ try {
     await assert.rejects(roleClientLaunch(directory,[],{}),/outside the chat/);
     if(client==='opencode')await assert.rejects(roleClientLaunch(directory,[],{FIXTURE_MINDPOND_AUTH:tokens.codex,OPENCODE_CONFIG_CONTENT:'{}'}),/override/);
   }
-  console.log('PASS role workflow: authenticated HTTP session labels, browser approval, distinct/reconnected/native contexts, implicit profile refresh, pending/read/final reply semantics, directional contacts, role office binding/fencing, audited no-secret bundles. Native CLI model behavior NOT_RUN.');
+  console.log('PASS role workflow: authenticated HTTP session labels, browser approval, distinct/reconnected/native contexts, implicit profile refresh, pending/processing/archived feedback semantics, directional contacts, role office binding/fencing, audited no-secret bundles. Native CLI model behavior NOT_RUN.');
 } finally {
   await Promise.allSettled(clients.map(c => c.close()));
   if (network) await network.close();

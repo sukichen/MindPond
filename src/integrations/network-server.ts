@@ -1,10 +1,12 @@
 import express from 'express';
+import {createOwnerMemoryServer} from '../role-memory-service.js';
+import {verifyHostSession} from './host-correlation.js';
 import type { Server as HttpServer } from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { GraphMemory } from '../core/graph-memory.js';
-import { MindPondError } from '../core/errors.js';
+import { MindPondError, httpStatus } from '../core/errors.js';
 import { roleRuntimeId } from '../core/roles.js';
 import { createMemoryMcpServer } from '../mcp-service.js';
 import {
@@ -17,6 +19,7 @@ interface Connection {
   service: ReturnType<typeof createMemoryMcpServer>;
   grant: NetworkGrant;
   logicalSession: string;
+  memory: boolean;
   lastUsed: number;
   active: number;
   waitSignals: Map<string | number, AbortController>;
@@ -79,16 +82,17 @@ export function createNetworkMcpApp(
     }
     next();
   });
-  app.all('/mcp', async (req, res, next) => {
+  app.all(['/mcp','/memory/mcp'], async (req, res, next) => {
     try {
       if (closing) {
         res.status(503).json({ error: 'Server is closing' });
         return;
       }
-      const grant = authenticateNetworkAccount(
-        await options.configuration(),
-        req.header('authorization')
-      );
+      const token=req.header('authorization')?.replace(/^Bearer /,'')??'';
+      const pinned=token.startsWith('mpr_')?await graph.memoryOwners.credential(token):null;
+      res.locals.memoryRole=pinned;
+      const role=pinned?await graph.memoryOwners.role(pinned.role_id):null;
+      const grant:NetworkGrant|undefined = pinned ? {principal:role.principal,agentId:role.connector_id,tokenHash:createHash('sha256').update(token).digest('hex'),domains:[{kind:'personal' as const,id:'agent:'+pinned.role_id}],toolProfile:'office' as const,credentialId:pinned.id} : authenticateNetworkAccount(await options.configuration(),req.header('authorization'));
       if (
         !grant ||
         !(await graph.offices.agentAuthority({
@@ -121,12 +125,13 @@ export function createNetworkMcpApp(
       res.status(503).json({ error: 'Account configuration unavailable' });
     }
   });
-  app.use('/mcp', express.json({ limit: '1mb' }));
-  app.all('/mcp', async (req, res) => {
+  app.use(['/mcp','/memory/mcp'], express.json({ limit: '1mb' }));
+  app.all(['/mcp','/memory/mcp'], async (req, res) => {
     let c: Connection | undefined,
       newConnection = false,
       id: string | undefined;
     const grant = res.locals.grant as NetworkGrant;
+    const memory=req.path==='/memory/mcp',pinnedMemoryRole=res.locals.memoryRole;
     const waitControllers: Array<[string | number, AbortController]> = [];
     let finished!: () => void;
     const activeRequest = new Promise<void>((r) => (finished = r));
@@ -164,7 +169,7 @@ export function createNetworkMcpApp(
         id = header;
         // The bearer is checked on EVERY request; a session ID grants nothing.
         if (
-          !c ||
+          !c || c.memory!==memory ||
           c.grant.tokenHash !== grant.tokenHash ||
           JSON.stringify(c.grant) !== JSON.stringify(grant) ||
           c.logicalSession !== logicalSession
@@ -200,28 +205,31 @@ export function createNetworkMcpApp(
           (logicalSession
             ? createHash('sha256').update(logicalSession).digest('hex').slice(0, 40)
             : randomUUID());
+        const pinnedBinding=pinnedMemoryRole?await graph.memoryOwners.roleBinding(pinnedMemoryRole.role_id):null;
+        if(pinnedMemoryRole&&!memory&&!pinnedBinding)throw new MindPondError('scope_denied','Activate an office chat for this role before connecting');
         const waitSignals = new Map<string | number, AbortController>();
-        const service = createMemoryMcpServer(graph, {
-          toolProfile: grant.toolProfile,
-          waitSignal: (requestId) => waitSignals.get(requestId)?.signal,
+        const serviceOptions = {
+          toolProfile: agentId?'office' as const:grant.toolProfile,legacyOfficeWork:grant.toolProfile==='full',enableTasks:!!pinnedMemoryRole,pinnedRoleId:pinnedMemoryRole?.role_id,
+          waitSignal: (requestId:string|number) => waitSignals.get(requestId)?.signal,
           trusted: {
-            v: 1,
-            transport: 'http-mcp',
+            v: 1 as const,
+            transport: 'http-mcp' as const,
             principal: grant.principal,
             agentId,
             credentialId: grant.credentialId,
             assignmentIds: grant.assignmentIds,
             connectionId: id,
-            ...(logicalSession ? {
+            ...(pinnedBinding?{runtimeId:pinnedBinding.runtime_id,runtimeMode:'host_header' as const}:logicalSession ? {
               runtimeId: roleRuntimeId(grant.principal, agentId ?? grant.credentialId ?? 'legacy', 'header', logicalSession),
               runtimeMode: 'host_header' as const
-            } : {}),
+            } : agentId ? {runtimeId:roleRuntimeId(grant.principal,agentId,'connection',id!),runtimeMode:'connection' as const} : {}),
             sessionId,
             domains: grant.domains,
             issuedAt: Date.now(),
             expiresAt: Number.MAX_SAFE_INTEGER
           },
           authorizeWait: async () => {
+            if(pinnedMemoryRole){const current=await graph.memoryOwners.credential(req.header('authorization')?.replace(/^Bearer /,'')??'');if(current?.id!==pinnedMemoryRole.id)throw new MindPondError('scope_denied','Role memory credential was revoked');return;}
             const current = (await options.configuration()).grants.find(
               (g) => g.principal === grant.principal && g.tokenHash === grant.tokenHash
             );
@@ -241,7 +249,8 @@ export function createNetworkMcpApp(
                 'Account permission changed while waiting; reconnect with the current grant'
               );
           }
-        });
+        };
+        const service = memory ? createOwnerMemoryServer(graph,{trusted:serviceOptions.trusted,roleId:pinnedMemoryRole?.role_id,authorize:serviceOptions.authorizeWait}) : createMemoryMcpServer(graph,serviceOptions);
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => id!,
           enableJsonResponse: true
@@ -250,7 +259,7 @@ export function createNetworkMcpApp(
           service,
           transport,
           grant,
-          logicalSession,
+          logicalSession,memory,
           lastUsed: Date.now(),
           active: 0,
           waitSignals
@@ -291,6 +300,14 @@ export function createNetworkMcpApp(
       owned = true;
       c.lastUsed = Date.now();
       try {
+        for(const message of Array.isArray(req.body)?req.body:[req.body]){
+          if(message?.method!=='tools/call')continue;
+          const params=message.params,args=params?.arguments??{};
+          if(params?._meta)delete params._meta['mindpond/verifiedSessionID'];
+          if(args.hostContext!==undefined){const session=verifyHostSession(args.hostContext,params.name,args,req.header('authorization')?.replace(/^Bearer /,'')??'');delete args.hostContext;params._meta={...params._meta,'mindpond/verifiedSessionID':session};}
+          const session=params?._meta?.['mindpond/verifiedSessionID']??params?._meta?.['ai.opencode/sessionID'];
+          if(pinnedMemoryRole&&session){const r=await graph.memoryOwners.role(pinnedMemoryRole.role_id);const b=await graph.roles.identity({v:1,principal:r.principal,agentId:r.connector_id,transport:'http-mcp',runtimeId:roleRuntimeId(r.principal,r.connector_id,'opencode',session),issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});if(!b||b.roleId!==r.id)throw new MindPondError('scope_denied','This chat is not bound to the credential’s role');}
+        }
         await c.transport.handleRequest(req, res, req.body);
       } finally {
         if (owned) {
@@ -318,9 +335,9 @@ export function createNetworkMcpApp(
             .catch(() => {});
       }
       if (newConnection && !c.transport.sessionId) await remove(id!);
-    } catch {
+    } catch (error) {
       if (newConnection && id) await remove(id).catch(() => {});
-      if (!res.headersSent) res.status(500).json({ error: 'MCP request failed' });
+      if (!res.headersSent) res.status(error instanceof MindPondError?httpStatus(error.code):500).json({ error: error instanceof MindPondError?error.message:'MCP request failed' });
     } finally {
       finishRequest();
       res.removeListener('close', finishRequest);

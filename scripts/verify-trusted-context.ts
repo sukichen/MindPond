@@ -154,7 +154,7 @@ try {
   const mcpClient = new Client({ name: 'verify-bound-mcp', version: '1' });
   await mcpClient.connect(new StdioClientTransport({ command: process.execPath,
     args: [path.join(path.dirname(distServer), 'mcp.js')],
-    env: { ...process.env, MEMORY_DB_PATH: path.join(dir, `pond-${STRICT_PORT}.db`),
+    env: { ...process.env, MINDPOND_TOOL_PROFILE:'full', MEMORY_DB_PATH: path.join(dir, `pond-${STRICT_PORT}.db`),
       MEMORY_TRUST_PRINCIPAL: 'verify/mcp', MEMORY_TRUST_DOMAINS: JSON.stringify([{ kind: 'personal', id: 'default' }]),
       MEMORY_TRUST_SESSION: '', MEMORY_TRUST_OPERATOR: '0', EMBEDDING_ZH_ENABLED: 'false' } as Record<string, string>, stderr: 'pipe' }));
   try {

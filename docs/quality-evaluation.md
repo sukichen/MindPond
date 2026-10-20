@@ -104,7 +104,7 @@ verify:office-message-cycle / verify:office-connection 及真实 HTTP、浏览�
 
 ### 可执行的办公室对照驱动器
 
-`eval:office-collaboration` 使用真实隔离 SQLite + MCP，宿主模块提供 `chat(messages,tools,signal)`，回报实际 modelId 与 inputTokens/outputTokens。核心不读取模型密钥。每轮包含3个缺陷、3个正确代码案例，以及首次接入、经验复用、收件后重启、并发冲突、误导消息5个场景。三组 none / recall / recall_save 分别不给记忆工具、只检索、检索并保存；新会话使用前一真实模型在虚构环境中实际保存的经验。每轮交替条件顺序；生产者没有成功保存则比较无效。只读代码与环境检查器是虚构夹具，不能声称执行了真实项目测试。
+`eval:office-collaboration` 使用真实隔离 SQLite，分别连接 Office 与角色 Memory MCP；前一角色经验经人类夹具分配为当前角色的独立副本并保留来源。它不再依赖工作空间来隔离身份。宿主模块提供 `chat(messages,tools,signal)`，回报实际 modelId 与 inputTokens/outputTokens。核心不读取模型密钥。每轮包含3个缺陷、3个正确代码案例，以及首次接入、经验复用、收件后重启、并发冲突、误导消息5个场景。三组 none / recall / recall_save 分别不给记忆工具、只检索、检索并保存；新会话使用前一真实模型在虚构环境中实际保存的经验。每轮交替条件顺序；生产者没有成功保存则比较无效。只读代码与环境检查器是虚构夹具，不能声称执行了真实项目测试。
 
 ```sh
 npm run eval:office-collaboration -- --adapter /private/host-adapter.mjs \

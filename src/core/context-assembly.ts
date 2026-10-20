@@ -15,6 +15,19 @@ export interface RecallBudget {
   omitted:Array<{memoryId:string;reason:'over_budget'|'result_limit'}>;
   appliesTo:'JSON.stringify({results})';
 }
+/** Ownership and provenance are added at the service boundary. Account for
+ * their actual wire bytes without truncating a knowledge unit. */
+export function assemblePresentedRecall<T extends {id:string}>(entries:T[],budget?:RecallBudget) {
+  if(!budget)return {results:entries};
+  const results:T[]=[],omitted=[...budget.omitted];
+  let used=Buffer.byteLength(JSON.stringify({results:[]}),'utf8');
+  for(const entry of entries){
+    const added=Buffer.byteLength(JSON.stringify(entry),'utf8')+(results.length?1:0);
+    if(used+added>budget.limit)omitted.push({memoryId:entry.id,reason:'over_budget'});
+    else{results.push(entry);used+=added;}
+  }
+  return {results,contextBudget:{...budget,used,selected:results.length,omitted}};
+}
 export function validateContextBudget(budget:unknown): asserts budget is number|undefined {
   if(budget!==undefined&&(!Number.isInteger(budget)||Number(budget)<32||Number(budget)>2000000))
     throw new MindPondError('invalid_input','contextBudgetBytes must be an integer from 32 to 2000000',{field:'contextBudgetBytes',nextAction:'Choose a byte budget for complete result records; this is not an exact tokenizer count.'});

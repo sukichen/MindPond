@@ -197,7 +197,7 @@ export function officeWorkbench(
     };
   });
   route('/settings', (req) => graph.offices.settings(operator, req.body.mcpUrl));
-  officeAdminServices(graph,route,operator,options.configFile);
+  officeAdminServices(graph,route,operator);
   route('/agent', (req) =>
     graph.offices.configureAgent(agentConfigurationSchema.parse(req.body), operator)
   );
@@ -228,6 +228,7 @@ export function officeWorkbench(
   });
   route('/office/delete', req => graph.roles.deleteOffice(deletionSchema.parse(req.body),operator));
   route('/role/link', req => graph.roles.link(roleLinkSchema.parse(req.body), operator));
+  route('/role/activate',req=>graph.roles.activate(z.object({requestId:z.string().uuid(),roleId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(req.body),operator));
   route('/containers', req => graph.building.container(parseContainerInput(req.body),operator));
   const mailSchema=z.object({officeId:officeConfigurationSchema.shape.id,knownIds:officeConfigurationSchema.shape.id.array().max(200).optional(),beforeSeq:z.number().int().min(1).optional(),state:z.enum(['pending','processing','archived','all']).optional(),query:z.string().trim().min(1).max(200).optional(),correspondent:officeConfigurationSchema.shape.id.optional(),threadId:officeConfigurationSchema.shape.id.optional(),since:z.number().int().min(0).optional(),until:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional(),contextBudgetBytes:z.number().int().min(2048).max(65536).optional()}).strict();
   route('/messages', req=>graph.building.history(mailSchema.parse(req.body),operator));

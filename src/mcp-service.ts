@@ -44,7 +44,7 @@ import type { McpToolProfile } from './core/mcp-tool-profile.js';
 import type {WorkCallRuntime} from './core/collaboration-wait.js';
 
 /** Same catalog and scope checks for stdio and each authenticated HTTP connection. */
-export function createMemoryMcpServer(graphMemory:GraphMemory, options:{trusted?:TrustedCallContext;toolProfile?:McpToolProfile;authorizeWait?:()=>Promise<void>;waitSignal?:(requestId:string|number)=>AbortSignal|undefined}={}) {
+export function createMemoryMcpServer(graphMemory:GraphMemory, options:{trusted?:TrustedCallContext;toolProfile?:McpToolProfile;enableTasks?:boolean;legacyOfficeWork?:boolean;pinnedRoleId?:string;authorizeWait?:()=>Promise<void>;waitSignal?:(requestId:string|number)=>AbortSignal|undefined}={}) {
 const trustBound=options.trusted!==undefined;
 const baseTrusted=options.trusted??{v:1 as const,principal:'stdio-host',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
 const contextStorage=new AsyncLocalStorage<TrustedCallContext>();
@@ -77,13 +77,13 @@ const pipeline = new MemoryPipelineManager(graphMemory, undefined);
 // uses the durable two-phase tools below.
 const hostConsolidation = new MemoryConsolidation(graphMemory, undefined);
 
-const taskStore=baseTrusted.agentId&&baseTrusted.runtimeId?graphMemory.officeTaskStore(baseTrusted):undefined;
+const toolProfile = parseMcpToolProfile(options.toolProfile);
+const taskStore=options.enableTasks!==false&&baseTrusted.agentId&&baseTrusted.runtimeId?graphMemory.officeTaskStore(baseTrusted):undefined;
 const server = new McpServer({
   name: 'agent-memory',
   version: '0.1.0',
-}, { instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+'\n'+OFFICE_MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
+}, { instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+(toolProfile==='office'?'':'\n'+OFFICE_MEMORY_BOOTSTRAP):MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
 
-const toolProfile = parseMcpToolProfile(options.toolProfile);
 const exposedTools: string[] = [];
 if(taskStore){
   exposedTools.push('office_wait_task');
@@ -101,9 +101,9 @@ const seenRoleProfiles=new Map<string,string>();
 /** R01: every tool failure returns isError with the structured error shape
  * (code/retryable/nextAction) so MCP clients react to data, not prose. */
 function tool(name: string, description: string, shape: any, handler: (args: any,runtime?:WorkCallRuntime) => Promise<any>) {
-  if (!exposesMcpTool(toolProfile, name)) return;
+  if (!exposesMcpTool(toolProfile, name)&&!(toolProfile==='office'&&options.legacyOfficeWork&&name.startsWith('work_'))) return;
   if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))return;
-  if(baseTrusted.agentId)shape={...shape,roleContext:z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional()};
+  if(baseTrusted.agentId&&toolProfile!=='office')shape={...shape,roleContext:z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional()};
   if(name.startsWith('office_')||name==='role_sync')shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
   if(options.trusted?.agentId&&name.startsWith('memory_'))shape={...shape,workSessionId:z.string().min(1).max(128).optional()};
   exposedTools.push(name);
@@ -115,10 +115,10 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))
         throw new MindPondError('scope_denied','Independent agents use office v2 tools; legacy account-wide collaboration cannot represent this identity. Call work_bootstrap.');
       let current:TrustedCallContext={...baseTrusted};
-      const nativeSession = extra._meta?.['ai.opencode/sessionID'];
-      // A fixed host header wins over optional native metadata. Never use
-      // model arguments, transport IDs, or the globally latest role here.
-      if (!current.runtimeId && !args.roleContext && current.transport === 'http-mcp' && current.agentId && typeof nativeSession === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(nativeSession)) {
+      const nativeSession = extra._meta?.['mindpond/verifiedSessionID']??extra._meta?.['ai.opencode/sessionID'];
+      // Native per-chat identity wins over an installation-wide header.
+      // Model arguments and the globally latest role cannot choose identity.
+      if (!args.roleContext && current.transport === 'http-mcp' && current.agentId && typeof nativeSession === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(nativeSession)) {
         current.runtimeId=roleRuntimeId(current.principal,current.agentId,'opencode',nativeSession);
         current.runtimeMode='opencode_metadata';
       }
@@ -133,7 +133,9 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       // saved session memory remains readable after this additive rollout.
       if(current.runtimeMode==='opencode_metadata') current.sessionId='net-native:'+current.runtimeId;
       auditContext=current;
-      const roleIdentity=await graphMemory.roles.identity(current);
+      const activation=toolProfile==='office'&&current.agentId&&current.runtimeId?await graphMemory.roles.connectionRequest(current):null;
+      const roleIdentity=activation?null:await graphMemory.roles.identity(current);
+      if(options.pinnedRoleId&&(name==='role_application'||roleIdentity&&roleIdentity.roleId!==options.pinnedRoleId))throw new MindPondError('scope_denied','This credential is fixed to its approved role; use user activation to reconnect it.');
       if(roleIdentity) {
         current={...current,roleId:roleIdentity.roleId,roleBindingId:roleIdentity.bindingId,roleBindingEpoch:roleIdentity.bindingEpoch};
         auditContext=current;
@@ -169,6 +171,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       }
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
+      if(activation){const entry=result.content?.find((c:any)=>c.type==='text');if(entry){try{const data=JSON.parse(entry.text);data.activation={...activation,notice:'Ask the user to activate an existing role for this chat in the office, or submit a new role application. Transport reconnection never chooses a role by recency.'};entry.text=JSON.stringify(data);}catch{}}}
       if(current.roleContext && (name==='role_application'||name==='role_sync'||name.startsWith('office_'))) {
         const entry=result.content?.find((c:any)=>c.type==='text');
         if(entry){const payload=JSON.parse(entry.text);entry.text=JSON.stringify({...payload,...(name==='office_wait'&&payload.resume?{resume:{...payload.resume,roleContext:current.roleContext}}:{}),roleContext:current.roleContext,contextMode:'public_correlation'});}
@@ -229,7 +232,7 @@ server.registerResource('protocol-rules', 'mindpond://protocol/rules', {
   description: 'Host protocol version, section digests and short rules — equivalent to the memory_protocol_rules tool without arguments.',
   mimeType: 'application/json',
 }, async () => ({
-  contents: [{ uri: 'mindpond://protocol/rules', mimeType: 'application/json', text: JSON.stringify({...protocolRulesResponse({},baseTrusted.agentId?'office':'legacy'),...await graphMemory.dimensionPolicyDelta()}) }],
+  contents: [{ uri: 'mindpond://protocol/rules', mimeType: 'application/json', text: JSON.stringify(toolProfile==='office'?{version:'office-role.v2',instructions:BUILDING_INSTRUCTIONS}:({...protocolRulesResponse({},baseTrusted.agentId?'office':'legacy'),...await graphMemory.dimensionPolicyDelta()})) }],
 }));
 
 tool(

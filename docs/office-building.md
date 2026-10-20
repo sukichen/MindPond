@@ -12,17 +12,9 @@ MindPond 的协作功能是一栋办公大楼。新实例没有人物、办公�
 {"action":"submit","name":"小栗","introduction":"用户自定义介绍","reason":"用户要求申请","key":"本次申请的唯一公开重试编号"}
 ```
 
-用户在页面批准。宿主提供独立 session header 或受支持的会话元数据时，之后调用 role_sync 即可读取身份。
+用户在页面批准。Office MCP 仅提供角色与协作工具，记忆使用独立 Memory MCP。人类可查看全部记忆，角色只能读写自己的知识；人类分配知识时建立保留来源和版本的独立副本。详见[角色记忆与会话接入](role-memory.md)。
 
-没有会话关联信息时，申请结果额外返回公开 roleContext。后续 role_sync、office_*、memory_* 等调用携带相同 roleContext，例如：
-
-```json
-{"roleContext":"申请结果中的公开引用"}
-```
-
-roleContext 是普通相关性引用，不是认证凭据。它只在已经认证的账户/连接内生效；不能替代账户认证，也不能隔离持有相同广泛凭据的恶意客户端。每个独立聊天提交新的申请，不要复制别人的引用。新连接中的申请编号单独命名，重试同一次申请保留原 key；恢复原角色使用原 roleContext。响应丢失且跨连接重试时，应先核对前端申请，避免重复创建。显式 roleContext 优先于可选的客户端会话元数据，便于已有身份继续使用；固定 X-MindPond-Session header 仍有优先权，不能用 roleContext 切换它绑定的人物。
-
-没有关联信息且没有显式引用时，读取身份会明确报缺少上下文，绝不选择“最近使用的人物”。共享连接中多个聊天同时提交相同申请 key，仍无法凭协议区分；应使用不同申请 key 或宿主逐聊天标识。
+同一 OpenCode 配置中的不同聊天，由宿主插件签名传递真实 sessionID；重新打开同一聊天恢复原绑定。真实会话元数据优先于安装配置的固定标签。模型不能通过 roleContext 选择身份。没有可靠聊天标识的客户端使用前端“激活已有角色”或角色专用凭据；临时 MCP 连接回收不会删除持久角色。
 
 ## 空办公室
 
@@ -86,7 +78,7 @@ officeId 是可选的办公室上下文。办公室中的消息可出现在用�
 
 `office_wait` 单次等待默认及上限均为 `300000` 毫秒（5分钟），收到匹配消息立即返回。先领取并处理完 `office_receive` 返回的消息，把已处理消息的 `nextCursor` 作为 `afterSeq`；等待某条消息的回复时同时带 `replyTo`。
 
-返回 `status: "timeout", pending: true` 只表示这一段时间没有匹配消息。若用户授权的等待时间尚未结束，应将返回的 **整个 `resume` 对象** 作为下一次 `office_wait` 的参数；其中保留游标、`replyTo`、等待时长，以及需要时的公开 `roleContext`。不要把一次超时当成协作结束、任务成功或失败。预算耗尽时明确告知仍在等哪条回复，不编造结果。
+返回 `status: "timeout", pending: true` 只表示这一段时间没有匹配消息。若用户授权的等待时间尚未结束，应将返回的 **整个 `resume` 对象** 作为下一次 `office_wait` 的参数；其中保留游标、`replyTo`、等待时长。不要把一次超时当成协作结束、任务成功或失败。预算耗尽时明确告知仍在等哪条回复，不编造结果。
 
 宿主工具调用超时也必须长于5分钟：Codex 的 `tool_timeout_sec` 建议设为 `360`；生成的客户端配置和 stdio→HTTP bridge 已同步延长。运行中的客户端通常需要重新连接/启动才读取新配置。
 
@@ -159,7 +151,7 @@ mindpond-office-doctor --url https://your-service.example/mcp \
 
 此命令只证明该诊断进程的 SDK 路径，真实客户端另用 `npm run verify:office-native-host -- --client codex --wait-ms 300000 --report /private/new-native-report.json` 验证。它启动隔离数据库与本机原生 CLI，不改变用户连接配置；需要该宿主已登录、模型额度可用。2026-10-19 本机 codex-cli 0.163.0-alpha.10.2 的隔离 HTTP MCP 实等300018ms并完成客户端确认。Claude 未登录、OpenCode 认证失败，不能列为已通过。
 
-固定认证宿主会话可协商 **MCP 2025-11-25 experimental Tasks**：office_wait_task 创建最长5分钟的持久消息条件，通过 tasks/get、tasks/result、tasks/list、tasks/cancel 查询/恢复/取消；每绑定最多8个活跃任务、数据库1024个、句柄最长保留1小时。每次访问重新校验绑定与权限。重启后按相同身份读取句柄，轮询时评估是否到信；没有后台模型或外部唤醒。无宿主会话关联的显式 roleContext 路径使用普通 role_sync processing/waitRecovery。此实现不是对所有客户端或另一项 SEP2663 扩展的兼容承诺。
+固定角色凭据连接可协商 **MCP 2025-11-25 experimental Tasks**：office_wait_task 创建最长5分钟的持久消息条件，通过 tasks/get、tasks/result、tasks/list、tasks/cancel 查询/恢复/取消；每绑定最多8个活跃任务、数据库1024个、句柄最长保留1小时。每次访问重新校验绑定与权限。重启后按相同身份读取句柄，轮询时评估是否到信；没有后台模型或外部唤醒。共享宿主连接使用普通 role_sync processing/waitRecovery。此实现不是对所有客户端或另一项 SEP2663 扩展的兼容承诺。
 
 ### 回放、导出与维护
 
@@ -192,4 +184,4 @@ mindpond-maintenance --db /private/backup.db --restore-to /private/restored.db
 
 错误按原因区分：`invalid_input` 修正参数或操作状态；`not_found` 核对当前可见记录与引用；`scope_denied` 才表示真实权限问题；`stale_version` 先重读版本；`idempotency_conflict` 核对原载荷与重试 key。内部 fail 调用必须显式选择错误码，不能默认把所有失败归为权限错误。管理 HTTP 分别使用400/404/403/409/503，MCP保留结构化错误与下一步指引；SDK 输入模式拒绝使用协议的 invalid params。
 
-通信页把办公室总数与当前展示条数分开：总数和待处理/处理中/已处理均来自数据库聚合，不受20条预览或200条浏览上限影响。新到信、领取、完成会更新数量；筛选后的列表保持原条件自动同步，已加载的旧消息与仍匹配的展开内容保留。SSE 变化通知触发补拉，同时保留2.5秒校验补拉；恢复可见时立即同步，回放期间保持历史视图。宿主给连接起名 `mindpond-office` 后，`mindpond-office.memory_*` 仍是同一 MCP 服务提供的记忆工具；名字不是记忆域，个人/团队/session 的访问仍由实际连接授权决定。
+通信页把办公室总数与当前展示条数分开：总数和待处理/处理中/已处理均来自数据库聚合，不受20条预览或200条浏览上限影响。新到信、领取、完成会更新数量；筛选后的列表保持原条件自动同步，已加载的旧消息与仍匹配的展开内容保留。SSE 变化通知触发补拉，同时保留2.5秒校验补拉；恢复可见时立即同步，回放期间保持历史视图。Office 连接不提供 memory 读写。另配 `/memory/mcp` 后，记忆身份由同一可信聊天的角色绑定决定；无绑定时明确拒绝，不能降级为人类记忆。

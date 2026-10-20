@@ -39,7 +39,7 @@ try {
   const a = await api('/api/memory/save', { content: '本地调试服务使用 7903 端口。', memberships: [{ spaceId: 'P', memoryType: 'config' }] });
   const b = await api('/api/memory/save', { content: '本地服务仅绑定 127.0.0.1，远程访问须经代理。', memberships: [{ spaceId: 'P', memoryType: 'config' }] });
   await api('/api/memory/association', { memberAId: a.memberships[0].id, memberBId: b.memberships[0].id, spaceId: 'P', memoryType: 'config', weight: .9, reason: '端口与代理目标需一起核对', context: '项目 P 本地调试，不包含生产环境' });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: ['dist/mcp.js'], env, stderr: 'pipe' }));
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: ['dist/mcp.js'], env:{...env,MINDPOND_TOOL_PROFILE:'full'}, stderr: 'pipe' }));
   const tool = async (name: string, args: Record<string, unknown>) => {
     const result: any = await client.callTool({ name, arguments: args });
     assert(!result.isError, JSON.stringify(result)); return JSON.parse(result.content[0].text);

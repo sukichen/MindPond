@@ -60,7 +60,7 @@ const save = async (content: string, spaceId: string) => {
  * newline-delimited JSON-RPC. Rejects on error responses and timeouts. */
 async function withMcp(fn: (rpc: (method: string, params?: any) => Promise<any>, notify: (method: string, params?: any) => void) => Promise<void>) {
   const mcp = spawn(process.execPath, [path.join(root, 'dist', 'mcp.js')], {
-    env: { ...process.env, MEMORY_DB_PATH: path.join(dir, 'mcp.db'), EMBEDDING_ZH_ENABLED: 'false' },
+    env: { ...process.env, MEMORY_DB_PATH: path.join(dir, 'mcp.db'), MINDPOND_TOOL_PROFILE:'full', EMBEDDING_ZH_ENABLED: 'false' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const rl = readline.createInterface({ input: mcp.stdout! });

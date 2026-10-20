@@ -149,7 +149,12 @@ try {
       foreignRequest = await seed.graph.organizationRequests.createRequest({domain:{kind:'session',id:'foreign-session'}, spaceId:'private',memoryType:'fact',batchSize:1});
       foreignJob = (await seed.graph.organizationRequests.nextBatch(foreignRequest.requestId)).batch;
     } finally { await seed.close(); }
-    const transport = new StdioClientTransport({ command: ${JSON.stringify(path.join(temp, 'node_modules/.bin/mindpond-mcp'))}, args: [], env: process.env });
+    const userClient=new Client({name:'installed-human-memory',version:'1'});
+    await userClient.connect(new StdioClientTransport({command:${JSON.stringify(path.join(temp,'node_modules/.bin/mindpond-mcp'))},args:[],env:{...process.env,MINDPOND_TOOL_PROFILE:'memory'}}));
+    const userTools=(await userClient.listTools()).tools;assert(userTools.every(t=>t.name.startsWith('memory_')));
+    const userIdentity=await userClient.callTool({name:'memory_identity',arguments:{}});
+    assert.equal(JSON.parse(userIdentity.content[0].text).owner.kind,'user');await userClient.close();
+    const transport = new StdioClientTransport({ command: ${JSON.stringify(path.join(temp, 'node_modules/.bin/mindpond-mcp'))}, args: [], env: {...process.env,MINDPOND_TOOL_PROFILE:'full'} });
     const client = new Client({name:'package-test', version:'1.0.0'});
     try {
       await client.connect(transport);

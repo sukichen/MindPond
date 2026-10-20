@@ -24,6 +24,7 @@ try {
     for (const runtimeId of ['a', 'b', 'c']) {
         const actor: TrustedCallContext = { v: 1, principal: 'owner', agentId: 'cli', transport: 'http-mcp', runtimeId, domains: [{ kind: 'personal', id: runtimeId }], issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
         const application = await graph.roles.application({ action: 'submit', name: runtimeId, introduction: 'Fixture role ' + runtimeId, reason: 'Isolated test', key: runtimeId }, actor), role = await graph.roles.review({ applicationId: application.applicationId, expectedRevision: 1, action: 'approve' }, admin);
+        actor.domains=[await graph.memoryOwners.domain({kind:'agent',id:role.roleId})];
         actors.push({ ...actor, roleId: role.roleId, roleBindingId: role.bindingId, roleBindingEpoch: 1 });
     }
     const [a, b, c] = actors;
@@ -61,7 +62,7 @@ try {
     const cursor = await graph.building.receive({ action: 'list', direction: 'sent' }, a);
     await assert.rejects(graph.building.receive({ action: 'list', query: 'different', cursorScope: cursor.cursorScope }, a), /scope changed/);
     assert.equal((await graph.building.history({ officeId: 'room', since: Date.now() + 10000 }, admin)).messages.length, 0);
-    const privateMemory = await graph.saveMemory('Only actor a may read this lesson', { domain: { kind: 'personal', id: 'a' }, memberships: [{ spaceId: 'fixture', memoryType: 'work' }] });
+    const privateMemory = await graph.saveMemory('Only actor a may read this lesson', { domain: await graph.memoryOwners.domain({kind:'agent',id:a.roleId!}), memberships: [{ spaceId: 'fixture', memoryType: 'work' }] });
     const learning = { kind: 'learning', officeId: 'room', title: 'Rechecked environment', memoryId: privateMemory.id, messageId: first, outcome: 'used', evidence: 'Validated the actual source at a pinned revision', key: 'learning' };
     await graph.officeCollaboration.publish(learning, a);
     await assert.rejects(graph.officeCollaboration.publish({ ...learning, key: 'false-recall', recallId: 'not-a-real-recall' }, a), /not in this recall/);

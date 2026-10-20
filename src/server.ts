@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import {officeWorkbench} from './integrations/office-workbench.js';
-import { recallEntry } from './core/context-assembly.js';
+import { assemblePresentedRecall, recallEntry } from './core/context-assembly.js';
 import { authorizeOrganizationAccess } from './core/organization-access.js';
 import { normalizeDomain } from './core/domain.js';
 import { hostOperations, capabilities } from './core/host-contract.js';
@@ -233,6 +233,9 @@ function failErr(res: express.Response, err: unknown, fallbackStatus = 500) {
 
 // ---- routes ----
 app.get('/health', (_req, res) => ok(res, { service: 'mindpond', port: PORT, mode: 'service (no LLM inside)' }));
+app.get('/api/memory/owners',async(req,res)=>{if(!requireOperator(req,res))return;try{const settings=await graphMemory.offices.settings({v:1,operator:true,principal:'human',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});ok(res,{roles:await graphMemory.memoryOwners.roles(),user:{kind:'user',id:'default'},memoryMcpUrl:settings.mcpUrl?settings.mcpUrl.replace(/\/mcp\/?$/,'/memory/mcp'):undefined});}catch(e){failErr(res,e);}});
+app.post('/api/memory/assign',async(req,res)=>{if(!requireOperator(req,res))return;try{const a=z.object({memoryIds:z.string().min(1).max(160).array().min(1).max(50),roleId:z.string().uuid()}).strict().parse(req.body);ok(res,await graphMemory.memoryOwners.allocate(a.memoryIds,a.roleId));}catch(e){failErr(res,e);}});
+app.post('/api/memory/role-credential',async(req,res)=>{if(!requireOperator(req,res))return;try{const a=z.object({roleId:z.string().uuid()}).strict().parse(req.body);ok(res,await graphMemory.memoryOwners.issue(a.roleId));}catch(e){failErr(res,e);}});
 app.get('/api/memory/retrieval/profiles',async(_req,res)=>{try{ok(res,await graphMemory.retrievalProfiles());}catch(error){failErr(res,error);}});
 app.get('/api/memory/retrieval/devices',async(_req,res)=>{try{ok(res,await graphMemory.retrievalDevices());}catch(error){failErr(res,error);}});
 app.post('/api/memory/retrieval/build',async(req,res)=>{
@@ -324,9 +327,10 @@ app.post('/api/memory/search', async (req, res) => {
     }
     const recall = await graphMemory.recall({
       query, retrievalProfile, vectorAlgorithm, reranker,
+      ...(!CONTEXT_SECRET||req.trusted?.operator?{operatorAll:!req.body.ownerRoleId}:{}),
       limit: typeof limit === 'number' ? limit : 10,
       sessionId: readCtx.sessionId,
-      domains: readCtx.domains,
+      domains: (!CONTEXT_SECRET||req.trusted?.operator)&&req.body.ownerRoleId?[{kind:'personal',id:'agent:'+z.string().uuid().parse(req.body.ownerRoleId)}]:readCtx.domains,
       dimension,
       layer,
       spaceId,
@@ -341,8 +345,7 @@ app.post('/api/memory/search', async (req, res) => {
     ok(res, {
       recallId: recall.recallId,
       retrieval:recall.retrieval,
-      results: recall.results.map(recallEntry),
-      ...(recall.contextBudget?{contextBudget:recall.contextBudget}:{}),
+      ...assemblePresentedRecall(await Promise.all(recall.results.map(async r=>({...recallEntry(r),owner:await graphMemory.memoryOwners.owner(r.node)}))),recall.contextBudget),
     });
   } catch (err) {
     failErr(res, err);
@@ -478,7 +481,7 @@ app.get('/api/memory/node/:id', async (req, res) => {
   try {
     const node = await graphMemory.getNodeById(req.params.id, { trackAccess: req.query.trackAccess === '1', context: coreContext(ctx) });
     if (!node) return fail(res, 404, `node not found: ${req.params.id}`);
-    ok(res, { node: { ...node, embedding: undefined }, memberships: await graphMemory.getMemberships(node.id), associations: await graphMemory.listAssociations(node.id, { context: coreContext(ctx) }) });
+    ok(res, { node: { ...node, embedding: undefined,owner:await graphMemory.memoryOwners.owner(node) }, memberships: await graphMemory.getMemberships(node.id), associations: await graphMemory.listAssociations(node.id, { context: coreContext(ctx) }) });
   } catch (err) {
     failErr(res, err);
   }
@@ -572,7 +575,7 @@ app.get('/api/memory/list', async (req, res) => {
       total,
       nodes: await Promise.all(nodes.map(async n => ({
         id: n.id, dimension: n.dimension, dimensions:n.dimensions, layer: n.layer, content: n.content,
-        importance: n.importance, tags: n.tags, domain:n.domain, sessionId: n.sessionId,
+        importance: n.importance, tags: n.tags, domain:n.domain, sessionId: n.sessionId,owner:await graphMemory.memoryOwners.owner(n),
         createdAt: n.createdAt, updatedAt: n.updatedAt, accessCount: n.accessCount,
         sourceRefs:n.sourceRefs, profiles:n.profiles,
         memberships: await graphMemory.getMemberships(n.id),

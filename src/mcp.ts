@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import 'dotenv/config';
+import {createOwnerMemoryServer} from './role-memory-service.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -41,7 +42,9 @@ const trusted: TrustedCallContext = {
   issuedAt: 0,
   expiresAt: Number.MAX_SAFE_INTEGER,
 };
-const service=createMemoryMcpServer(graphMemory,{...(trustBound?{trusted}:{}),toolProfile:parseMcpToolProfile(process.env.MINDPOND_TOOL_PROFILE)});
+const service=(!process.env.MINDPOND_TOOL_PROFILE||process.env.MINDPOND_TOOL_PROFILE==='memory')
+  ?createOwnerMemoryServer(graphMemory,{...(trustBound?{trusted}:{}),roleId:process.env.MINDPOND_MEMORY_ROLE_ID})
+  :createMemoryMcpServer(graphMemory,{...(trustBound?{trusted}:{}),toolProfile:parseMcpToolProfile(process.env.MINDPOND_TOOL_PROFILE)});
 let closing=false;
 async function shutdown() {
   if(closing)return;closing=true;

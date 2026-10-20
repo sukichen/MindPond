@@ -73,3 +73,6 @@ header{position:sticky;top:0;z-index:5}aside.nav{position:sticky;top:76px;height
 .retrieval-manager{margin:16px 0;padding:18px}.retrieval-manager summary{cursor:pointer;font-weight:600}.retrieval-manager .cards{margin-top:14px}.retrieval-manager pre{white-space:pre-wrap;overflow-wrap:anywhere}
 
 .license-link{position:fixed;bottom:6px;left:8px;font-size:10px;color:#718096;z-index:1;}
+
+/* Shared safe Markdown renderer, scoped to memory cards. */
+.memory-markdown{line-height:1.7;overflow-wrap:anywhere;min-width:0}.memory-markdown pre{overflow:auto;padding:12px;background:#edf1ed;border-radius:8px;white-space:pre}.memory-markdown code{font-family:monospace;font-size:.9em}.memory-markdown table{border-collapse:collapse;display:block;max-width:100%;overflow:auto}.memory-markdown td,.memory-markdown th{border:1px solid #cdd8ce;padding:6px 10px}.memory-markdown blockquote{border-left:3px solid #93ac9b;margin-left:0;padding-left:14px;color:#597365}.memory-markdown li>input{width:14px;height:14px;padding:0;margin-right:6px}.memory-markdown h1,.memory-markdown h2,.memory-markdown h3{margin:.8em 0 .4em;font-size:1.15em}

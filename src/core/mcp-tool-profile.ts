@@ -1,9 +1,9 @@
 /** Static MCP catalogs: clients need no tools/list refresh support. HTTP stays complete. */
-export type McpToolProfile = 'work' | 'full';
+export type McpToolProfile = 'work' | 'full' | 'office' | 'memory';
 export function parseMcpToolProfile(value: string | undefined): McpToolProfile {
   const profile = value ?? 'full';
-  if (profile !== 'work' && profile !== 'full') throw new Error('MINDPOND_TOOL_PROFILE must be work or full');
-  return profile;
+  if (!['work','full','office','memory'].includes(profile)) throw new Error('MINDPOND_TOOL_PROFILE must be work, full, office or memory');
+  return profile as McpToolProfile;
 }
 const WORK_TOOLS = new Set([
   'office_directory','office_receive','office_message','office_wait','office_container','office_material',
@@ -27,5 +27,7 @@ const WORK_TOOLS = new Set([
   'work_workspaces','work_handoff','work_inbox','work_thread_get','work_reply','work_ack',
 ]);
 export function exposesMcpTool(profile: McpToolProfile, name: string): boolean {
+  if(profile==='office')return name.startsWith('office_')||['role_application','role_sync'].includes(name);
+  if(profile==='memory')return name.startsWith('memory_');
   return profile === 'full' || WORK_TOOLS.has(name);
 }
