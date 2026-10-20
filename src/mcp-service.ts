@@ -77,13 +77,22 @@ const pipeline = new MemoryPipelineManager(graphMemory, undefined);
 // uses the durable two-phase tools below.
 const hostConsolidation = new MemoryConsolidation(graphMemory, undefined);
 
+const taskStore=baseTrusted.agentId&&baseTrusted.runtimeId?graphMemory.officeTaskStore(baseTrusted):undefined;
 const server = new McpServer({
   name: 'agent-memory',
   version: '0.1.0',
-}, { instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+'\n'+OFFICE_MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP });
+}, { instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+'\n'+OFFICE_MEMORY_BOOTSTRAP:MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
 
 const toolProfile = parseMcpToolProfile(options.toolProfile);
 const exposedTools: string[] = [];
+if(taskStore){
+  exposedTools.push('office_wait_task');
+  server.experimental.tasks.registerToolTask('office_wait_task',{description:'Experimental MCP task: durable five-minute message/reply condition. Poll task status; fetching a match does not claim a message. Survives server reconnects with the same approved fixed host session. Does not wake a stopped model.',inputSchema:{afterSeq:z.number().int().min(0).optional(),replyTo:z.string().max(160).optional(),waitMs:z.number().int().min(100).max(300000).optional()},execution:{taskSupport:'required'}},{
+    createTask:async(_args,extra)=>{await options.authorizeWait?.();return {task:await extra.taskStore.createTask({ttl:3600000,pollInterval:1000})};},
+    getTask:async(_args,extra)=>{await options.authorizeWait?.();return (await extra.taskStore.getTask(extra.taskId))!;},
+    getTaskResult:async(_args,extra)=>{await options.authorizeWait?.();return await extra.taskStore.getTaskResult(extra.taskId) as any;}
+  });
+}
 let closing=false;
 const shutdownSignal=new AbortController();
 const activeCalls=new Set<Promise<unknown>>();
@@ -95,6 +104,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
   if (!exposesMcpTool(toolProfile, name)) return;
   if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))return;
   if(baseTrusted.agentId)shape={...shape,roleContext:z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional()};
+  if(name.startsWith('office_')||name==='role_sync')shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
   if(options.trusted?.agentId&&name.startsWith('memory_'))shape={...shape,workSessionId:z.string().min(1).max(128).optional()};
   exposedTools.push(name);
   server.tool(name, description, shape, async (args: any,extra:{signal:AbortSignal;requestId:string|number;_meta?:Record<string,unknown>}) => {
@@ -170,7 +180,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         seenRoleProfiles.set(roleIdentity.bindingId,revision);
         // Keep routine tool calls cheap; explicit sync/receive always include
         // the full profile in their normal result. Cache is NOT authorization.
-        const badge={...(changed?roleIdentity:{roleId:roleIdentity.roleId,bindingId:roleIdentity.bindingId,bindingEpoch:roleIdentity.bindingEpoch,name:roleIdentity.name,profileRevision:roleIdentity.profileRevision,primaryAssignmentId:roleIdentity.primaryAssignmentId}),...(current.roleContext?{roleContext:current.roleContext}:{})};
+        const badge={...(changed&&!(name==='office_context'&&args.action==='page')?roleIdentity:{roleId:roleIdentity.roleId,bindingId:roleIdentity.bindingId,bindingEpoch:roleIdentity.bindingEpoch,name:roleIdentity.name,profileRevision:roleIdentity.profileRevision,primaryAssignmentId:roleIdentity.primaryAssignmentId}),...(current.roleContext?{roleContext:current.roleContext}:{})};
         result.content.push({type:'text' as const,text:JSON.stringify({mindpondIdentity:badge,profileChanged:changed,notice:changed?'Use this updated server profile. role_sync restores the full introduction after context loss.':'role_sync restores your full introduction if needed.'})});
       }
       await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(trusted.sessionId?{kind:'session',id:trusted.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal,agentId:trusted.agentId,workSessionId:trusted.workSessionId,roleId:trusted.roleId,roleBindingEpoch:trusted.roleBindingEpoch}:{})})});
@@ -183,6 +193,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
             maintenance: toolProfile === 'work' ? 'Bulk requests, worker draining, legacy and destructive administration need a separate full-profile connection (MINDPOND_TOOL_PROFILE=full). The work profile supports scoped saves, edits, small organization jobs and collaboration tasks.' : 'All tools are exposed.' } });
         }
       }
+      if(name.startsWith('office_')||name==='role_sync')return graphMemory.officeCollaboration.boundResponse(result,args.responseBudgetBytes??16384,current);
       return result;
       });
     } catch (err) {
@@ -194,7 +205,10 @@ function tool(name: string, description: string, shape: any, handler: (args: any
 }
 
 for (const op of [...roleOperations(graphMemory),...buildingOperations(graphMemory)]) {
-  tool(op.name,op.description,op.schema.shape,async(args:any,runtime)=>({content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(args),trustBound?(contextStorage.getStore()??baseTrusted):undefined,runtime))}]}));
+  tool(op.name,op.description,op.schema.shape,async(args:any,runtime)=>{
+    if(op.name==='office_context'&&args.action==='page')args={...args,characters:Math.min(args.characters??1024,Math.max(64,Math.floor(((args.responseBudgetBytes??16384)-1200)/12)))};
+    return {content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(args),trustBound?(contextStorage.getStore()??baseTrusted):undefined,runtime))}]};
+  });
 }
 
 for (const op of hostOperations(graphMemory)) {
@@ -375,7 +389,7 @@ tool(
   async ({ nodeId, sessionId, domains, maxChars }) => {
     const a = bound({ sessionId, domains });
     if (!a.sessionId && !a.domains?.length) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'domain context required: sessionId, domains' }) }] };
+      throw new MindPondError('invalid_input','domain context required: sessionId, domains',{field:'domains'});
     }
     const node = await graphMemory.getNodeById(nodeId, { trackAccess: true, context: { sessionId: a.sessionId, domains: a.domains } });
     if (!node) {
@@ -474,10 +488,10 @@ tool(
   async ({ nodeId, sessionId, domains }) => {
     const a = bound({ sessionId, domains });
     if (!a.sessionId && !a.domains?.length) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'domain context required: sessionId, domains' }) }] };
+      throw new MindPondError('invalid_input','domain context required: sessionId, domains',{field:'domains'});
     }
     const node = await graphMemory.getNodeById(nodeId, { trackAccess: false, context: { sessionId: a.sessionId, domains: a.domains } });
-    if (!node) return { content: [{ type: 'text', text: JSON.stringify({ error: `node not found: ${nodeId}` }) }] };
+    if (!node) throw new MindPondError('not_found','Memory not found in the readable scope',{field:'nodeId'});
     return { content: [{ type: 'text', text: JSON.stringify({ ...node, embedding: undefined,
       memberships: await graphMemory.getMemberships(nodeId), associations: await graphMemory.listAssociations(nodeId, { context: callerContext() }) }) }] };
   },
@@ -505,7 +519,7 @@ tool(
   async ({ nodeId, content, dimensions, anchors, importance, tags, verified, sessionId, domains, sourceRefs, expectedUpdatedAt, expectedContent, reason, replaceMembershipIds, teamAuthorization }) => {
     const a = bound({ sessionId, domains });
     if (!a.sessionId && !a.domains?.length) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'domain context required: sessionId, domains' }) }] };
+      throw new MindPondError('invalid_input','domain context required: sessionId, domains',{field:'domains'});
     }
     const result=await graphMemory.editMemory(nodeId,{content,dimensions,anchors,importance,tags,verified,sourceRefs,expectedUpdatedAt,expectedContent,reason,replaceMembershipIds,teamAuthorization,context:{sessionId:a.sessionId,domains:a.domains}});
     return {content:[{type:'text',text:JSON.stringify(result)}]};
@@ -525,7 +539,7 @@ tool(
   async ({ nodeId, reason, sessionId, domains, teamAuthorization }) => {
     const a = bound({ sessionId, domains });
     if (!a.sessionId && !a.domains?.length) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'domain context required: sessionId, domains' }) }] };
+      throw new MindPondError('invalid_input','domain context required: sessionId, domains',{field:'domains'});
     }
     const existing = await graphMemory.getNodeById(nodeId, { trackAccess: false, context: { sessionId: a.sessionId, domains: a.domains } });
     if (!existing) return { content: [{ type: 'text', text: JSON.stringify({ error: `node not found: ${nodeId}` }) }] };
@@ -584,7 +598,7 @@ tool(
   async ({ nodeId, sessionId, domains }) => {
     const a = bound({ sessionId, domains });
     if (!a.sessionId && !a.domains?.length) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'domain context required: sessionId, domains' }) }] };
+      throw new MindPondError('invalid_input','domain context required: sessionId, domains',{field:'domains'});
     }
     const connections = await graphMemory.getConnections(nodeId, { sessionId: a.sessionId, domains: a.domains });
     return {

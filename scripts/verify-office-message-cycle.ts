@@ -61,7 +61,7 @@ try{
   assert.equal(restored,longBody,'escaped control characters, emoji and Chinese restore exactly');
   const history=await graph.building.history({officeId:'room',state:'archived',query:'timeout'},admin);assert(history.messages.some((m:any)=>m.id===message.messageId));
   const thread=await graph.building.history({officeId:'room',threadId:message.messageId},admin);assert(thread.messages.some((m:any)=>m.id===done.feedbackMessageId));
-  await assert.rejects(graph.building.message({action:'get',messageId:message.messageId},c),/unavailable/);
+  await assert.rejects(graph.building.message({action:'get',messageId:message.messageId},c),(e:any)=>e.code==='not_found');
   await assert.rejects(graph.building.history({officeId:'room'},b),/management/);
   const allStates=await graph.building.receive({action:'list',state:'all'},b);
   assert(allStates.messages.some((m:any)=>m.state==='archived'),'state=all includes completed mail without a second includeArchived flag');

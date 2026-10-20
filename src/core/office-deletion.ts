@@ -3,6 +3,13 @@ import type { Database } from 'sqlite';
 /** Operator-only hard deletion. The caller owns one BEGIN IMMEDIATE
  * transaction, including revision checks and the durable deletion audit. */
 export async function deleteRoleData(db: Database, roleId: string) {
+  await db.run('DELETE FROM office_response_pages');
+  await db.run('DELETE FROM office_exports');
+  for(const table of ['office_probe_leases','office_wait_queue'])await db.run(`DELETE FROM ${table} WHERE binding_id IN (SELECT id FROM role_bindings WHERE role_id=?)`,[roleId]);
+  await db.run("DELETE FROM office_protocol_tasks WHERE EXISTS (SELECT 1 FROM role_bindings b WHERE b.role_id=? AND instr(owner,':'||b.id||':')>0)",[roleId]);
+  await db.run('DELETE FROM office_control_requests WHERE role_id=?',[roleId]);
+  await db.run('DELETE FROM office_host_reports WHERE role_id=?',[roleId]);
+  await db.run('DELETE FROM office_collaboration_receipts WHERE EXISTS (SELECT 1 FROM role_bindings b WHERE b.role_id=? AND substr(actor,1,length(b.id)+1)=b.id||\':\')',[roleId]);
   const seats = 'SELECT seat_id FROM role_seats WHERE role_id=?';
   // Keep office history and materials, but fence every old assignment and
   // cancel work that can no longer be completed by its assigned participants.
@@ -36,8 +43,11 @@ export async function deleteRoleData(db: Database, roleId: string) {
 }
 
 export async function deleteOfficeData(db: Database, officeId: string) {
+  await db.run('DELETE FROM office_response_pages');
+  await db.run('DELETE FROM office_collaboration_receipts WHERE office_id=?',[officeId]);
   const seats = 'SELECT id FROM office_seats WHERE office_id=?';
   const sessions = `SELECT id FROM office_sessions WHERE seat_id IN (${seats})`;
+  await db.run("DELETE FROM office_protocol_tasks WHERE json_extract(conditions,'$.replyTo') IN (SELECT id FROM role_messages WHERE office_id=?) OR json_extract(json_extract(result,'$.content[0].text'),'$.message.officeId')=?",[officeId,officeId]);
   // Purge replay receipts while their referenced records still exist. A retry
   // must never return the text/content of a permanently deleted office.
   await db.run(`DELETE FROM building_receipts WHERE json_extract(result,'$.officeId')=?

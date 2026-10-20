@@ -312,6 +312,7 @@
         const result=await api('agent/delete',{id:agent.id,expectedRevision:agent.revision});await refresh();
         notice(result.credentialCleanupPending?'连接已删除，访问已撤销。私有凭据文件清理未完成，请检查配置文件权限或稍后重试管理删除。':'宿主连接已删除，访问已撤销。',Boolean(result.credentialCleanupPending));
       });remove.className='office-danger';card.append(remove);
+      card.append(button('查看删除影响',()=>window.MindPondOfficeCollaboration?.deleteImpact?.('agent',agent.id)));
       box.append(card);
     }
     if (!state.data.agents.length)
@@ -335,6 +336,8 @@
       const row=make('article');row.className='office-item';
       row.append(make('strong',agent.name),make('p',`接入：${states[agent.state]??agent.state} · 已批准角色 ${roleList.length} 个`),make('p',agent.last_seen?'最近握手：'+new Date(agent.last_seen).toLocaleString():'尚未观察到握手'),make('p',agent.discovered_at?'工具发现：'+new Date(agent.discovered_at).toLocaleString():'尚未观察到协作工具发现'));
       row.append(make('p',policy?`记忆授权：${policy.domains.map(d=>d.kind+'/'+d.id).join('、')}；办公室限制：${policy.assignmentIds===null?'未额外限制':policy.assignmentIds.length+' 个工位'}`:state.data.credentialPolicyError?'凭据策略读取失败，请检查私有配置权限。':'此 Web 进程未发现对应凭据策略；不据此推断 MCP 进程未配置。'));
+      for(const report of (state.data.hostReports??[]).filter(h=>roleList.some(r=>r.id===h.role_id))){const p=JSON.parse(report.payload);row.append(make('p',`宿主自检：${p.client} · 角色 ${roleList.find(r=>r.id===report.role_id)?.name??report.role_id} · 服务端实等 ${(p.measuredWaitMs/1000).toFixed(1)} 秒 · ${p.clientReceived?'宿主已确认收到结果':'尚未确认收到结果'} · ${Date.now()-report.observed_at>120000?'当前运行未知':'最近有通信证据'}`));}
+      row.append(button('下载宿主自检指引',()=>download('在需要验证的聊天中调用 office_host action=probe，waitMs=300000。收到 probeId 后调用 action=confirm、probeId 和 clientRoundTripMs。或在该宿主环境使用 mindpond-office-doctor --url <MCP地址> --token-env <秘密环境变量名> --session <原会话标识> --long-wait。不要把凭据发到聊天。不同客户端须分别实测。',agent.id+'-doctor.txt')));
       for(const warning of state.data.connectionTemplates?.[agent.id]?.warnings??[])row.append(make('p',warning));
       box.append(row);
     }
@@ -557,6 +560,7 @@
       await saveProfile(application ? 'reject' : record.state === 'active' ? 'disabled' : 'active');
     });secondary.className = 'office-danger';actions.append(secondary);form.append(actions);
     if (!application) {
+      actions.append(button('权限与运行控制',()=>window.MindPondOfficeCollaboration?.inspectRole?.(record.id)),button('查看删除影响',()=>window.MindPondOfficeCollaboration?.deleteImpact?.('role',record.id)));
       const remove=button('永久删除角色',()=>deleteCharacter(record));remove.className='office-danger';
       actions.append(remove);
     }
@@ -680,7 +684,7 @@
     }
     layoutScene(desks.querySelectorAll('.office-desk').length);if(state.scene.autoFit)requestAnimationFrame(()=>fitScene());
   }
-  const replayController=new window.MindPondOfficeReplay.Player({scene:scenePlayer,fetchPage:args=>api('replay',args),prepare:prepareReplayParticipants,restore:()=>{if(state.office){state.deskSnapshot=null;renderOffice();}},view:{
+  const replayController=new window.MindPondOfficeReplay.Player({scene:scenePlayer,fetchPage:args=>api('replay',args),prepare:prepareReplayParticipants,restore:()=>{window.MindPondOfficeCollaboration?.restoreLayout?.();if(state.office){state.deskSnapshot=null;renderOffice();}},view:{
     change(player){
       el('officeReplay').classList.toggle('is-active',player.active);el('officeReplayTransport').hidden=!player.active&&!player.loading;el('officeScenePreview').disabled=player.active||player.loading;el('officeActionPreview').disabled=player.active||player.loading;
       el('officeReplayPlay').disabled=!player.active||player.loading||player.playing;el('officeReplayPlay').textContent=player.paused?'继续':player.completed?'重新播放':'播放';
@@ -693,6 +697,7 @@
     },
     loading(done,total){el('officeReplayProgress').textContent=`正在读取历史事件：${done} / ${total}`;},
     loaded(meta,player){
+      window.MindPondOfficeCollaboration?.renderParallel?.(player);
       el('officeReplayFrom').value=String(meta.fromSeq);el('officeReplayTo').value=String(meta.toSeq);
       el('officeReplayBounds').textContent=(meta.threadId?'仅此对话':'所选区间')+` · ${meta.count} 个事件 · #${meta.fromSeq} 至 #${meta.toSeq}`;
       const rows=el('officeReplayRoles');rows.replaceChildren();
@@ -700,6 +705,7 @@
       el('officeReplaySeek').max=String(player.events.length-1);el('officeReplaySeek').value='0';
     },
     select(event,index,total,player){
+      window.MindPondOfficeCollaboration?.applyReplayLayout?.(player.meta,event.layoutId);
       el('officeReplayNow').textContent=`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`;
       el('officeReplaySeek').value=String(index);const current=el('officeReplayCurrent');current.hidden=false;current.replaceChildren(make('h4',`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`),make('small',new Date(event.ts).toLocaleString()));
       const body=event.body;current.append(typeof body.body==='string'?window.MindPondOfficeMarkdown.render(body.body):make('p',body.result??body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
@@ -721,7 +727,7 @@
   }
   function setReplayBoundary(which,seq){setRoomTab('officeCanvas');el('officeReplay').open=true;el(which==='from'?'officeReplayFrom':'officeReplayTo').value=String(seq);el('officeReplay').scrollIntoView({block:'start'});}
   el('officeReplay').addEventListener('toggle',()=>{if(el('officeReplay').open)void run(refreshReplayIndex);});
-  el('officeReplayRange').onsubmit=event=>{event.preventDefault();void run(async()=>{if(!state.office)return;await replayController.load(state.office.office.id,el('officeReplayFrom').valueAsNumber,el('officeReplayTo').valueAsNumber);});};
+  el('officeReplayRange').onsubmit=event=>{event.preventDefault();void run(async()=>{if(!state.office)return;await replayController.load(state.office.office.id,el('officeReplayFrom').valueAsNumber,el('officeReplayTo').valueAsNumber,undefined,window.MindPondOfficeCollaboration?.replayFilters?.()??{});});};
   el('officeReplayPlay').onclick=()=>{replayController.play();if(replayController.active){el('officeReplay').open=false;el('officeStage').scrollIntoView({block:'center',behavior:'instant'});}};el('officeReplayPause').onclick=()=>replayController.pause();
   el('officeReplayPrevious').onclick=()=>replayController.seek(replayController.index-1);el('officeReplayNext').onclick=()=>replayController.seek(replayController.index+1);
   el('officeReplayInspect').onclick=()=>{const e=replayController.events[replayController.index];if(e)void run(()=>e.detailAvailable?showRecord({eventSeq:e.seq},'事件 #'+e.seq):showDetail('事件 #'+e.seq,e));};
@@ -963,6 +969,7 @@
     box.scrollIntoView({block:'nearest'});
   }
   function renderFacilities(data) {
+    const counts=data?.counts,summary=el('officeMessageCounts');if(summary)summary.textContent=counts?`办公室共 ${counts.total} 条 · 待处理 ${counts.pending} · 处理中 ${counts.processing} · 已处理 ${counts.archived}`:'消息总数同步中…';
     const signature=JSON.stringify([state.office?.office.id,data?.revision,data?.containers,data?.messages]);
     if(state.renderedFacilities===signature)return;
     state.renderedFacilities=signature;
@@ -973,7 +980,7 @@
     if(!state.mail || state.mail.room!==state.office.office.id){
       state.mail={room:state.office.office.id,messages:data?.messages??[],hasMore:data?.messagesHasMore??false,nextBeforeSeq:data?.nextBeforeSeq??null,query:'',status:'all',threadId:null};
       renderMail();
-    }else if(!state.mail.query&&state.mail.status==='all'&&!state.mail.threadId){
+    }else if(!state.mail.query&&state.mail.status==='all'&&!state.mail.threadId&&!state.mail.correspondent&&!state.mail.since&&!state.mail.until){
       const known=new Map(state.mail.messages.map(m=>[m.id,m]));
       for(const m of data?.messages??[])known.set(m.id,m);
       const merged=[...known.values()].sort((a,b)=>b.seq-a.seq);
@@ -994,6 +1001,7 @@
       if(m.bodyTruncated)row.append(make('p','此处为摘要。打开完整消息查看全部正文。'));
       if(m.result)row.append(make('h4','处理反馈'),window.MindPondOfficeMarkdown.render(m.result));
       row.append(button('打开完整消息',async()=>{const room=state.office.office.id,generation=state.generation;const r=await api('message',{officeId:room,messageId:m.id});if(generation===state.generation&&state.logged)showDetail('消息 · '+(mailStates[r.message.state]??r.message.state),r.message);}));
+      row.append(button('查看相关经验',()=>window.MindPondOfficeCollaboration?.openLearning?.(m.id)));
       row.append(button('查看后续回复',()=>loadMail({threadId:m.id,reset:true})));
       row.append(button('回放这段对话',async()=>{const room=state.office.office.id,generation=state.generation;const meta=await api('replay',{action:'index',officeId:room,threadId:m.id});if(generation!==state.generation||!state.logged)return;setRoomTab('officeCanvas');el('officeReplay').open=true;await replayController.load(room,meta.firstSeq,meta.lastSeq,m.id);}));
       nodes.push(row);
@@ -1002,18 +1010,26 @@
     if(mail?.hasMore)nodes.push(button('加载更早消息',()=>loadMail({more:true})));
     for(let i=0;i<nodes.length;i++)if(box.children[i]!==nodes[i])box.insertBefore(nodes[i],box.children[i]??null);
     while(box.children.length>nodes.length)box.lastElementChild.remove();
-    el('officeMessageStatus').textContent=(mail?.threadId?'正在查看一条消息及其后续回复':'已展示 '+(mail?.messages.length??0)+' 条')+(mail?.query||mail?.status!=='all'||mail?.threadId?' · 筛选结果保留，点“查找”刷新':'')+' · 每次最多保留200条 · 查看不领取或完成消息';
+    el('officeMessageStatus').textContent=(mail?.threadId?'正在查看一条消息及其后续回复':'已展示 '+(mail?.messages.length??0)+' 条')+(mail?.query||mail?.status!=='all'||mail?.threadId?' · 保留筛选并自动同步':'')+' · 每次最多保留200条 · 查看不领取或完成消息';
   }
-  async function loadMail({more=false,threadId,reset=false}={}){
+  async function loadMail({more=false,refresh=false,threadId,reset=false}={}){
     if(!state.office)return;
     const room=state.office.office.id,generation=state.generation,request=++state.mailGeneration;
     const previous=state.mail?.room===room?state.mail:null;
-    const query=reset?'':el('officeMessageQuery').value.trim(),status=reset?'all':el('officeMessageFilter').value;
-    const thread=threadId===undefined?(more?previous?.threadId:null):threadId;
-    const page=await api('messages',{officeId:room,state:status,...(query?{query}:{}),...(thread?{threadId:thread}:{}),...(more&&previous?.nextBeforeSeq?{beforeSeq:previous.nextBeforeSeq}:{})});
+    const query=(more||refresh)&&previous?previous.query:reset?'':el('officeMessageQuery').value.trim(),status=(more||refresh)&&previous?previous.status:reset?'all':el('officeMessageFilter').value;
+    const correspondent=(more||refresh)&&previous?previous.correspondent:reset?'':el('officeMessagePerson')?.value??'',since=(more||refresh)&&previous?previous.since:reset?null:el('officeMessageSince')?.value,until=(more||refresh)&&previous?previous.until:reset?null:el('officeMessageUntil')?.value;
+    const dates={...(since?{since:typeof since==='number'?since:Date.parse(since)}:{}),...(until?{until:typeof until==='number'?until:Date.parse(until)}:{})};
+    if(dates.since&&dates.until&&dates.since>dates.until)throw Error('开始时间不能晚于结束时间');
+    const thread=threadId===undefined?((more||refresh)?previous?.threadId:null):threadId;
+    state.mailLoading=true;
+    try{
+    const page=await api('messages',{officeId:room,state:status,...(refresh&&previous?{knownIds:previous.messages.map(m=>m.id)}:{}),...dates,...(correspondent?{correspondent}:{}),...(query?{query}:{}),...(thread?{threadId:thread}:{}),...(more&&previous?.nextBeforeSeq?{beforeSeq:previous.nextBeforeSeq}:{})});
     if(generation!==state.generation||request!==state.mailGeneration||!state.logged)return;
-    state.mail={room,query,status,threadId:thread,messages:more?[...previous.messages,...page.messages].slice(-200):page.messages,hasMore:page.hasMore,nextBeforeSeq:page.nextBeforeSeq};
-    if(reset){el('officeMessageQuery').value='';el('officeMessageFilter').value='all';}renderMail();
+    let messages=more?[...previous.messages,...page.messages].slice(-200):page.messages;
+    if(refresh&&previous){const updates=new Map(page.knownMessages.map(m=>[m.id,m]));const retained=previous.messages.filter(m=>updates.get(m.id)?.matches).map(m=>({...m,...updates.get(m.id)}));const merged=new Map(retained.map(m=>[m.id,m]));for(const m of page.messages)merged.set(m.id,m);messages=[...merged.values()].sort((a,b)=>b.seq-a.seq).slice(0,200);}
+    state.mail={room,query,status,...dates,correspondent,threadId:thread,messages,hasMore:refresh?(previous?.hasMore||page.hasMore):page.hasMore,nextBeforeSeq:refresh?messages.at(-1)?.seq??page.nextBeforeSeq:page.nextBeforeSeq};
+    if(reset){el('officeMessageQuery').value='';el('officeMessageFilter').value='all';for(const id of ['officeMessagePerson','officeMessageSince','officeMessageUntil'])if(el(id))el(id).value='';}renderMail();
+    }finally{if(request===state.mailGeneration)state.mailLoading=false;}
   }
   el('officeMessageSearch').addEventListener('submit',event=>{event.preventDefault();void run(()=>loadMail());});
   el('officeMessageReset').onclick=()=>run(()=>loadMail({reset:true,threadId:null}));
@@ -1076,8 +1092,9 @@
         })
       );
     const removeOffice=button('永久删除办公室',()=>deleteRoom(o));removeOffice.className='office-danger';
-    controls.append(removeOffice);
-    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, state.data.characters?.roles.map(r => [r.id, r.name, r.state])]);
+    controls.append(button('查看删除影响',()=>window.MindPondOfficeCollaboration?.deleteImpact?.('office',o.id)),removeOffice);
+    const people=el('officeMessagePerson');if(people){const selected=people.value;people.replaceChildren(new Option('全部人物',''),...(state.data.characters?.roles??[]).map(r=>new Option(r.name,r.id)));people.value=selected;}
+    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, data.facilities?.activity?.map(r=>[Boolean(r.hostSeenAt&&Date.now()-r.hostSeenAt<120000),Boolean(r.presenceAt&&Date.now()-r.presenceAt<120000)]), state.data.characters?.roles.map(r => [r.id, r.name, r.state])]);
     if (state.deskSnapshot !== deskSnapshot) {
       state.deskSnapshot = deskSnapshot;
       const focusedSeat = document.activeElement?.closest('[data-seat]')?.dataset.seat;
@@ -1135,6 +1152,9 @@
         )
       );
       const pending=Number(activity?.pending??0);
+      const presence=activity?.presence?JSON.parse(activity.presence):null;
+      if(presence){if(Date.now()-activity.presenceAt<120000)node.dataset.phase=presence.phase;body.append(make('small','最近角色报告（'+new Date(activity.presenceAt).toLocaleTimeString()+'）：'+({working:'处理事情',waiting_reply:'等待对方反馈',needs_user:'需要用户补充信息',learning:'整理经验',resting:'休息',unknown:'状态未确认'})[presence.phase]));}
+      body.append(make('small',activity?.hostSeenAt&&Date.now()-activity.hostSeenAt<120000?'最近有宿主通信证据':'宿主运行状态未知'));
       const station=window.MindPondOfficeScene.props(person);
       if(!disabled&&(task||processing))person.dataset.facing='desk';
       const papers=station.querySelector('.office-paper-stack');
@@ -1226,6 +1246,8 @@
       make('h3', seat.label),
       make('p', `${characterForSeat(seat)?.name??seat.name} · ${roles[seat.role]??seat.role}`)
     );
+    const roleId=characterForSeat(seat)?.id;
+    if(roleId&&window.MindPondOfficeCollaboration?.inspectRole)detail.append(button('查看消息、材料、权限与运行控制',()=>window.MindPondOfficeCollaboration.inspectRole(roleId)));
     const prompt = `使用已配置的 MindPond HTTP MCP。用 role_sync 读取自己的身份，office_directory 查看有权访问的办公室。这里的办公室编号是 ${seat.office_id}。office_receive 取信，office_message 发信或回复，office_material 存取文本，office_container 存取自定义内容。不要读取或传递认证 token。具体如何开展工作由用户和你决定。`;
     detail.append(
       make(
@@ -1235,6 +1257,7 @@
       make('pre', prompt),
       button('下载本工位启动提示词', () => download(prompt, seat.id + '-start.txt'))
     );
+    if(roleId)detail.append(button('删除此角色的影响预览',()=>window.MindPondOfficeCollaboration?.deleteImpact?.('role',roleId)));
     const access = fileCondition(seat);
     if (access)
       detail.append(
@@ -1301,6 +1324,7 @@
     n.replaceChildren(make('h3', title));
     if(message===null){n.append(make('pre',JSON.stringify(data,null,2)));return;}
     n.append(window.MindPondOfficeMarkdown.render(message));
+    if(data.quote?.body){const quote=make('blockquote');quote.append(make('strong','回复原文 · '+(data.quote.senderName??'')),window.MindPondOfficeMarkdown.render(data.quote.body));n.prepend(quote);}
     const raw=make('details');raw.append(make('summary','原始记录'),make('pre',JSON.stringify(data,null,2)));n.append(raw);
   }
   function mergeRecords(previous, incoming) {
@@ -1361,7 +1385,7 @@
       const old = state.office;
       state.office = {
         ...data,
-        facilities: data.facilities?.unchanged ? {...old.facilities,activity:data.facilities.activity} : data.facilities,
+        facilities: data.facilities?.unchanged ? {...old.facilities,activity:data.facilities.activity,counts:data.facilities.counts} : data.facilities,
         items: mergeRecords(old.items, data.items),
         materials: mergeRecords(old.materials, data.materials)
       };
@@ -1370,6 +1394,7 @@
       state.cursor = data.nextCursor;
       state.events = [...state.events, ...data.events].slice(-500);
       renderOffice();
+      if(state.mail?.room===data.office.id&&!state.mailLoading&&old.facilities?.revision!==state.office.facilities?.revision)await loadMail({refresh:true});
       if (isLive) animate(data.events);
     } finally {
       if (generation === state.generation) state.loading = false;
@@ -1378,15 +1403,18 @@
   function startObserver(){
     if(state.eventStream||!window.EventSource)return;
     const stream=new EventSource('./api/office-admin/events');state.eventStream=stream;
-    stream.addEventListener('change',()=>{if(state.logged&&!document.hidden)schedule(150);});
+    const changed=()=>{if(state.logged&&!document.hidden){state.observerDirty=true;if(!state.polling)schedule(150);}};
+    stream.addEventListener('change',changed);stream.addEventListener('ready',changed);
     stream.onerror=()=>{if(state.logged)schedule(2500);};
   }
   function stopObserver(){state.eventStream?.close();state.eventStream=null;}
-  function schedule(delay = state.eventStream?.readyState===1?15000:2500) {
+  function schedule(delay = 2500) {
     clearTimeout(state.poll);
     const epoch = state.authEpoch;
     state.poll = setTimeout(async () => {
       if (epoch !== state.authEpoch || !state.logged) return;
+      state.polling=true;state.observerDirty=false;
+      try {
       if (state.logged && !document.hidden) {
         try {
           const owner = state.data;
@@ -1394,7 +1422,7 @@
           if (epoch !== state.authEpoch || !state.logged) return;
           // A manual refresh may have completed while this poll was in flight.
           // Never replace it with a stale response, or erase profile form edits.
-          if (state.data !== owner) { schedule(); return; }
+          if (state.data !== owner) { state.observerDirty=true;return; }
           const changed = data.characters && !data.characters.unchanged;
           const changedRooms = Array.isArray(data.offices) && JSON.stringify(data.offices)!==JSON.stringify(owner?.offices);
           if (!changed) data.characters = owner?.characters;
@@ -1432,7 +1460,7 @@
           el('officeSync').textContent = '观察连接中断 · 正在重试，保留上次状态';
         }
       }
-      if (epoch === state.authEpoch && state.logged) schedule();
+      }finally{state.polling=false;if (epoch === state.authEpoch && state.logged) schedule(state.observerDirty?150:undefined);}
     }, delay);
   }
   function submit(id, fn) {
@@ -1538,6 +1566,7 @@
       clearTimeout(state.poll);
       state.data = null;
       state.office = null;
+      window.MindPondOfficeCollaboration?.reset?.();
       state.events = [];
       el('officeLogin').hidden = false;
       el('officeSettings').hidden = true;
@@ -1551,7 +1580,9 @@
       notice('已退出管理。');
     });
   window.addEventListener('pagehide', () => {replayController.close();scenePlayer.reset();state.authEpoch++;stopObserver();clearTimeout(state.poll);});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.logged)schedule(150);});
   window.addEventListener('pageshow', event => {if(event.persisted && state.logged){startObserver();schedule(0);}});
+  if(window.MindPondOfficeCollaboration?.mount){const mounted=window.MindPondOfficeCollaboration.mount({getState:()=>state,api,run,showDetail,showMaterial,setRoomTab,notice,confirmAction,download,fitScene});Object.assign(window.MindPondOfficeCollaboration,mounted);}
   syncAppRoute();
   api('state')
     .then(async () => {

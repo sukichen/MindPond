@@ -1,7 +1,7 @@
 /* Office scene: visual effects consume real events; preview never writes business data. */
 (() => {
   'use strict';
-  const labels={message_take:'领取消息',message_finish:'反馈处理结果',inform:'通知',request:'请求答复',reply:'回复',read:'阅读消息',accepted:'整理收件箱',item_claim:'领取任务',item_submit:'提交材料',item_verify:'反馈结果',item_create:'安排任务',item_renew:'续租',wait_pose:'等待消息',rest_pose:'休息',work_pose:'处理事情',celebrate_pose:'庆祝（演示）',message:'发送消息',message_read:'阅读消息',message_archive:'整理收件箱',material_read:'阅读材料',material_published:'放好材料',container:'整理容器',progress:'报告进展',claim:'领取工作',submit:'提交材料',verify:'反馈结果'};
+  const labels={presence:'角色报告位置/状态',handoff:'交接成果',marker:'记录关键决定',experience_saved:'沉淀经验',experience_used:'复用经验',experience_rejected:'核对经验不适用',experience_revised:'修订经验',message_take:'领取消息',message_finish:'反馈处理结果',inform:'通知',request:'请求答复',reply:'回复',read:'阅读消息',accepted:'整理收件箱',item_claim:'领取任务',item_submit:'提交材料',item_verify:'反馈结果',item_create:'安排任务',item_renew:'续租',wait_pose:'等待消息',rest_pose:'休息',work_pose:'处理事情',celebrate_pose:'庆祝（演示）',message:'发送消息',message_read:'阅读消息',message_archive:'整理收件箱',material_read:'阅读材料',material_published:'放好材料',container:'整理容器',progress:'报告进展',claim:'领取工作',submit:'提交材料',verify:'反馈结果'};
   // Original vector character/animation; references inform proportions and timing, not copied artwork.
   const neutral={headTilt:0,headX:0,headY:0,leftArm:0,rightArm:0,bodyTilt:0,bodyY:0,bodyScale:1,propY:0,propTilt:0,propOpacity:0,eyes:1,page:1,expression:'calm'};
   const sequence=(id,label,stages,beats)=>({id,label,stages,keyframes:[{at:0,...neutral},...beats.map(([at,frame])=>({at,...neutral,propOpacity:1,...frame})),{at:1,...neutral}]});
@@ -169,10 +169,10 @@
     async drain(epoch){this.running=true;try{while(this.queue.length&&epoch===this.epoch&&this.enabled()&&!this.replaying)await this.play(this.queue.shift(),epoch);}finally{if(epoch===this.epoch){this.running=false;this.status.textContent='休息动作是场景装饰；工作与消息动作来自实际交互。';}}}
     async play(e,epoch){
       if(!e.demo&&!e.replay&&Date.now()-e.ts>15000)return 'cancelled';
-      const nodes=[...this.root.querySelectorAll('.office-desk')],body=e.body??{};
+      const nodes=[...this.root.querySelectorAll('.office-desk')].filter(n=>!n.hidden),body=e.body??{};
       const from=nodes.find(n=>(e.actorKey&&n.dataset.replayKey===e.actorKey)||n.dataset.seat===e.seat_id||n.dataset.role===(body.sender??e.actor?.roleId));
       if(!from){if(e.replay)return this.clock(e);return 'completed';}
-      const to=nodes.find(n=>n.dataset.seat===body.recipient||n.dataset.role===body.recipient||(e.recipientKey&&n.dataset.replayKey===e.recipientKey)),person=from.querySelector('.office-person');
+      const to=(e.kind==='presence'&&body.area&&body.area!=='desk'?this.root.querySelector('.office-area-'+body.area):null)??nodes.find(n=>n.dataset.seat===body.recipient||n.dataset.role===body.recipient||(e.recipientKey&&n.dataset.replayKey===e.recipientKey)),person=from.querySelector('.office-person');
       if(!person)return e.replay?this.clock(e):'completed';
       if(person.dataset.idle)clearAction(person);this.idleSeats.delete(from);
       const name=from.querySelector('strong')?.textContent??'角色',label=labels[e.kind]??e.kind;
@@ -180,18 +180,18 @@
       const bubble=document.createElement('span');bubble.className='office-action-bubble';bubble.textContent=(e.demo?'演示 · ':'')+label;from.append(bubble);from.classList.add('has-motion','is-live');
       const s=this.scale();
       let frames,duration=3200,travel;
-      if(this.enabled()&&to&&to!==from&&['message','inform','request','reply'].includes(e.kind)){
+      if(this.enabled()&&to&&to!==from&&['message','inform','request','reply','presence'].includes(e.kind)){
         // An occupied chair is intentional contact at rest. Tuck only this chair under its desk
         // before measuring the walking obstacles; every other chair remains solid.
         from.classList.add('is-standing');person.dataset.posture='standing';
         const nav=window.MindPondOfficeNavigation,room=this.root.getBoundingClientRect();
         const box=n=>{const r=n.getBoundingClientRect();return {left:(r.left-room.left)/s,top:(r.top-room.top)/s,right:(r.left+r.width-room.left)/s,bottom:(r.top+r.height-room.top)/s};};
-        const a=box(person),target=box(to.querySelector('.office-person')),origin={x:(a.left+a.right)/2,y:(a.top+a.bottom)/2},end={x:(target.left+target.right)/2,y:(target.top+target.bottom)/2};
+        const a=box(person),target=box(to.querySelector('.office-person')??to),origin={x:(a.left+a.right)/2,y:(a.top+a.bottom)/2},end={x:(target.left+target.right)/2,y:(target.top+target.bottom)/2};
         const halfWidth=(a.right-a.left)/2,halfHeight=(a.bottom-a.top)/2;
-        const obstacles=[...this.root.querySelectorAll('.office-table,.office-chair,.office-monitor,.office-task-light,.office-room-door,.office-room-lounge'),...nodes.filter(n=>n!==from).map(n=>n.querySelector('.office-person'))].map(box);
+        const obstacles=[...this.root.querySelectorAll('.office-table,.office-chair,.office-monitor,.office-task-light,.office-room-door,.office-room-lounge,.office-area'),...nodes.filter(n=>n!==from).map(n=>n.querySelector('.office-person'))].map(box);
         const options={bounds:{left:12,top:28,right:room.width/s-12,bottom:room.height/s-12},obstacles,halfWidth,halfHeight,clearance:12};
         const dx=halfWidth+(target.right-target.left)/2+26,dy=halfHeight+(target.bottom-target.top)/2+26;
-        const chair=box(to.querySelector('.office-chair')),front=Math.max(target.bottom,chair.bottom)+halfHeight+26;
+        const chair=box(to.querySelector('.office-chair')??to),front=Math.max(target.bottom,chair.bottom)+halfHeight+26;
         const goals=[{x:end.x-dx,y:end.y},{x:end.x+dx,y:end.y},{x:end.x,y:end.y-dy},{x:end.x,y:front}];
         const length=path=>path.reduce((n,p,i)=>n+(i?Math.hypot(p.x-path[i-1].x,p.y-path[i-1].y):0),0);
         let route;
@@ -208,7 +208,7 @@
       }else frames=[{transform:'none'},{transform:'none'}];
       duration=e.durationMs??duration;
       if(!this.enabled()){frames=[{},{}];from.classList.remove('is-walking');this.wires.replaceChildren();}
-      const state=stateFor(e.kind),choices=e.demo&&Object.hasOwn(actions,e.demoClip)?[actions[e.demoClip]]:catalog[state],key=(e.actorKey??from.dataset.role??from.dataset.seat)+':'+state;
+      const state=e.kind==='presence'?(body.area==='library'||body.phase==='learning'?'reading':body.area==='lounge'?'resting':'communicating'):stateFor(e.kind),choices=e.demo&&Object.hasOwn(actions,e.demoClip)?[actions[e.demoClip]]:catalog[state],key=(e.actorKey??from.dataset.role??from.dataset.seat)+':'+state;
       const seed=e.replay?(e.seq??0)%choices.length:this.variants.get(key)??0;this.variants.set(key,(seed+1)%choices.length);
       const animation=person.animate(frames,{duration,easing:'linear'});animation.updatePlaybackRate(e.rate??1);this.animations.add(animation);
       let last='';const tick=()=>{

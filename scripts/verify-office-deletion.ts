@@ -17,6 +17,7 @@ const embedding=getEmbeddingService(),originalEmbedding=embedding.generateEmbedd
 embedding.generateEmbedding=async()=>[1,...Array(383).fill(0)];
 const admin:TrustedCallContext={v:1,principal:'operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
 let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
+let management:ReturnType<typeof officeWorkbench>|undefined;
 try {
   await graph.init();const db=(graph as any).db;
   await graph.offices.configureAgent({id:'connector',principal:'owner',name:'我的 Codex',host:'codex',state:'active',expectedRevision:0},admin);
@@ -57,7 +58,7 @@ try {
   app.get('/collaboration/guide',(_req,res)=>res.sendFile(path.join(web,'office-guide.html')));
   app.get('/assets/marked.js',(_req,res)=>res.sendFile(fileURLToPath(new URL('./marked.umd.js',import.meta.resolve('marked')))));
   app.use('/assets',express.static(web));
-  app.use('/api/office-admin',officeWorkbench(graph,{apiKey:'',operatorKey:process.argv.includes('--preview')?'':'fixture-operator',contextSecret:process.argv.includes('--preview')?'':'fixture-secret',...(process.argv.includes('--preview')?{configFile:path.join(dir,'accounts.json')}:{})}));
+  management=officeWorkbench(graph,{apiKey:'',operatorKey:process.argv.includes('--preview')?'':'fixture-operator',contextSecret:process.argv.includes('--preview')?'':'fixture-secret',...(process.argv.includes('--preview')?{configFile:path.join(dir,'accounts.json')}:{})});app.use('/api/office-admin',management);
   const previewPort=process.argv.includes('--preview')?Number(process.argv.find(a=>a.startsWith('--preview-port='))?.split('=')[1]??0):0;
   assert(Number.isSafeInteger(previewPort)&&previewPort>=0&&previewPort<=65535);
   server=app.listen(previewPort,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
@@ -75,7 +76,17 @@ try {
     const completed=await graph.building.message({action:'send',officeId:'keep-room',recipient:b.roleId,body:'请整理交通方案需要进一步确认的事项。',key:'cycle-completed'},a);
     await graph.building.message({action:'take',messageId:completed.messageId,key:'cycle-completed-take'},b);
     await graph.building.message({action:'finish',messageId:completed.messageId,result:'已整理待确认事项：出发日期、车次和住宿价格。没有把未核验价格当成事实。',key:'cycle-completed-finish'},b);
+    const demoActor={...b,domains:[{kind:'personal' as const,id:'default'}]};
+    const lesson=await graph.saveMemory('隔离旅行演示：先固定出发日期，再核对交通与住宿报价；没有核验的价格必须明确标成待确认。该经验来自虚构演示，不能当成真实行程资料。',{domain:{kind:'personal',id:'default'},memberships:[{spaceId:'demo-travel',memoryType:'work'}],sourceRefs:[{uri:'fixture:travel-review',context:'Fictional demonstration',revision:'demo-v1'}]});
+    await graph.officeCollaboration.publish({kind:'learning',officeId:'keep-room',title:'先确认日期，再核查价格',memoryId:lesson.id,messageId:processing.messageId,outcome:'used',evidence:'对照讨论，发现日期尚未确定，因此保留交通与住宿报价为待确认。',key:'guide-learning'},demoActor);
+    await graph.officeCollaboration.publish({kind:'handoff',officeId:'keep-room',title:'两天一夜路线交接',summary:'已整理景点顺序与交通核验入口，出发日期和报价仍需确认。',materialIds:[kept.material.materialId],checks:['已检查景点动线，减少折返','报价未核验，明确保留不确定性'],unresolved:['出发日期','最终车次与住宿价格'],nextSteps:['用户确认日期后核对官方交通与住宿信息'],key:'guide-handoff'},b);
+    await graph.officeCollaboration.publish({kind:'marker',officeId:'keep-room',title:'先确认日期，再确定交通',summary:'演示决定：不把未核验价格写成事实。',key:'guide-marker'},b);
+    await graph.officeCollaboration.publish({kind:'presence',officeId:'keep-room',title:'整理路线经验',phase:'learning',area:'library',key:'guide-presence'},b);
+    const probe=await graph.officeCollaboration.host({action:'probe',waitMs:100,client:'虚构演示宿主',toolTimeoutMs:360000},b);await graph.officeCollaboration.host({action:'confirm',probeId:probe.probeId,clientRoundTripMs:probe.measuredWaitMs},b);
+    let demoCount=0;
     app.post('/fixture/message-cycle',async(req,res,next)=>{try{
+      if(req.body.action==='send'){res.json(await graph.building.message({action:'send',officeId:'keep-room',recipient:b.roleId,body:'隔离演示新增消息：验证数量和筛选自动同步。',key:'live-count-'+(++demoCount)},a));return;}
+      if(req.body.action==='take'){res.json(await graph.building.message({action:'take',messageId:req.body.messageId,key:'live-count-take-'+req.body.messageId},b));return;}
       if(req.body.action==='finish')res.json(await graph.building.message({action:'finish',messageId:processing.messageId,result:'路线核对完成，已保留日期与价格的不确定性。',key:'cycle-finish'},b));
       else res.status(400).json({error:'Disposable fixture accepts finish only'});
     }catch(error){next(error);}});
@@ -120,7 +131,7 @@ try {
       if(sql==='DELETE FROM offices WHERE id=?')throw Error('Injected deletion failure');
       return run(sql,...args);
     };
-    try {assert.equal((await request('office/delete',roomRequest)).status,400);}finally{db.run=run;}
+    try {assert.equal((await request('office/delete',roomRequest)).status,500);}finally{db.run=run;}
     assert.deepEqual(await counts(),before,'a mid-deletion failure rolls back every dependency');
     console.log('PASS deletion is atomic even after dependent messages, materials and bindings were removed');
 
@@ -196,12 +207,13 @@ try {
     assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);
     const guide=await fetch(url+'/collaboration/guide');assert.equal(guide.status,200);
     const text=await guide.text();for(const marker of ['五步','复制给小栗','复制给小麦','永久删除角色','永久删除办公室','常见问题'])assert(text.includes(marker));
-    assert.equal((text.match(/data-zoom /g)??[]).length,14,'screenshot walkthrough includes message lifecycle and connection deletion');
+    assert.equal((text.match(/data-zoom /g)??[]).length,18,'screenshot walkthrough includes evidence, controls, replay filters and live counts');
     assert(text.includes('shotDialog'));
-    for(const asset of ['office-guide.css','office-guide.js','guide/01-login.jpg','guide/09-office-delete.jpg','guide/11-replay.jpg','guide/12-message-cycle.jpg','guide/13-connection-delete.jpg'])assert.equal((await fetch(url+'/assets/'+asset)).status,200);
+    for(const asset of ['office-guide.css','office-guide.js','guide/01-login.jpg','guide/09-office-delete.jpg','guide/11-replay.jpg','guide/12-message-cycle.jpg','guide/13-connection-delete.jpg','guide/14-experience.jpg','guide/15-controls.jpg','guide/16-replay-filters.jpg','guide/17-live-counts.jpg'])assert.equal((await fetch(url+'/assets/'+asset)).status,200);
     console.log('PASS archived offices can be deleted; independent beginner guide and assets are publicly readable');
   }
 } finally {
+  management?.closeObservers();
   if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));
   await graph.close();embedding.generateEmbedding=originalEmbedding;await fs.rm(dir,{recursive:true,force:true});
 }

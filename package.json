@@ -12,7 +12,8 @@
     "mindpond-maintenance": "./dist/maintenance.js",
     "mindpond-models": "./dist/models.js",
     "mindpond-mcp-http": "./dist/mcp-http.js",
-    "mindpond-mcp-remote": "./dist/mcp-remote.js"
+    "mindpond-mcp-remote": "./dist/mcp-remote.js",
+    "mindpond-office-doctor": "./dist/office-doctor.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -77,14 +78,18 @@
     "verify:network-mcp": "tsx scripts/verify-network-mcp.ts",
     "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts",
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
-    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection",
+    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection && npm run verify:office-collaboration",
     "verify:office-deletion": "tsx scripts/verify-office-deletion.ts",
     "verify:roles": "tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts",
     "verify:office-building": "tsx scripts/verify-office-building.ts",
     "verify:office-replay": "tsx scripts/verify-office-replay.ts && node scripts/verify-office-replay-ui.mjs",
     "verify:office-markdown": "node scripts/verify-office-markdown.mjs",
     "verify:office-message-cycle": "tsx scripts/verify-office-message-cycle.ts",
-    "verify:office-connection": "tsx scripts/verify-office-connection.ts"
+    "verify:office-connection": "tsx scripts/verify-office-connection.ts",
+    "eval:office-collaboration": "tsx scripts/eval-office-collaboration.ts",
+    "verify:office-collaboration": "tsx scripts/verify-office-collaboration.ts && tsx scripts/verify-office-evaluation.ts",
+    "eval:office-judge": "tsx scripts/judge-office-collaboration.ts",
+    "verify:office-native-host": "tsx scripts/verify-office-native-host.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",
@@ -174,7 +179,12 @@
     "web/guide/11-replay.jpg",
     "web/office-markdown.js",
     "web/guide/12-message-cycle.jpg",
-    "web/guide/13-connection-delete.jpg"
+    "web/guide/13-connection-delete.jpg",
+    "web/office-collaboration.js",
+    "web/guide/14-experience.jpg",
+    "web/guide/15-controls.jpg",
+    "web/guide/16-replay-filters.jpg",
+    "web/guide/17-live-counts.jpg"
   ],
   "license": "MIT",
   "repository": {

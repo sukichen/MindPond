@@ -99,4 +99,41 @@ npm run eval:organization-quality -- \
 
 固定至少三个独立缺陷案例及三个无缺陷案例，交替运行条件顺序，每个条件重复多次。预先冻结已知缺陷、可接受证据和评审标准，标签不进入执行提示。人工独立核对输出；测得的提升只限于实际测试的模型、宿主版本、预算和数据集。角色的消息、材料编号、正文 get 返回的 sourceRef、memory_brief 的 recallId 与实际使用报告可组成证据链。报告和运行记录写在仓库外的私有目录，不能带本地数据库、会话内容或凭据发布。
 
-目前新增的 verify:office-message-cycle / verify:office-connection 及现有真实 HTTP、浏览器回归仅验收工程契约；尚无满足上述条件的真实多模型 A/B 结果，不给出收益百分比，也不声称宿主可以被服务器自动唤醒。MCP Tasks 等宿主能力需协商验证后接入，不能用未部署的扩展保证后台恢复。
+verify:office-message-cycle / verify:office-connection 及真实 HTTP、浏览器回归验收工程契约。MCP Tasks 已在固定认证会话中接入并验证 SDK 协商，其他宿主仍须实际协商；任务句柄不等于唤醒已停止的模型。真实模型部分结果与尚未完成的范围见下文，不给出未经证实的收益百分比。
+
+
+### 可执行的办公室对照驱动器
+
+`eval:office-collaboration` 使用真实隔离 SQLite + MCP，宿主模块提供 `chat(messages,tools,signal)`，回报实际 modelId 与 inputTokens/outputTokens。核心不读取模型密钥。每轮包含3个缺陷、3个正确代码案例，以及首次接入、经验复用、收件后重启、并发冲突、误导消息5个场景。三组 none / recall / recall_save 分别不给记忆工具、只检索、检索并保存；新会话使用前一真实模型在虚构环境中实际保存的经验。每轮交替条件顺序；生产者没有成功保存则比较无效。只读代码与环境检查器是虚构夹具，不能声称执行了真实项目测试。
+
+```sh
+npm run eval:office-collaboration -- --adapter /private/host-adapter.mjs \
+  --output /private/new-office-run.json --repetitions 2
+npm run eval:office-judge -- --report /private/new-office-run.json \
+  --template --output /private/new-judgment-template.json
+```
+
+适配器接口见 `src/eval/office-collaboration.ts` 的 OfficeEvalAdapter。逐次模型调用、工具请求/回执、消息和容器结果、耗时与用量写入私有报告，旁边的 `.runs.jsonl` 每完成一例同步保存，推理服务失败后停止后续消耗。评审者核对原始证据后填写模板中的每例结论和 notes，再运行：
+
+```sh
+npm run eval:office-judge -- --report /private/new-office-run.json \
+  --judgments /private/completed-judgments.json --output /private/new-office-grade.json
+```
+
+报告/每例的 SHA-256 防止混用或修改评审对象；缺项、重复、篡改会拒绝。汇总真阳性/误报/漏报/真阴性、完成质量、源码读取、时间和用量；不以合法工具调用或多存记忆自动判好。67例（含生产者）的小型夹具只支持描述性比较，不支持统计显著性或生产收益结论。原生 CLI 提示词开销应包含在实测用量中，生产者成本单列。无需模型的默认 check 不执行付费推理，真实宿主报告不进入开源仓库。
+
+### 2026-10-19 的实际运行与限制
+
+使用已安装 Codex CLI 的 `gpt-6.1-sol` 别名、low 推理设置执行真实推理；后端精确快照未公开。独立原生 MCP 长调用实测等待 300018ms，并收到客户端确认。它证明该测试宿主允许五分钟调用，不代表所有聊天的配置均正确，也不证明后台唤醒。
+
+最新对照运行保存了25条运行记录：24条完成推理，第25条遇到原生 CLI 用量上限而停止；完整67例未完成。源码哈希、逐次用量、工具回执与独立逐例评审保存在本机私有目录，没有发布到仓库。已完成的18次代码 review（3个缺陷、3个正确案例，各跑三组一次）结果如下：
+
+| 条件 | 真阳性 / 真阴性 | 误报 / 漏报 | 源码读取次数 | 原生输入 / 输出 token |
+| -- | -- | -- | -- | -- |
+| 不使用记忆 | 3 / 3 | 0 / 0 | 24 | 543501 / 2349 |
+| 只检索记忆 | 3 / 3 | 0 / 0 | 24 | 619835 / 2799 |
+| 检索并沉淀 | 3 / 3 | 0 / 0 | 24 | 770590 / 4058 |
+
+这些简单案例没有显示缺陷发现或源码读取的改善；输入 token 包含原生 CLI 包装和每轮传入的工具契约，不能单独归因于 MindPond 的生产开销。经验复用场景中，已完成的只读记忆组读取2份当前环境来源，无记忆组读取3份；第三组未完成，不能据此宣称整体节省。另一轮不完整运行不与本轮拼接成完整对照。
+
+首次接入评测还暴露夹具问题：管理员已批准角色，却仅把旧的 pending 工具回执交给模型，遗漏了外部审批通知。两次接入因此停在待批准，不能当作记忆效果差异。当前夹具在实际审批提交后明确投递并记录该通知；默认工程回归已验证三组都能接到通知、领取并完成消息，但此项使用脚本推理，只证明夹具契约。修正后的真实模型接入、其余协作场景和第二轮对照仍需额度恢复后重新验证。当前独立评审保持 `comparisonValid=false`、`releasePassed=false`，不把工程回归或部分结果写成效果验收通过。

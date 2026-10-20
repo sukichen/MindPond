@@ -61,7 +61,14 @@ try {
     assert(a.getInstructions()?.includes(COLLABORATION_LEARNING),'new MCP agents receive concise learning guidance at initialization');
     assert(Buffer.byteLength(COLLABORATION_LEARNING)<512,'the collaboration reminder stays bounded');
     const raw = (client: Client, name: string, input: any = {}) => client.callTool({ name, arguments: name==='office_receive'?{action:'list',...input}:input },undefined,{timeout:name==='office_wait'?360000:60000});
-    const call = async (client: Client, name: string, input: any = {}) => { const result = await raw(client, name, input); assert(!result.isError, JSON.stringify(result)); return JSON.parse((result.content[0] as any).text); };
+    const call = async (client: Client, name: string, input: any = {}) => {
+      let result=await raw(client,name,input),payload=JSON.parse((result.content[0] as any).text);
+      if(payload.paged){let full='',offset=0;
+        for(let n=0;n<1000;n++){const page=await raw(client,'office_context',{action:'page',id:payload.id,offset,roleContext:input.roleContext});assert(!page.isError);const p=JSON.parse((page.content[0] as any).text);full+=p.text;if(p.nextOffset===null)break;assert(p.nextOffset>offset);offset=p.nextOffset;}
+        result=JSON.parse(full);payload=JSON.parse((result.content[0] as any).text);
+      }
+      assert(!result.isError,JSON.stringify(result));return payload;
+    };
     const tools = (await a.listTools()).tools.map(t => t.name);
     for (const tool of ['office_receive', 'office_message', 'office_wait', 'office_container'])
         assert(tools.includes(tool));

@@ -301,3 +301,17 @@ assert(mailElements.officeRoomMessages.children[1].open,'lifecycle updates prese
 mailState.mail.query='Review';const filtered=mailElements.officeRoomMessages.children[1];
 mailContext.renderFacilities({revision:5,messages:[],containers:[]});assert.equal(mailElements.officeRoomMessages.children[1],filtered,'facility refresh cannot empty an active filtered view');
 console.log('PASS message viewing: expanded body/DOM and reading state survive facility refreshes, incoming messages, lifecycle changes and active filters');
+
+mailElements.officeMessageCounts=new MailNode('p');
+mailContext.renderFacilities({revision:5,messages:[],containers:[],counts:{total:42,pending:7,processing:2,archived:33}});
+assert.match(mailElements.officeMessageCounts.textContent,/共 42 条.*待处理 7.*处理中 2.*已处理 33/,'exact counts update even when the document revision and active filter are unchanged');
+const refreshState={logged:true,generation:1,mailGeneration:0,office:{office:{id:'room'}},mail:{room:'room',query:'evidence',status:'pending',correspondent:'role',threadId:null,messages:[{id:'old',seq:1,state:'pending'},{id:'finished',seq:2,state:'pending'}],hasMore:true,nextBeforeSeq:1}};
+let refreshRequest,refreshRender=0;
+const refreshContext=vm.createContext({state:refreshState,Date,Map,el:()=>{throw Error('Background refresh must use applied filters, not unsaved form inputs');},renderMail(){refreshRender++;},api:async(route,body)=>{refreshRequest={route,body};return {messages:[{id:'new',seq:4,state:'pending'}],knownMessages:[{id:'old',state:'pending',matches:1},{id:'finished',state:'archived',matches:0}],hasMore:false,nextBeforeSeq:4};}});
+vm.runInContext(source.slice(source.indexOf('  async function loadMail('),source.indexOf("  el('officeMessageSearch')")),refreshContext);
+await refreshContext.loadMail({refresh:true});
+assert.equal(refreshRequest.body.query,'evidence');assert.equal(refreshRequest.body.correspondent,'role');assert.equal(refreshRequest.body.state,'pending');
+assert.deepEqual([...refreshRequest.body.knownIds],['old','finished']);
+assert.deepEqual([...refreshState.mail.messages].map(m=>m.id),['new','old'],'incoming matches join the current window, older loaded messages remain, and completed messages leave the pending filter');
+assert(refreshState.mail.hasMore);assert.equal(refreshRender,1);assert.equal(refreshState.mailLoading,false);
+console.log('PASS live counts and filtered sync: totals are independent of loaded pages, applied filters survive edits, new arrivals appear and older reading context remains');

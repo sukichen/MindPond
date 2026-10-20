@@ -5,6 +5,7 @@
  * credentials, stack traces or internal paths are exposed through them. */
 
 export type MindPondErrorCode =
+  | 'not_found'                // absent or not visible in the caller's scoped collection
   | 'invalid_input'            // correctable input problem; fix the named field and retry
   | 'idempotency_conflict'     // same scoped key, different normalized payload
   | 'source_revision_conflict' // same source locator, different revision/fingerprint
@@ -73,6 +74,7 @@ const LEGACY_PATTERNS: Array<{ match: RegExp; shape: Omit<ErrorShape, 'message'>
 export function toStructuredError(err: unknown): ErrorShape {
   if (err instanceof MindPondError) return err.toJSON();
   const message = err instanceof Error ? err.message : String(err);
+  if(err instanceof Error&&err.name==='ZodError')return {code:'invalid_input',message,retryable:false,nextAction:'Use the tool input schema to correct the named fields.'};
   for (const { match, shape } of LEGACY_PATTERNS) {
     if (match.test(message)) return { ...shape, message };
   }
@@ -82,6 +84,7 @@ export function toStructuredError(err: unknown): ErrorShape {
 export function httpStatus(code: MindPondErrorCode): number {
   switch (code) {
     case 'invalid_input': return 400;
+    case 'not_found': return 404;
     case 'scope_denied': return 403;
     case 'idempotency_conflict':
     case 'source_revision_conflict':

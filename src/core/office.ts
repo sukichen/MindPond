@@ -31,7 +31,7 @@ export const OFFICE_GUIDES: Record<string, string> = {
 };
 function fail(
   message: string,
-  code: 'scope_denied' | 'invalid_input' | 'stale_version' | 'idempotency_conflict' = 'scope_denied'
+  code: 'not_found' | 'scope_denied' | 'invalid_input' | 'stale_version' | 'idempotency_conflict'
 ): never {
   throw new MindPondError(code, message, {
     nextAction:
@@ -139,11 +139,11 @@ export class OfficeStore {
   }
   private actor(a?: Actor) {
     if (!a?.principal || a.expiresAt <= this.clock())
-      fail('A current trusted identity is required');
+      fail('A current trusted identity is required', 'scope_denied');
     return a!;
   }
   private admin(a?: Actor) {
-    if (!this.actor(a).operator) fail('Only a user operator may configure agents and assignments');
+    if (!this.actor(a).operator) fail('Only a user operator may configure agents and assignments', 'scope_denied');
     return a!;
   }
   async agentAuthority(a: Actor) {
@@ -420,7 +420,7 @@ export class OfficeStore {
         'SELECT s.*,o.title,o.state office_state FROM office_seats s JOIN offices o ON o.id=s.office_id WHERE s.enabled=1'
       );
     if (!a.agentId || !(await this.agentAuthority(a)))
-      fail('Register and activate an independent HTTP agent before using office tools');
+      fail('Register and activate an independent HTTP agent before using office tools', 'scope_denied');
     const rows = await this.db.all<Row[]>(
       'SELECT s.*,o.title,o.state office_state,o.deadline FROM office_seats s JOIN offices o ON o.id=s.office_id WHERE s.agent_id=? AND s.enabled=1',
       [a.agentId]
@@ -504,14 +504,14 @@ export class OfficeStore {
   async open(i: Row, a?: Actor) {
     const actor = this.actor(a);
     if (!actor.agentId || actor.transport !== 'http-mcp')
-      fail('Work sessions require an authenticated HTTP MCP agent, not browser impersonation');
+      fail('Work sessions require an authenticated HTTP MCP agent, not browser impersonation', 'scope_denied');
     return this.write(async () => {
       const seat = (await this.seats(actor)).find((s) => s.id === i.assignmentId);
-      if (!seat || seat.office_state !== 'active') fail('Assignment is unavailable');
+      if (!seat || seat.office_state !== 'active') fail('Assignment is unavailable', 'scope_denied');
       let id = i.workSessionId;
       if (id) {
         const old = await this.binding({ workSessionId: id }, actor);
-        if (old.assignmentId !== i.assignmentId) fail('Session belongs to a different assignment');
+        if (old.assignmentId !== i.assignmentId) fail('Session belongs to a different assignment', 'scope_denied');
       } else {
         const existing = await this.db.get<Row>(
           "SELECT id FROM office_sessions WHERE seat_id=? AND binding_revision=? AND state='active'",
@@ -582,7 +582,7 @@ export class OfficeStore {
     if (!actor.agentId || actor.transport !== 'http-mcp')
       fail(
         'Agent operations require authenticated HTTP MCP; browser cannot acknowledge or verify as an agent'
-      );
+      , 'scope_denied');
     if (!i.workSessionId)
       fail('context_required: explicitly supply this chat workSessionId', 'invalid_input');
     const row = await this.db.get<Row>(
@@ -595,19 +595,19 @@ export class OfficeStore {
       !row.enabled ||
       row.binding_revision !== row.seat_revision
     )
-      fail('Work context expired or was revoked');
+      fail('Work context expired or was revoked', 'scope_denied');
     if (
       !actor.operator &&
       (!(await this.agentAuthority(actor)) ||
         row.agent_id !== actor.agentId ||
         (actor.assignmentIds && !actor.assignmentIds.includes(row.seat_id)))
     )
-      fail('This credential cannot use that work context');
+      fail('This credential cannot use that work context', 'scope_denied');
     if (!(await this.seats(actor)).some((s) => s.id === row.seat_id))
-      fail('Project membership was revoked');
+      fail('Project membership was revoked', 'scope_denied');
     const mapped = await this.db.get<Row>('SELECT role_id FROM role_seats WHERE seat_id=?', [row.seat_id]);
-    if (mapped && mapped.role_id !== actor.roleId) fail('This office context belongs to a different approved character');
-    if (actor.roleId && (!mapped || mapped.role_id !== actor.roleId)) fail('Character is not assigned to this office context');
+    if (mapped && mapped.role_id !== actor.roleId) fail('This office context belongs to a different approved character', 'scope_denied');
+    if (actor.roleId && (!mapped || mapped.role_id !== actor.roleId)) fail('Character is not assigned to this office context', 'scope_denied');
     return {
       ...row,
       workSessionId: row.id,
@@ -623,9 +623,9 @@ export class OfficeStore {
   }
   private async office(id: string, a: Actor) {
     const row = await this.db.get<Row>('SELECT * FROM offices WHERE id=?', [id]);
-    if (!row) fail('Office unavailable');
+    if (!row) fail('Office not found','not_found');
     if (!a.operator && !(await this.seats(a)).some((s) => s.office_id === id))
-      fail('Office unavailable');
+      fail('Office unavailable', 'scope_denied');
     return row!;
   }
   private async active(b: Row, a: Actor) {
@@ -667,7 +667,7 @@ export class OfficeStore {
         'SELECT r.* FROM office_rounds r JOIN office_items t ON t.id=r.item_id WHERE r.id=? AND t.office_id=?',
         [i.roundId, o.id]
       );
-      if (!round) fail('Round unavailable');
+      if (!round) fail('Round unavailable','not_found');
       const text = JSON.stringify({
           ...round,
           result: round.result ? JSON.parse(round.result) : null
@@ -690,7 +690,7 @@ export class OfficeStore {
         'SELECT id,title,acceptance,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to FROM office_items WHERE office_id=? AND id=?',
         [o.id, i.itemId]
       );
-      if (!item) fail('Work item unavailable');
+      if (!item) fail('Work item unavailable','not_found');
       return { officeId: o.id, item };
     }
     if (i.eventSeq) {
@@ -698,7 +698,7 @@ export class OfficeStore {
         'SELECT * FROM office_events WHERE office_id=? AND seq=?',
         [o.id, i.eventSeq]
       );
-      if (!event) fail('Event unavailable');
+      if (!event) fail('Event unavailable','not_found');
       const text = JSON.stringify({
           ...event,
           actor: JSON.parse(event.actor),
@@ -870,7 +870,7 @@ export class OfficeStore {
             'For detailAvailable read work_office_get eventSeq=message.seq through all offset chunks before acknowledging. Follow nextCursor. Inbox alone does not ack.'
         };
       }
-      if (b.role === 'observer') fail('Observers cannot send or acknowledge as a worker');
+      if (b.role === 'observer') fail('Observers cannot send or acknowledge as a worker', 'scope_denied');
       const prior = await this.replay(b, actor, 'exchange', i);
       if (prior) return prior;
       let result: Row;
@@ -879,7 +879,7 @@ export class OfficeStore {
           'SELECT * FROM office_messages WHERE id=? AND recipient=? AND office_id=?',
           [i.messageId, b.seat_id, o.id]
         );
-        if (!m) fail('Message was not delivered to this seat');
+        if (!m) fail('Message was not delivered to this seat','not_found');
         await this.db.run(
           "INSERT INTO office_acks VALUES(?,?,?) ON CONFLICT(message_id,seat_id) DO UPDATE SET kind=CASE WHEN kind='accepted' THEN kind ELSE excluded.kind END",
           [i.messageId, b.seat_id, i.kind]
@@ -898,14 +898,14 @@ export class OfficeStore {
           'SELECT * FROM office_seats WHERE id=? AND office_id=? AND enabled=1',
           [i.recipient, o.id]
         );
-        if (!target) fail('Target seat is unavailable');
+        if (!target) fail('Target seat is unavailable','not_found');
         if (i.kind === 'reply') {
           const q = await this.db.get<Row>(
             "SELECT * FROM office_messages WHERE id=? AND office_id=? AND kind='request'",
             [i.requestId, o.id]
           );
           if (!q || q.recipient !== b.seat_id || q.sender !== i.recipient)
-            fail('Reply must match the designated sender/recipient request');
+            fail('Reply must match the designated sender/recipient request','invalid_input');
           if (
             await this.db.get('SELECT 1 FROM office_messages WHERE request_id=? AND final=1', [
               i.requestId
@@ -961,7 +961,7 @@ export class OfficeStore {
           "SELECT * FROM office_materials WHERE id=? AND office_id=? AND state='published'",
           [i.materialId, b.office_id]
         );
-        if (!m) fail('Finalized material unavailable');
+        if (!m) fail('Finalized material unavailable','not_found');
         if ((i.number ?? 0) >= m.chunks)
           fail('Chunk number is outside the manifest', 'invalid_input');
         const chunk = await this.db.get(
@@ -983,7 +983,7 @@ export class OfficeStore {
         };
       }
       await this.active(b, actor);
-      if (b.role === 'observer') fail('Observer cannot publish material');
+      if (b.role === 'observer') fail('Observer cannot publish material', 'scope_denied');
       const old = await this.replay(b, actor, 'material', i);
       if (old) return old;
       let result: Row;
@@ -1042,7 +1042,7 @@ export class OfficeStore {
           'SELECT * FROM office_materials WHERE id=? AND office_id=? AND seat_id=?',
           [i.materialId, b.office_id, b.seat_id]
         );
-        if (!m || m.state !== 'draft') fail('Only the author can change a draft material');
+        if (!m || m.state !== 'draft') fail('Only the author can change a draft material', 'scope_denied');
         if (i.action === 'chunk') {
           if (i.number >= m.chunks || Buffer.byteLength(i.content) > 16000)
             fail('Chunk outside manifest limit', 'invalid_input');
@@ -1164,7 +1164,7 @@ export class OfficeStore {
     return this.write(async () => {
       const b = await this.binding(i, actor),
         o = await this.active(b, actor);
-      if (b.role === 'observer') fail('Observers cannot mutate work');
+      if (b.role === 'observer') fail('Observers cannot mutate work', 'scope_denied');
       const old = await this.replay(b, actor, 'item', i);
       if (old) return old;
       let id = i.itemId,
@@ -1203,7 +1203,7 @@ export class OfficeStore {
           id,
           o.id
         ]);
-        if (!t) fail('Work item unavailable');
+        if (!t) fail('Work item unavailable','not_found');
         if (t!.revision !== i.expectedRevision) fail('Work item revision changed', 'stale_version');
         if (['completed', 'cancelled'].includes(t!.status))
           fail('Work item is terminal', 'invalid_input');
@@ -1215,7 +1215,7 @@ export class OfficeStore {
             t!.status === 'submitted' ||
             t!.lease_until > this.clock()
           )
-            fail('Work is not claimable by this seat');
+            fail('Work is not claimable by this seat', 'scope_denied');
           const lease = randomUUID();
           await this.db.run(
             "UPDATE office_items SET status='claimed',revision=revision+1,epoch=epoch+1,transfer_to=NULL,transfer_epoch=NULL,lease_hash=?,lease_until=?,session_id=? WHERE id=?",
@@ -1230,7 +1230,7 @@ export class OfficeStore {
             t!.lease_until <= this.clock() ||
             digest(i.leaseToken ?? '') !== t!.lease_hash
           )
-            fail('Current owned lease required');
+            fail('Current owned lease required', 'scope_denied');
           if (i.action === 'renew') {
             await this.db.run('UPDATE office_items SET lease_until=? WHERE id=?', [
               this.clock() + 120000,
@@ -1274,7 +1274,7 @@ export class OfficeStore {
             t!.round_id !== i.roundId ||
             t!.code_version !== i.codeVersion
           )
-            fail('Only the designated reviewer may verify the exact pending round');
+            fail('Only the designated reviewer may verify the exact pending round', 'scope_denied');
           await this.db.run('UPDATE office_rounds SET state=?,result=? WHERE id=?', [
             i.verdict,
             JSON.stringify({ summary: i.summary, evidence: i.evidence }),
@@ -1286,7 +1286,7 @@ export class OfficeStore {
           ]);
         } else if (i.action === 'transfer') {
           if (!isOwner || t!.status === 'submitted')
-            fail('Only the current owner may transfer unsubmitted work');
+            fail('Only the current owner may transfer unsubmitted work', 'scope_denied');
           if (
             i.target === t!.reviewer ||
             !(await this.db.get(
@@ -1294,14 +1294,14 @@ export class OfficeStore {
               [i.target, o.id]
             ))
           )
-            fail('Choose an enabled worker distinct from reviewer');
+            fail('Choose an enabled worker distinct from reviewer', 'scope_denied');
           await this.db.run(
             'UPDATE office_items SET transfer_to=?,transfer_epoch=epoch,revision=revision+1 WHERE id=?',
             [i.target, id]
           );
         } else if (i.action === 'transfer_accept' || i.action === 'transfer_reject') {
           if (t!.status === 'submitted' || t!.transfer_to !== b.seat_id || t!.transfer_epoch !== t!.epoch)
-            fail('Transfer is unavailable or superseded');
+            fail('Transfer is unavailable or superseded', 'scope_denied');
           if (i.action === 'transfer_accept')
             await this.db.run(
               "UPDATE office_items SET owner=?,status='open',epoch=epoch+1,lease_hash=NULL,lease_until=NULL,session_id=NULL,revision=revision+1,transfer_to=NULL,transfer_epoch=NULL WHERE id=?",
@@ -1314,7 +1314,7 @@ export class OfficeStore {
             );
         } else {
           if (!isOwner && b.role !== 'coordinator')
-            fail('Only the owner or coordinator may cancel');
+            fail('Only the owner or coordinator may cancel', 'scope_denied');
           await this.db.run(
             "UPDATE office_items SET status='cancelled',revision=revision+1,epoch=epoch+1,lease_hash=NULL,lease_until=NULL WHERE id=?",
             [id]
@@ -1362,7 +1362,7 @@ export class OfficeStore {
         "SELECT * FROM office_messages WHERE id=? AND office_id=? AND kind='request' AND sender=?",
         [i.requestId, o.id, b.seat_id]
       );
-      if (!q) fail('Only request sender may wait for its reply');
+      if (!q) fail('Only request sender may wait for its reply', 'scope_denied');
       const reply = await this.db.get<Row>(
         'SELECT * FROM office_messages WHERE request_id=? AND final=1',
         [q!.id]
@@ -1388,7 +1388,7 @@ export class OfficeStore {
         i.itemId,
         o.id
       ]);
-      if (!t || ![t.owner, t.reviewer].includes(b.seat_id)) fail('Work item unavailable');
+      if (!t || ![t.owner, t.reviewer].includes(b.seat_id)) fail('Work item unavailable','not_found');
       if (t.status === 'cancelled' || (t.status === 'completed' && b.seat_id === t.reviewer))
         return { status: 'terminal' as const, nextCursor: i.afterSeq ?? 0, state: t.status };
       if (b.seat_id === t!.owner && !i.roundId)

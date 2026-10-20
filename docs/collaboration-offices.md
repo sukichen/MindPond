@@ -19,7 +19,7 @@ The [role-centered successor design](design/role-offices-2026-10-16.md) describe
 5. Create an optional collaboration project to reuse allowed agent membership, or create a standalone office. Choose a goal, acceptance criteria, deadline, whole-office iteration budget and seats. A seat is one chat's role; the same registered agent can occupy separate seats in different chats.
 6. Click each seat and give its **non-secret startup instruction** to that chat. `work_bootstrap` confirms the authenticated agent; `work_session_open` opens its authorized assignment. The UI separately reports pending configuration, observed MCP initialization and observed bootstrap. An old handshake does not prove the host is still running.
 
-Current authentication is static Bearer. MindPond does **not** implement an OAuth authorization server yet. A template verified against official documentation is not a claim that every client/version has been tested. Configure the host tool timeout above the 55-second maximum wait (templates use 65 seconds).
+Current authentication is static Bearer. MindPond does **not** implement an OAuth authorization server yet. A template verified against official documentation is not a claim that every client/version has been tested. Templates use a 360-second tool deadline for the default office_wait five-minute window. The optional legacy work_office_wait path below retains its shorter window.
 
 The browser management server can issue credentials only when `MINDPOND_MCP_ACCOUNTS` points to the same private grant file as the HTTP MCP gateway. Configure the same `MEMORY_DB_PATH`/`--db` for both. Without that setting the UI explains offline provisioning instead of pretending it issued a credential.
 

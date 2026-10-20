@@ -120,7 +120,7 @@ try {
   assert(!(await fs.readFile(config, 'utf8')).includes(secret));
   assert.equal(
     (await req('credential', { id: 'agent', expectedRevision: 1, personalId: 'account' })).status,
-    400,
+    409,
     'stale issuance cannot rotate another update'
   );
   await fs.chmod(config, 0o644);

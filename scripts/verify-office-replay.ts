@@ -41,6 +41,6 @@ try{
   // Deleted/moved identities are still identifiable from an actual event signature.
   await graph.roles.deleteRole({roleId:a.roleId!,expectedRevision:1},admin);
   const historical=await (await request({action:'index',officeId:'one'})).json();assert(historical.participants.some((p:any)=>p.roleId===a.roleId&&p.name==='小栗'&&p.historical));
-  assert.equal((await request({action:'index',officeId:'missing'})).status,403);
+  assert.equal((await request({action:'index',officeId:'missing'})).status,404);
   console.log('PASS replay API: admin/Origin guards, inclusive boundaries, stable upper cursor, ordered complete pages, room isolation, bounded previews, historical identities and zero database writes');
 }finally{if(server)await new Promise<void>(r=>server!.close(()=>r()));await graph.close();await fs.rm(dir,{recursive:true,force:true});}

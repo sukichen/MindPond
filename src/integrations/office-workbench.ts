@@ -1,6 +1,7 @@
 /** Browser-only operator control plane. This router is never mounted on /mcp. */
 import express from 'express';
 import { officeConnection, OFFICE_CAPABILITIES } from './office-connection.js';
+import { officeAdminServices } from './office-admin-services.js';
 import { z } from 'zod';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -15,7 +16,7 @@ import {
   projectConfigurationSchema
 } from '../core/office-tools.js';
 import { issueNetworkGrant, readNetworkConfiguration, revokeNetworkAgent } from './network-config.js';
-import { toStructuredError } from '../core/errors.js';
+import { MindPondError, httpStatus, toStructuredError } from '../core/errors.js';
 import { parseContainerInput } from '../core/building-tools.js';
 import { roleReviewSchema, roleConfigureSchema, roleLinkSchema } from '../core/role-tools.js';
 
@@ -135,7 +136,7 @@ export function officeWorkbench(
       } catch (error) {
         const e = toStructuredError(error);
         res
-          .status(e.code === 'scope_denied' ? 403 : e.code === 'stale_version' ? 409 : 400)
+          .status(httpStatus(e.code))
           .json({ error: e.message, code: e.code, nextAction: e.nextAction });
       }
     });
@@ -189,25 +190,29 @@ export function officeWorkbench(
     }
     const registry = await graph.offices.registry(operator), settings = await graph.offices.settings(operator);
     return {
-      ...registry, settings, capabilities: OFFICE_CAPABILITIES,
+      ...registry, settings, capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
       connectionTemplates: settings.mcpUrl ? Object.fromEntries(registry.agents.map((a: any) => [a.id, officeConnection({host:a.host,id:a.id,url:settings.mcpUrl})])) : {},
       characters: await graph.roles.state(operator, req.body.roleAfterSeq),
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
   });
   route('/settings', (req) => graph.offices.settings(operator, req.body.mcpUrl));
+  officeAdminServices(graph,route,operator,options.configFile);
   route('/agent', (req) =>
     graph.offices.configureAgent(agentConfigurationSchema.parse(req.body), operator)
   );
   route('/project', (req) =>
     graph.offices.configureProject(projectConfigurationSchema.parse(req.body), operator)
   );
-  route('/office', (req) =>
-    graph.roles.configureOffice(officeConfigurationSchema.parse(req.body), operator)
-  );
+  route('/office', async (req) => {
+    const input=officeConfigurationSchema.parse(req.body);
+    const result=await graph.roles.configureOffice(input,operator);
+    await graph.officeCollaboration.layout(input.id,operator);
+    return result;
+  });
   route('/role/review', req => graph.roles.review(roleReviewSchema.parse(req.body), operator));
   route('/role/state', req => graph.roles.state(operator,req.body.afterSeq));
-  route('/role/message',req=>graph.roles.messagePreview(officeConfigurationSchema.shape.id.parse(req.body.messageId),operator));
+  route('/role/message',req=>graph.roles.messagePreview(messageReference.parse(req.body),operator));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
   const deletionSchema = z.object({id:officeConfigurationSchema.shape.id,expectedRevision:z.number().int().min(1)}).strict();
   route('/agent/delete',async req=>{
@@ -224,9 +229,10 @@ export function officeWorkbench(
   route('/office/delete', req => graph.roles.deleteOffice(deletionSchema.parse(req.body),operator));
   route('/role/link', req => graph.roles.link(roleLinkSchema.parse(req.body), operator));
   route('/containers', req => graph.building.container(parseContainerInput(req.body),operator));
-  const mailSchema=z.object({officeId:officeConfigurationSchema.shape.id,beforeSeq:z.number().int().min(1).optional(),state:z.enum(['pending','processing','archived','all']).optional(),query:z.string().trim().min(1).max(200).optional(),correspondent:officeConfigurationSchema.shape.id.optional(),threadId:officeConfigurationSchema.shape.id.optional(),limit:z.number().int().min(1).max(50).optional(),contextBudgetBytes:z.number().int().min(2048).max(65536).optional()}).strict();
+  const mailSchema=z.object({officeId:officeConfigurationSchema.shape.id,knownIds:officeConfigurationSchema.shape.id.array().max(200).optional(),beforeSeq:z.number().int().min(1).optional(),state:z.enum(['pending','processing','archived','all']).optional(),query:z.string().trim().min(1).max(200).optional(),correspondent:officeConfigurationSchema.shape.id.optional(),threadId:officeConfigurationSchema.shape.id.optional(),since:z.number().int().min(0).optional(),until:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional(),contextBudgetBytes:z.number().int().min(2048).max(65536).optional()}).strict();
   route('/messages', req=>graph.building.history(mailSchema.parse(req.body),operator));
-  route('/message',req=>graph.building.messagePreview(z.object({officeId:officeConfigurationSchema.shape.id,messageId:officeConfigurationSchema.shape.id}).strict().parse(req.body),operator));
+  const messageReference=z.object({messageId:officeConfigurationSchema.shape.id.optional(),seq:z.number().int().positive().optional()}).strict().refine(i=>(i.messageId===undefined)!==(i.seq===undefined),'Choose exactly one messageId or seq');
+  route('/message',req=>{const input=z.object({officeId:officeConfigurationSchema.shape.id,messageId:officeConfigurationSchema.shape.id.optional(),seq:z.number().int().positive().optional()}).strict().refine(i=>(i.messageId===undefined)!==(i.seq===undefined),'Choose exactly one messageId or seq').parse(req.body);return graph.building.messagePreview(input,operator);});
   route('/view', async (req) => ({
     ...(await graph.offices.get(
       {
@@ -251,7 +257,7 @@ export function officeWorkbench(
     )),
     facilities: await graph.building.snapshot(officeConfigurationSchema.shape.id.parse(req.body.officeId),operator,req.body.facilityRevision)
   }));
-  const replaySchema=z.object({action:z.enum(['index','page']),officeId:officeConfigurationSchema.shape.id,threadId:officeConfigurationSchema.shape.id.optional(),fromSeq:z.number().int().min(1).optional(),toSeq:z.number().int().min(0).optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}).strict();
+  const replaySchema=z.object({action:z.enum(['index','page']),officeId:officeConfigurationSchema.shape.id,threadId:officeConfigurationSchema.shape.id.optional(),roleId:officeConfigurationSchema.shape.id.optional(),topic:z.string().trim().min(1).max(200).optional(),keyOnly:z.boolean().optional(),fromSeq:z.number().int().min(1).optional(),toSeq:z.number().int().min(0).optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}).strict();
   route('/replay',req=>graph.building.replay(replaySchema.parse(req.body),operator));
   route('/item/cancel', (req) => {
     const itemId = officeConfigurationSchema.shape.id.parse(req.body.itemId),
@@ -272,7 +278,7 @@ export function officeWorkbench(
   );
   route('/credential', async (req) => {
     if (!options.configFile)
-      throw new Error(
+      throw new MindPondError('temporarily_unavailable',
         '请先为 Web 服务配置 MINDPOND_MCP_ACCOUNTS，且与 HTTP MCP 网关使用同一个私有配置文件。'
       );
     const input = agentConfigurationSchema
@@ -289,7 +295,7 @@ export function officeWorkbench(
     const registry = await graph.offices.registry(operator),
       agent = registry.agents.find((v: any) => v.id === input.id);
     if (!agent || agent.revision !== input.expectedRevision)
-      throw new Error('Agent 设置已变更，请刷新。');
+      throw new MindPondError('stale_version','Agent 设置已变更，请刷新。');
     if (input.assignmentIds?.length) {
       const all = await Promise.all(
         registry.offices.map((o: any) => graph.offices.get({ officeId: o.id, limit: 1 }, operator))
@@ -300,7 +306,7 @@ export function officeWorkbench(
         )
       );
       if (input.assignmentIds.some((id) => !owned.has(id)))
-        throw new Error('只能限制到此 agent 已获授权的分工。');
+        throw new MindPondError('invalid_input','只能限制到此 agent 已获授权的分工。');
     }
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-issue-'));
     // DB pending/disabled is authoritative in the gateway: a file write alone cannot activate access.

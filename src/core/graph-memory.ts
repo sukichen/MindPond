@@ -48,6 +48,8 @@ import { CollaborationStore } from './collaboration.js';
 import {OfficeStore} from './office.js';
 import {RoleStore} from './roles.js';
 import {OfficeBuilding} from './office-building.js';
+import {OfficeCollaboration} from './office-collaboration.js';
+import {OfficeTaskStore} from './office-tasks.js';
 
 export interface MemoryEditPatch {
   dimensions?:KnowledgeDimension[]; replaceMembershipIds?:string[]; anchors?:MemoryAnchor[]; content?:string; importance?:number;
@@ -408,6 +410,8 @@ export class GraphMemory {
   offices!: OfficeStore;
   roles!: RoleStore;
   building!: OfficeBuilding;
+  officeCollaboration!: OfficeCollaboration;
+  officeTaskStore(actor:import('./trust.js').TrustedCallContext){return new OfficeTaskStore(this.db!,this,work=>this.growthWrite(work),actor);}
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
   private readonly materialBudgetChars = Math.max(1000, Number(process.env.ORGANIZATION_MATERIAL_BUDGET_CHARS ?? 48000));
@@ -1127,6 +1131,8 @@ export class GraphMemory {
     await this.roles.init();
     this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay']);
     await this.building.init();
+    this.officeCollaboration=this.coordinator.service(new OfficeCollaboration(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock),['init','publish','records','handoffContext','relations','controls','requestControl','responsePage','boundResponse','layout','captureLayout','observations','permissions','impact','exportPage','operations']);
+    await this.officeCollaboration.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');
