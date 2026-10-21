@@ -93,6 +93,27 @@ try {
     try{assert((await call(legacy,'memory_directory')).r.isError,'remote legacy account cannot fall back to human memory');}finally{await legacy.close();await remoteWithoutRole.close();}
     const bounded=(await call(memory,'memory_search',{query:'knowledge',contextBudgetBytes:2048},'chat-a')).data;assert.equal(Buffer.byteLength(JSON.stringify({results:bounded.results})),bounded.contextBudget.used);assert(bounded.contextBudget.used<=2048);
     console.log('PASS owner isolation, independent copies and human global search');
+    // Codex uses _meta.threadId, including on a shared transport with an old
+    // fixed installation label. The same textual ID in OpenCode is distinct.
+    const codexCall=async(c:Client,name:string,args:any={},threadId='chat-a')=>{const r:any=await c.callTool({name,arguments:args,_meta:{threadId}});return {r,data:JSON.parse(r.content[0].text)};};
+    assert.equal((await codexCall(office,'role_sync')).data.state,'unregistered');
+    const codexRoles=[];
+    for(const threadId of ['chat-a','chat-b']){
+        const submitted=await codexCall(office,'role_application',{action:'submit',name:'Codex '+threadId,introduction:'Fictional role',reason:'Codex metadata regression',key:'apply'},threadId);
+        assert(!submitted.r.isError,JSON.stringify(submitted.data));
+        const role=await graph.roles.review({action:'approve',applicationId:submitted.data.applicationId,expectedRevision:1},admin);codexRoles.push(role.roleId);
+        const synced=await codexCall(office,'role_sync',{},threadId);assert.equal(synced.data.identity.roleId,role.roleId);assert.equal(synced.data.identity.bindingMode,'codex_metadata');
+        assert.equal((await codexCall(memory,'memory_identity',{},threadId)).data.owner.id,role.roleId);
+    }
+    assert.notEqual(codexRoles[0],codexRoles[1]);assert.notEqual(codexRoles[0],a.roleId);
+    const codexSaved=(await codexCall(memory,'memory_save',{content:'Codex A private fixture',idempotencyKey:'save'},'chat-a')).data;
+    assert((await codexCall(memory,'memory_get',{nodeId:codexSaved.id},'chat-b')).r.isError);
+    const codexReconnect=await connect('/memory/mcp');assert.equal((await codexCall(codexReconnect,'memory_identity')).data.owner.id,codexRoles[0]);
+    const codexCredential=await graph.memoryOwners.issue(codexRoles[0]),codexPinned=await connect('/memory/mcp',codexCredential.token);
+    assert.equal((await codexCall(codexPinned,'memory_identity')).data.owner.id,codexRoles[0]);
+    await assert.rejects(()=>codexCall(codexPinned,'memory_identity',{},'chat-b'),(e:any)=>e.code===403);
+    await assert.rejects(()=>memory.callTool({name:'memory_identity',arguments:{},_meta:{threadId:42}}),(e:any)=>e.code===400,'malformed native ID must never fall back to the old header');
+    console.log('PASS Codex per-call threadId: shared connection isolation, source namespaces, role memory, pinned fencing, reconnect and malformed-ID rejection');
     const pin = await graph.memoryOwners.issue(a.roleId), pinned = await connect('/memory/mcp', pin.token);
     assert.equal((await call(pinned, 'memory_identity')).data.owner.id, a.roleId);
     await assert.rejects(() => call(pinned, 'memory_identity', {}, 'chat-b'), (e: any) => e.code === 403, 'pinned role rejects another approved chat');

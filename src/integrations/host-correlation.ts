@@ -2,6 +2,24 @@
  * No secret enters prompts. Bind the proof to the exact tool and arguments. */
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { MindPondError } from '../core/errors.js';
+/** Host-supplied per-call metadata. Codex emits threadId (not sessionId):
+ * forked chats can share a session tree but must have separate role bindings.
+ * Keep source namespaces distinct and reject malformed IDs instead of falling
+ * back to a shared installation header or a previous character. */
+export function hostChatIdentity(meta?: Record<string, unknown>) {
+    for (const [key, source, mode] of [
+        ['mindpond/verifiedSessionID', 'opencode', 'opencode_metadata'],
+        ['ai.opencode/sessionID', 'opencode', 'opencode_metadata'],
+        ['threadId', 'codex', 'codex_metadata']
+    ] as const) {
+        if (meta?.[key] === undefined) continue;
+        const id = meta[key];
+        if (typeof id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(id))
+            throw new MindPondError('invalid_input', 'Invalid host chat identity; reconnect this chat instead of selecting another role');
+        return { source, mode, id };
+    }
+    return undefined;
+}
 export function canonical(value: any): string { return JSON.stringify(value === null || typeof value !== 'object' ? value : Array.isArray(value) ? value.map(v => JSON.parse(canonical(v))) : Object.fromEntries(Object.keys(value).sort().filter(k => value[k] !== undefined).map(k => [k, JSON.parse(canonical(value[k]))]))); }
 export function signHostSession(sessionId: string, tool: string, args: any, token: string, now = Date.now()) {
     const copy = { ...args };

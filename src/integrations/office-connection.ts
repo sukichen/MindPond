@@ -8,7 +8,7 @@ export const OFFICE_CAPABILITIES = {
   version: 'mindpond.office.v1',
   wait: { defaultMs: OFFICE_WAIT_MS, maxMs: OFFICE_WAIT_MS, toolTimeoutMs: OFFICE_TOOL_TIMEOUT_MS, wakesStoppedHost: false, capacity:officeWaitCapacity() },
   messages: { defaultPageSize: 10, maxPageSize: 20, defaultContextBytes: 16384, maxContextBytes: 65536 },
-  correlation: 'Native host chat metadata or signed OpenCode session plugin; fallback requires user activation or a role credential.',
+  correlation: 'Codex per-call threadId, OpenCode native chat metadata or signed session plugin; fallback requires user activation or a role credential.',
   memory: 'Separate Memory MCP binds to this chat’s approved role. Humans see all knowledge; roles only their own or human-assigned independent copies.'
 } as const;
 

@@ -93,7 +93,8 @@
     "verify:role-memory": "tsx scripts/verify-role-memory.ts",
     "verify:opencode-role-session": "tsx scripts/verify-opencode-role-session.ts",
     "verify:production-role-memory": "tsx scripts/verify-production-role-memory.ts",
-    "verify:memory-ui": "node scripts/verify-memory-ui.mjs"
+    "verify:memory-ui": "node scripts/verify-memory-ui.mjs",
+    "verify:codex-role-session": "tsx scripts/verify-codex-role-session.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

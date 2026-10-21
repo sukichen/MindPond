@@ -1,3 +1,4 @@
+import {hostChatIdentity} from './integrations/host-correlation.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {officeMemorySession} from './core/office.js';
 import { roleRuntimeId } from './core/roles.js';
@@ -115,12 +116,12 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))
         throw new MindPondError('scope_denied','Independent agents use office v2 tools; legacy account-wide collaboration cannot represent this identity. Call work_bootstrap.');
       let current:TrustedCallContext={...baseTrusted};
-      const nativeSession = extra._meta?.['mindpond/verifiedSessionID']??extra._meta?.['ai.opencode/sessionID'];
-      // Native per-chat identity wins over an installation-wide header.
-      // Model arguments and the globally latest role cannot choose identity.
-      if (!args.roleContext && current.transport === 'http-mcp' && current.agentId && typeof nativeSession === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(nativeSession)) {
-        current.runtimeId=roleRuntimeId(current.principal,current.agentId,'opencode',nativeSession);
-        current.runtimeMode='opencode_metadata';
+      const native = hostChatIdentity(extra._meta);
+      // The authenticated harness supplies this on every call. Installation
+      // headers and model arguments must not override a real chat identity.
+      if (native && current.transport === 'http-mcp' && current.agentId) {
+        current.runtimeId=roleRuntimeId(current.principal,current.agentId,native.source,native.id);
+        current.runtimeMode=native.mode;
       }
       if(current.runtimeId && args.roleContext)throw new MindPondError('invalid_input','This host already supplies session correlation; omit roleContext instead of selecting another identity.');
       if(!current.runtimeId && current.agentId && current.transport==='http-mcp') {
@@ -131,7 +132,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       }
       // Keep the pre-existing header-derived session namespace so previously
       // saved session memory remains readable after this additive rollout.
-      if(current.runtimeMode==='opencode_metadata') current.sessionId='net-native:'+current.runtimeId;
+      if(current.runtimeMode==='opencode_metadata'||current.runtimeMode==='codex_metadata') current.sessionId='net-native:'+current.runtimeId;
       auditContext=current;
       const activation=toolProfile==='office'&&name==='role_sync'&&current.agentId&&current.runtimeId?await graphMemory.roles.connectionRequest(current):null;
       const roleIdentity=activation?null:await graphMemory.roles.identity(current);

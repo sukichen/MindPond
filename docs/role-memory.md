@@ -17,6 +17,12 @@
 
 角色连接没有绑定时，Memory 返回需要激活或批准角色，不能自动变成人类身份。模型传入任意角色 ID 不能切换权限。读取未知 ID、其他人的记忆都不会返回正文。
 
+### Codex：按真实 threadId 绑定
+
+Codex 每次工具调用的 `_meta.threadId` 是角色的聊天标识；不是安装级 HTTP header，也不是根 session 树 ID。新建聊天、不同 threadId 可分别申请角色；Office 与 Memory 即使使用不同 MCP 连接，也会得到同一聊天的角色。真实 threadId 优先于旧的固定 `X-MindPond-Session` 标签。模型工具参数不能选择身份。畸形的真实标识直接拒绝；不提供此元数据的客户端不能据固定标签区分多个聊天，应使用独立角色连接。
+
+这条路径通过已安装 Codex 的 App Server `thread/start` 与 `mcpServer/tool/call` 验证，无模型推理；不能仅用 OpenCode 验证代替。升级前若角色绑在旧标签或临时连接上，原聊天调用 `role_sync` 后，由用户核对激活编号并绑定已有角色一次，消息和知识保留；不自动把某个旧角色交给任意新聊天。
+
 ### OpenCode：同一配置可用于不同聊天
 
 网页和 `mindpond-connect office-prepare` 生成的 OpenCode 配置包含两个独立 MCP，以及 `.opencode/plugins/mindpond-session-*.js` 会话插件。安装后重启 OpenCode。
@@ -59,6 +65,8 @@
 ## 验证范围
 
 `npm run verify:role-memory` 使用真实隔离 SQLite、两个 HTTP MCP 服务目录和生成的宿主插件验证身份、权限、复制、重连与撤权。默认回归不调用模型。
+
+`MINDPOND_TEST_CODEX_BIN=/path/to/codex npm run verify:codex-role-session` 使用已安装 Codex 的真实两个 thread、工具调用元数据与 MCP 重载，验证角色/知识隔离，不调用模型。重连后的持久绑定另由 HTTP MCP 回归覆盖。
 
 `MINDPOND_TEST_OPENCODE_BIN=/path/to/opencode npm run verify:opencode-role-session` 使用已安装 OpenCode 的真实插件加载、宿主配置读取和两个 `noReply` 会话事件，再通过真实 MCP 验证角色身份。它不执行模型推理；工具执行钩子的签名和参数绑定由独立 HTTP MCP 回归覆盖。它不证明模型理解或记忆准确率一定提高。
 

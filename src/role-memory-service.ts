@@ -1,3 +1,4 @@
+import {hostChatIdentity} from './integrations/host-correlation.js';
 /** Independent memory MCP. No office tools, workspace selector or model-chosen identity. */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -21,11 +22,9 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
     async function identity(meta?: Record<string, unknown>): Promise<MemoryOwner> {
         await options.authorize?.();
         if (options.roleId) {
-            const role = await graph.memoryOwners.role(options.roleId), native = (meta?.['mindpond/verifiedSessionID'] ?? meta?.['ai.opencode/sessionID']);
-            if (typeof native === 'string') {
-                if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(native))
-                    throw new MindPondError('invalid_input', 'Invalid host chat identity');
-                const binding = await graph.roles.identity({ v: 1, principal: role.principal, agentId: role.connector_id, runtimeId: roleRuntimeId(role.principal, role.connector_id, 'opencode', native), transport: 'http-mcp', issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER });
+            const role = await graph.memoryOwners.role(options.roleId), native = hostChatIdentity(meta);
+            if (native) {
+                const binding = await graph.roles.identity({ v: 1, principal: role.principal, agentId: role.connector_id, runtimeId: roleRuntimeId(role.principal, role.connector_id, native.source, native.id), transport: 'http-mcp', issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER });
                 if (!binding || binding.roleId !== role.id)
                     throw new MindPondError('scope_denied', 'Activate this chat as the credential’s role before reading memory.');
             }
@@ -33,9 +32,8 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
         }
         const a = { ...options.trusted };
         if (a.agentId) {
-            const native = (meta?.['mindpond/verifiedSessionID'] ?? meta?.['ai.opencode/sessionID']);
-            if (typeof native === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(native))
-                a.runtimeId = roleRuntimeId(a.principal!, a.agentId, 'opencode', native);
+            const native = hostChatIdentity(meta);
+            if (native) a.runtimeId = roleRuntimeId(a.principal!, a.agentId, native.source, native.id);
             if (!a.runtimeId)
                 throw new MindPondError('scope_denied', 'Role memory requires a host chat identity or a user-issued role memory credential. It never falls back to human memory.');
             const role = await graph.roles.identity(a as TrustedCallContext);

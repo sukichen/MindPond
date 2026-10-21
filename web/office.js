@@ -189,7 +189,7 @@
     details.append(
       make('p', '模板按官方文档生成；实际宿主版本及逐聊天隔离仍需你所在环境验证。OAuth 尚未实现。')
     );
-    details.append(make('p','同一宿主可用于多个聊天。OpenCode 需安装上方会话插件，才能按真实聊天关联角色。同一聊天重连可恢复；没有可靠聊天标识时，请调用 role_sync 并由用户核对激活编号。'));
+    details.append(make('p','同一宿主可用于多个聊天。Codex 使用每次调用的真实 threadId；OpenCode 需安装上方会话插件。固定配置标签不能代替聊天 ID。同一聊天重连可恢复；没有可靠聊天标识时，请调用 role_sync 并由用户核对激活编号。'));
     const policy = state.data.credentialPolicies?.[agent.id];
     const initialRestrictions = (policy?.assignmentIds ?? []).join(',');
     const restrictions = input(initialRestrictions, '仅允许的工位 ID，逗号分隔；清空将解除工位限制');

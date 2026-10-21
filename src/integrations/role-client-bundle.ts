@@ -35,7 +35,7 @@ export async function prepareRoleClientBundle(o: { directory: string; client: 'c
     '.agents/skills/mindpond-inbox/SKILL.md': INBOX_SKILL
   } : { 'opencode.json': json(config), '.opencode/commands/mindpond_office_get_message.md': `---\ndescription: 同步角色、读取一条 MindPond 消息并继续\nsubtask: false\n---\n\n${INBOX_PROMPT}\n` };
   Object.assign(files,connection.files??{});
-  files['.mindpond/session.json'] = json({ version: 1, sessionLabel, client: o.client, note: 'OpenCode chat identity is signed by the host plugin; a shared MCP connection does not merge chat identities. Other clients must supply stable host correlation or role-specific credentials.' });
+  files['.mindpond/session.json'] = json({ version: 1, sessionLabel, client: o.client, note: 'Codex supplies per-call threadId; OpenCode chat identity is signed by the host plugin. These native IDs override fixed installation labels. Other clients need stable host correlation or a role-specific credential.' });
   const manifest: RoleBundle = { version: 'mindpond.role-cli.v1', client: o.client, sessionLabel, tokenEnv, url, files: Object.fromEntries(Object.entries(files).map(([n, s]) => [n, hash(s)])) };
   await fs.mkdir(path.dirname(o.directory), { recursive: true });
   // Refuse existing directories, rather than overwrite user configurations.
@@ -46,7 +46,7 @@ export async function prepareRoleClientBundle(o: { directory: string; client: 'c
     await fs.writeFile(file, content, { flag: 'wx', mode: 0o600 });
   }
   await fs.writeFile(path.join(o.directory, '.mindpond/cli-bundle.json'), json(manifest), { flag: 'wx', mode: 0o600 });
-  return { directory: o.directory, client: o.client, sessionLabel, tokenEnv, credentialsIncluded: false, nextAction: 'Supply the named secret variable to the CLI process outside chat, then mindpond-connect office-run --directory this-directory. Ask the agent to apply for a role. Keep this configuration for resuming the same chat only.' };
+  return { directory: o.directory, client: o.client, sessionLabel, tokenEnv, credentialsIncluded: false, nextAction: 'Supply the named secret variable to the CLI process outside chat, then mindpond-connect office-run --directory this-directory. Ask the agent to apply for a role. Codex/OpenCode native chat IDs allow separate roles in new chats; resuming the same chat restores its role. Clients without native identity must not reuse a fixed chat label across chats.' };
 }
 export async function roleClientLaunch(directory: string, extraArgs: string[] = [], environment: NodeJS.ProcessEnv = process.env) {
   if (!path.isAbsolute(directory) || !(await fs.lstat(directory)).isDirectory()) throw new Error('Session directory must be an absolute real directory');

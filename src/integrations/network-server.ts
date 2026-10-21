@@ -1,6 +1,6 @@
 import express from 'express';
 import {createOwnerMemoryServer} from '../role-memory-service.js';
-import {verifyHostSession} from './host-correlation.js';
+import {hostChatIdentity,verifyHostSession} from './host-correlation.js';
 import type { Server as HttpServer } from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -305,8 +305,8 @@ export function createNetworkMcpApp(
           const params=message.params,args=params?.arguments??{};
           if(params?._meta)delete params._meta['mindpond/verifiedSessionID'];
           if(args.hostContext!==undefined){const session=verifyHostSession(args.hostContext,params.name,args,req.header('authorization')?.replace(/^Bearer /,'')??'');delete args.hostContext;params._meta={...params._meta,'mindpond/verifiedSessionID':session};}
-          const session=params?._meta?.['mindpond/verifiedSessionID']??params?._meta?.['ai.opencode/sessionID'];
-          if(pinnedMemoryRole&&session){const r=await graph.memoryOwners.role(pinnedMemoryRole.role_id);const b=await graph.roles.identity({v:1,principal:r.principal,agentId:r.connector_id,transport:'http-mcp',runtimeId:roleRuntimeId(r.principal,r.connector_id,'opencode',session),issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});if((b&&b.roleId!==r.id)||(!b&&params.name!=='role_sync'))throw new MindPondError('scope_denied','This chat is not bound to the credential’s role; call Office role_sync to request user activation');}
+          const session=hostChatIdentity(params?._meta);
+          if(pinnedMemoryRole&&session){const r=await graph.memoryOwners.role(pinnedMemoryRole.role_id);const b=await graph.roles.identity({v:1,principal:r.principal,agentId:r.connector_id,transport:'http-mcp',runtimeId:roleRuntimeId(r.principal,r.connector_id,session.source,session.id),issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});if((b&&b.roleId!==r.id)||(!b&&params.name!=='role_sync'))throw new MindPondError('scope_denied','This chat is not bound to the credential’s role; call Office role_sync to request user activation');}
         }
         await c.transport.handleRequest(req, res, req.body);
       } finally {
