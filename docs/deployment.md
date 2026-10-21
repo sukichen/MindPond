@@ -1,5 +1,7 @@
 # 部署、升级与恢复
 
+已有实例或离线环境先阅读[升级历史与离线迁移手册](history.md)。依赖物料未齐备时保持当前实例运行，勿先替换生产程序。
+
 使用 Node.js 22 或更新版本。先运行 `npm ci`、`npm run check`，再运行 `npm start` 或 `npm run mcp`。没有本地模型时可使用明确报告降级的文本检索；模型文件由管理员按其自身许可准备。
 
 默认新安装的数据与缓存位于用户目录。明确设置 `MEMORY_DB_PATH` 可让 HTTP、MCP 和 SDK 共用一个数据库。数据库、WAL/SHM、连接配置、模型缓存、运行日志、捕获 outbox 和备份均放在公开仓库外；这些材料可能含私人正文和凭据。
@@ -20,7 +22,7 @@ mindpond-maintenance --db /absolute/private/mindpond.db --check
 
 ## 建议的生产拓扑（单个人类用户）
 
-Web 管理和 HTTP MCP 使用独立进程、同一私有 SQLite 数据库。外部只开放 HTTPS；7903/7904 监听 loopback。注册宿主的 Office 入口为 `/mcp`，角色 Memory 入口为 `/memory/mcp`。人类 Memory stdio 拥有全部知识，只配置给用户自己的可信宿主，不能把它当成角色受限连接。
+Web 管理和 HTTP MCP 使用独立进程、同一私有 SQLite 数据库。外部只开放 HTTPS；7903/7904 监听 loopback。注册宿主的 Office 入口为 `/mcp`，角色 Memory 入口为 `/memory/mcp`。本机 Memory stdio 在收到可信聊天元数据时按有效角色绑定解析；没有元数据的管理调用按人类读取全部知识。因此仍只配置给用户自己的可信宿主，不能把它当成面向不可信调用者的隔离边界。
 
 这套身份模型服务一个人类用户及其已授权宿主；不提供多个人类租户之间的隔离，也不是面向任意第三方的 OAuth 服务。网络 MCP CLI 面向服务端宿主客户端：默认拒绝带 `Origin` 的浏览器直连，未提供跨域浏览器 MCP 接入；不要通过清空 Origin 校验绕过这一边界。Web 管理页的浏览器访问由7903提供。当前 SDK 路径按 MCP 2025-11-25 协商与回归；不要把已验证的客户端版本当成对所有后续协议或客户端的支持承诺。
 
