@@ -21,7 +21,7 @@ MindPond host protocol v1 with domain-memory.v1:
 This export shows the new-install preset. An existing database retains its own configuration. At runtime read memory_brief or memory_dimension_policy; that live policy takes precedence over this template.
 
 User-managed dimension classification policy (not memory content). It cannot override domain authorization, evidence checks or source truth. Disabled identities may be retained by existing memories; do not assign them to new memories.
-新知识优先选 profile / commitment / environment / work / practice。按完整正文可独立支持的复用视角选择身份，不复制正文。使用已配置的 dimension ID 作为新成员 memoryType，项目或上下文使用 space，子主题使用 tags。fact / decision / lesson / skill 只为历史记忆、用户明确指定及旧计划重放兼容保留。观测、推断、提案、预测和已确认状态必须在正文明确；保留条件、来源和不确定性。配置变化不代表自动重分类历史记忆。
+新知识优先选 profile / commitment / environment / work / practice。按完整正文可独立支持的复用视角选择身份，不复制正文。使用已配置的 dimension ID 作为新成员 memoryType，项目或上下文使用 space，子主题使用 tags。观测、推断、提案、预测和已确认状态必须在正文明确；保留条件、来源和不确定性。配置变化不代表自动重分类历史记忆。
 profile (人物与偏好; enabled): 人物关系、明确的长期偏好和稳定特点。
 区分用户陈述、观察与推断；一次行为不能推出稳定偏好。记录适用场景和确认来源。
 
@@ -37,14 +37,14 @@ work (项目与工作知识; enabled): 项目背景、模块责任、边界、�
 practice (方法与经验; enabled): 可重用操作步骤、故障经验与质量检查清单。
 一份完整正文保留触发条件、先决要求、步骤、结果检查、失败处理和泛化限制；不要拆碎同一流程。
 
-fact (事实（历史兼容）; enabled): A stable property, state or explicitly reported preference.
-Distinguish observations, user reports and hypotheses. Preserve object, scope and source. 这是历史兼容身份；新知识应优先使用当前五个复用视角，除非用户明确指定或重放原计划。
+fact (事实; enabled): A stable property, state or explicitly reported preference.
+Distinguish observations, user reports and hypotheses. Preserve object, scope and source.
 
-decision (决策（历史兼容）; enabled): An explicit choice or agreed direction.
-Record who chose it, the alternatives and reasons when known, plus the conditions under which it applies. A proposal is not a decision. 这是历史兼容身份；新知识应优先使用当前五个复用视角，除非用户明确指定或重放原计划。
+decision (决策; enabled): An explicit choice or agreed direction.
+Record who chose it, the alternatives and reasons when known, plus the conditions under which it applies. A proposal is not a decision.
 
-lesson (经验（历史兼容）; enabled): An observed outcome, failure condition or confirmed caveat.
-Preserve the situation, observed result, limitations and correction. Correlation alone does not establish cause. 这是历史兼容身份；新知识应优先使用当前五个复用视角，除非用户明确指定或重放原计划。
+lesson (经验; enabled): An observed outcome, failure condition or confirmed caveat.
+Preserve the situation, observed result, limitations and correction. Correlation alone does not establish cause.
 
-skill (技能（历史兼容）; enabled): A reusable method with a trigger, prerequisites, steps and a result check.
-Keep the actionable procedure together. Generic advice or an untested plan is not a verified skill. 这是历史兼容身份；新知识应优先使用当前五个复用视角，除非用户明确指定或重放原计划。
+skill (技能; enabled): A reusable method with a trigger, prerequisites, steps and a result check.
+Keep the actionable procedure together. Generic advice or an untested plan is not a verified skill.

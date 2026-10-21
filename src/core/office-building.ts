@@ -414,7 +414,7 @@ export class OfficeBuilding {
         if (result.status !== 'timeout') return result;
         // Continuation must use the public tool's schema, never the waiter's internal requestId.
         return { ...result, pending: true, resume: { afterSeq: result.nextCursor, ...(i.replyTo ? { replyTo: i.replyTo } : {}), waitMs: i.waitMs ?? OFFICE_WAIT_MS },
-            nextAction: 'No matching message yet; this wait window ended, not the collaboration. While the user-authorized waiting budget remains, call office_wait again with resume. Preserve replyTo and roleContext when present. Do not infer success, failure or completion; a stopped host is not woken by later messages.' };
+            nextAction: 'No matching message yet; this wait window ended, not the collaboration. While the user-authorized waiting budget remains, call office_wait again with resume. Preserve replyTo when present. Do not infer success, failure or completion; a stopped host is not woken by later messages.' };
     }
     close() { this.waitQueue.close();return this.waiter.close(); }
 }

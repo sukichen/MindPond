@@ -75,7 +75,6 @@ export default async function(host){
    token=authorization.slice(7).replace(/\{env:([^}]+)\}/g,(_m,name)=>process.env[name]||'');
   }
   if(!token)throw Error('MindPond host credential is missing; configure it outside chat');
-  delete output.args.roleContext;
   output.args.hostContext=signHostSession(input.sessionID,input.tool.slice(prefix.length),output.args,token);
  }};
 }

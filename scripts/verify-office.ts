@@ -1,3 +1,4 @@
+import {attachOfficeEngine} from './fixtures/office-engine-client.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -38,9 +39,6 @@ const denied = async (c: Client, name: string, args: any = {}) => {
 };
 try {
   await graph.init();
-  const legacyFile = path.join(dir, 'legacy.token');
-  await issueNetworkGrant({ toolProfile: 'full', configFile, tokenFile: legacyFile, principal: 'legacy-account' });
-  tokens.legacy = (await fs.readFile(legacyFile, 'utf8')).trim();
   for (const id of ['codex', 'opencode', 'restricted']) {
     await graph.offices.configureAgent(
       { id, principal: 'same-account', name: id, host: id, state: 'active', expectedRevision: 0 },
@@ -56,7 +54,7 @@ try {
     });
     tokens[id] = (await fs.readFile(tokenFile, 'utf8')).trim();
   }
-  assert.equal((await readNetworkConfiguration(configFile)).grants.length, 4);
+  assert.equal((await readNetworkConfiguration(configFile)).grants.length, 3);
   const office = {
     id: 'office',
     title: 'Fix login',
@@ -94,22 +92,16 @@ try {
         requestInit: { headers: { Authorization: 'Bearer ' + tokens[id] } }
       })
     );
+    attachOfficeEngine(c,graph,{v:1,principal:'same-account',agentId:id,transport:'http-mcp',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER,...(id==='restricted'?{assignmentIds:['seat-restricted']}:{})});
     return c;
   };
-  const legacy = await connect('legacy');
-  assert.equal(
-    (await call(legacy, 'work_workspaces')).principal,
-    'legacy-account',
-    'migrated grants retain legacy tools'
-  );
-  assert.equal((await call(legacy, 'memory_capabilities')).mcpConnection.agentId, null);
   const a = await connect('codex'),
     other = await connect('opencode'),
     restricted = await connect('restricted');
   await denied(a, 'work_workspaces');
   await denied(a,'memory_brief',{task:'Memory is a separate role-scoped connection'});
   assert(a.getInstructions()?.includes('office_receive'));
-  assert((await a.listTools()).tools.some((t) => t.name === 'work_guide_get'));
+  assert((await a.listTools()).tools.every((t) => !t.name.startsWith('work_')));
   assert.equal((await call(a, 'work_bootstrap')).context, null);
   const dev = (await call(a, 'work_session_open', { assignmentId: 'seat-dev' })).context,
     review = (await call(a, 'work_session_open', { assignmentId: 'seat-review' })).context,
@@ -499,7 +491,7 @@ try {
     'browser user cannot impersonate a worker'
   );
   console.log(
-    'PASS office v2 HTTP: same-account agents/roles, context fencing, exact replies/rounds, material integrity, two-phase transfer, session-memory isolation/reconnect, revocation during wait; no credentials/leases in projection'
+    'PASS internal office engine: same-account agents/roles, context fencing, exact replies/rounds, material integrity, two-phase transfer, session-memory isolation/reconnect, revocation during wait; no credentials/leases in projection'
   );
 } finally {
   await Promise.allSettled(clients.map((c) => c.close()));

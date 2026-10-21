@@ -169,6 +169,10 @@ try {
     const data = { anything: ['notes', { customState: 'NOT_A_PREDEFINED_STATE' }], text: '<script>not executable</script>' };
     const save = { action: 'save', officeId: 'empty', id: 'custom-board', title: 'My own container', content: data, expectedRevision: 0, key: 'new-container' };
     assert.equal((await ca('office_container', save)).revision, 1);
+    const oversized=await raw(a,'office_container',{...save,id:'oversized',key:'oversized',content:Array(10001).fill(0)});
+    assert(oversized.isError);assert.match(JSON.stringify(oversized.content),/maximum of 10000 elements/);
+    assert(!await (graph as any).db.get("SELECT 1 FROM office_containers WHERE id='oversized'"),'Office input limit rejects before storing containers');
+
     assert.equal((await ca('office_container', save)).revision, 1);
     assert.deepEqual((await cb('office_container', { action: 'get', officeId: 'empty', id: 'custom-board' })).content, data);
     const changes = await Promise.all([a, b].map((client, n) => raw(client, 'office_container', { ...save, content: { changedBy: n }, expectedRevision: 1, key: 'edit-' + n })));
@@ -185,15 +189,15 @@ try {
     assert.equal(userView.facilities.activity.find((r:any)=>r.roleId===ra.roleId).pending,1,'room-only pending count excludes other correspondence');
     const actorFor=(r:any)=>({v:1 as const,principal:'owner',agentId:'cli',transport:'http-mcp' as const,runtimeId:roleRuntimeId('owner','cli','header',r.sessionLabel),roleId:r.roleId,roleBindingId:r.bindingId,roleBindingEpoch:1,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
     const roleInput={action:'send',kind:'inform',recipient:rb.roleId,officeId:'empty',body:'A role message must reach the office animation',key:'role-event'};
-    const roleSent=await graph.roles.exchange(roleInput,actorFor(ra));
-    await graph.roles.exchange(roleInput,actorFor(ra));
+    const roleSent=await graph.building.message(roleInput,actorFor(ra));
+    await graph.building.message(roleInput,actorFor(ra));
     const afterRole=await (await post('view',{officeId:'empty',afterSeq:userView.nextCursor,facilityRevision:userView.facilities.revision})).json();
-    assert.equal(afterRole.events.filter((e:any)=>e.kind==='message'&&e.body.messageId===roleSent.messageId).length,1,'both message interfaces emit one office event with retry deduplication');
+    assert.equal(afterRole.events.filter((e:any)=>e.kind==='message'&&e.body.messageId===roleSent.messageId).length,1,'message sends emit one office event with retry deduplication');
     assert.equal(afterRole.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,1);
-    await graph.roles.exchange({action:'ack',messageId:roleSent.messageId,state:'read',key:'role-read'},actorFor(rb));
+    await cb('office_message',{action:'take',messageId:roleSent.messageId,key:'role-read'});
     let afterAck=await (await post('view',{officeId:'empty',afterSeq:afterRole.nextCursor,facilityRevision:afterRole.facilities.revision})).json();
-    assert(afterAck.events.some((e:any)=>e.kind==='message_read'&&e.actor.roleId===rb.roleId));
-    assert.equal(afterAck.facilities.activity.find((r:any)=>r.roleId===rb.roleId).pending,1,'read mail remains on desk until archived');
+    assert(afterAck.events.some((e:any)=>e.kind==='message_take'&&e.actor.roleId===rb.roleId));
+    assert.equal(afterAck.facilities.activity.find((r:any)=>r.roleId===rb.roleId).processing,1,'taken mail remains on desk until archived');
     await cb('office_message',{action:'take',messageId:roleSent.messageId,key:'take-role-mail'});
     await cb('office_message',{action:'finish',messageId:roleSent.messageId,result:'Role mail processed',key:'remove-from-desk'});
     afterAck=await (await post('view',{officeId:'empty',afterSeq:afterAck.nextCursor,facilityRevision:afterAck.facilities.revision})).json();

@@ -178,7 +178,7 @@
     );
     for (const warning of cfg.warnings) details.append(make('p', warning));
     for(const [filename,source] of Object.entries(cfg.files??{}))details.append(make('p','将会话插件保存到项目 '+filename+'，或用户配置目录 plugins/。插件从宿主配置取得凭据，不发送给模型。'),button('下载 OpenCode 会话插件',async()=>{const blob=new Blob([source],{type:'text/javascript'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename.split('/').at(-1);a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}));
-    details.append(make('p', '消息等待最多 5 分钟，宿主调用期限配置为 6 分钟。修改后需重新连接 MCP；旧进程不会自动加载新配置。'));
+    details.append(make('p', '消息等待最多 5 分钟，宿主调用期限配置为 6 分钟。修改后需重新连接 MCP；重新连接后配置生效。'));
     if (cfg.docs) {
       const a = make('a', '宿主官方配置文档');
       a.href = cfg.docs;
@@ -196,11 +196,11 @@
     details.append(label('高级：限制可用分工', restrictions));
     details.append(make('p', '角色知识由聊天绑定决定，不需要填写记忆范围。重新签发保留现有工位限制；清空已有工位列表将解除限制。'));
     const issue = button(
-      agent.state === 'pending' ? '签发并下载一次性凭据' : '重新签发并下载（旧凭据失效）',
+      agent.state === 'pending' ? '签发并下载一次性凭据' : '重新签发并下载（当前凭据失效）',
       async () => {
         if (
           agent.state !== 'pending' &&
-          !(await confirmAction('重新签发会撤销旧凭据。请在宿主中替换后重连；是否继续？'))
+          !(await confirmAction('重新签发会撤销当前凭据。请在宿主中替换后重连；是否继续？'))
         )
           return;
         const assignmentIds = restrictions.value.split(',').map(s => s.trim()).filter(Boolean);
@@ -258,7 +258,7 @@
       ' · 握手记录来自此数据库；记录存在不代表宿主当前仍在运行。';
     el('officeAgentCount').textContent = state.data.agents.length + ' 个连接';
     renderCharacters(state.data.characters);
-    if(!state.data.characters)notice('当前后台进程尚未加载角色功能。请升级并重启 MindPond 服务；已有记忆与旧工位功能仍可使用。',true);
+    if(!state.data.characters)throw Error('角色信息读取失败，请重新加载页面。');
     const box = el('officeAgentList');
     box.replaceChildren();
     for (const agent of state.data.agents) {
@@ -360,9 +360,9 @@
   }
   function refreshSeatChoices() {
     for (const row of el('officeSeatRows').children) {
-      const select = row.querySelector('[name=agent]'),
+      const select = row.querySelector('[name=roleId]'),
         value = select.value;
-      select.replaceChildren();
+      select.replaceChildren(new Option('请选择角色', ''));
       for (const agent of seatChoices()) {
         const option = make('option', agent.name);
         option.value = agent.value;
@@ -372,10 +372,8 @@
     }
   }
   function seatChoices() {
-    return [
-      ...(state.data?.characters?.roles ?? []).filter(r => r.state === 'active').map(r => ({ value: 'role:' + r.id, name: r.name + ' · ' + r.introduction.slice(0, 40) })),
-      ...(state.data?.agents ?? []).filter(a => a.state === 'active').map(a => ({ value: a.id, name: '旧工位 / 连接：' + a.name + ' · ' + a.principal }))
-    ];
+    return (state.data?.characters?.roles ?? []).filter(r => r.state === 'active')
+      .map(r => ({ value: r.id, name: r.name + ' · ' + r.introduction.slice(0, 40) }));
   }
   function renderCharacters(data) {
     if (!data) return;
@@ -399,7 +397,7 @@
       for(const role of roles)select.append(new Option(role.name,role.id));
       const activate=button('确认激活',async()=>{
         const role=roles.find(r=>r.id===select.value);if(!role)throw Error('请选择已有角色');
-        if(!await confirmAction('请在原聊天核对激活编号 '+request.id.slice(0,8)+'。将“'+role.name+'”交给此聊天后，旧聊天绑定会撤销，消息和知识保留。'))return;
+        if(!await confirmAction('请在原聊天核对激活编号 '+request.id.slice(0,8)+'。将“'+role.name+'”交给此聊天后，先前聊天的绑定会结束，消息和知识保留。'))return;
         await api('role/activate',{requestId:request.id,roleId:role.id,expectedRevision:role.revision});await refresh();
       });activate.disabled=true;select.onchange=()=>{activate.disabled=!select.value;};
       card.append(make('strong','待激活聊天 · '+request.id.slice(0,8)),make('p','连接：'+(host?.name||request.connector_id)+' · 最近请求 '+new Date(request.last_seen).toLocaleString()),make('p','先让原聊天显示 role_sync 返回的激活编号，核对一致后再选择角色。'),select,activate);
@@ -862,7 +860,7 @@
     row.className = 'office-seat-row';
     row.dataset.id = data?.id ?? 'seat-' + uuid();
     const agent = make('select');
-    agent.name = 'agent';
+    agent.name = 'roleId';agent.required=true;agent.append(new Option('请选择角色',''));
     for (const a of seatChoices()) {
       const option = make('option', a.name);
       option.value = a.value;
@@ -870,7 +868,7 @@
     }
     if (data) {
       const mapped=state.data.characters?.mappings.find(m=>m.seat_id===data.id);
-      agent.value=mapped?'role:'+mapped.role_id:data.agent_id;
+      agent.value=mapped?.role_id??'';
     }
     const name = input(data?.label ?? '', '可选，留空使用人物名字');
     name.name = 'label';
@@ -878,7 +876,7 @@
     name.maxLength = 120;
     const role = input(data?.role??'member','例如：整理资料、核对证据');role.name='role';role.maxLength=80;
     row.append(
-      label('角色人物 / 旧连接', agent),
+      label('参与角色', agent),
       label('在这里的称呼 / 分工（自定义）', name),
       label('职责（自定义）',role),
       button('移除', () => row.remove())
@@ -1088,7 +1086,7 @@
     if (!['completed', 'cancelled'].includes(o.state))
       controls.append(
         button('编辑办公室与参与者', async () => {
-          if (!(await confirmAction('保存分工会使旧会话绑定和租约失效，agent 需要重新绑定。继续编辑？')))
+          if (!(await confirmAction('保存后会更新办公室分工，并撤销受影响工作项的领取凭据；角色的聊天绑定与知识保留。继续编辑？')))
             return;
           state.editing = { id: o.id, revision: o.revision, state: o.state };
           el('officeCreate').querySelector('summary').textContent = '编辑办公室：' + o.title;
@@ -1213,7 +1211,7 @@
       if (!['completed', 'cancelled'].includes(item.status))
         n.append(
           button('用户取消此工作项', async () => {
-            if (!(await confirmAction('取消此工作项并撤销旧租约？历史证据仍保留。'))) return;
+            if (!(await confirmAction('取消此工作项并撤销当前领取凭据？历史证据仍保留。'))) return;
             await api('item/cancel', {
               itemId: item.id,
               expectedRevision: item.revision,
@@ -1226,7 +1224,7 @@
     }
     if (!data.items.length)
       items.append(
-        make('p', '没有旧工作流记录。')
+        make('p', '没有工作项记录。')
       );
     const materials = el('officeMaterials');
     materials.replaceChildren();
@@ -1520,18 +1518,18 @@
   });
   submit('officeRoomForm', async (data) => {
     const seats = [...el('officeSeatRows').children].map((n) => {
-      const choice=n.querySelector('[name=agent]').value;
-      const roleId=choice.startsWith('role:')?choice.slice(5):null;
+      const choice=n.querySelector('[name=roleId]').value;
+      const roleId=choice;
       const character=state.data.characters?.roles.find(r=>r.id===roleId);
       return ({
       id: n.dataset.id,
-      agentId: character?.connector_id??choice,
-      ...(roleId?{roleId}:{}),
-      label: n.querySelector('[name=label]').value.trim() || character?.name || state.data.agents.find(a=>a.id===choice)?.name || choice,
+      agentId: character?.connector_id,
+      roleId,
+      label: n.querySelector('[name=label]').value.trim() || character?.name || '',
       role: n.querySelector('[name=role]').value
     });});
     if (seats.some((s) => !s.agentId))
-      throw Error('请先接入至少一个 active agent，再安排工位。');
+      throw Error('请先批准角色，再为每位参与者选择角色。');
     const id = state.editing?.id ?? 'office-' + uuid();
     await api('office', {
       id,

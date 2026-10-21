@@ -1264,7 +1264,7 @@ software or this license, under any kind of legal claim.***
 
 
 
-===== @modelcontextprotocol/sdk@1.31.0 / LICENSE =====
+===== @modelcontextprotocol/sdk@1.32.1 / LICENSE =====
 MIT License
 
 Copyright (c) 2024 Anthropic, PBC

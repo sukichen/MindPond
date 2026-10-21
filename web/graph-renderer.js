@@ -164,11 +164,11 @@
       }
       let gpuProgram = null;
       if (gl) { try { gpuProgram = program(gl); } catch (error) { if (mode === 'gpu') throw error; gl = null; } }
-      if (!gl && mode === 'gpu') throw new Error('此浏览器无法建立硬件 WebGL2 上下文，请改用自动或兼容模式。');
+      if (!gl && mode === 'gpu') throw new Error('此浏览器无法建立硬件 WebGL2 上下文，请改用自动选择或 Canvas 2D。');
       if (!gl) this.canvas = document.createElement('canvas');
       this.canvas.className = 'graph-stage-canvas'; this.host.replaceChildren(this.canvas);
       this.gl = gl; this.ctx = gl ? null : this.canvas.getContext('2d', { alpha: true });
-      this.backend = gl ? 'WebGL2' : 'Canvas 2D'; this.renderer = gl ? renderer : '兼容模式';
+      this.backend = gl ? 'WebGL2' : 'Canvas 2D'; this.renderer = gl ? renderer : 'Canvas 2D';
       if (gl) {
         this.p = gpuProgram; this.edgeBuffer = gl.createBuffer(); this.nodeBuffer = gl.createBuffer(); this.glowBuffer=gl.createBuffer(); this.locations = {
           position: gl.getAttribLocation(this.p, 'aPosition'), color: gl.getAttribLocation(this.p, 'aColor'), local: gl.getAttribLocation(this.p, 'aLocal'),

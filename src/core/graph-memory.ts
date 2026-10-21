@@ -8,7 +8,7 @@ import {ProfileVectorIndex} from './profile-vector-index.js';
 import { MemoryWorkflow } from './memory-workflow.js';
 import { initializeTextIndex, trigramExpression } from './text-index.js';
 import { PriorityQueue } from './priority-queue.js';
-import { DEFAULT_DIMENSION_CONFIGURATION, LEGACY_DIMENSION_CONFIGURATION, validateDimensionConfiguration, dimensionPolicy, type DimensionConfiguration } from './dimension-config.js';
+import { DEFAULT_DIMENSION_CONFIGURATION, LEGACY_DIMENSION_CONFIGURATION, validateDimensionConfiguration, migrateDimensionPresentation, dimensionPolicy, type DimensionConfiguration } from './dimension-config.js';
 import { assembleRecall, recallEntry, validateContextBudget, type RecallBudget } from './context-assembly.js';
 /**
  * Graph Memory — canonical bodies, independent space memberships, and ripple.
@@ -1137,7 +1137,7 @@ export class GraphMemory {
     await this.collaboration.init();
     this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
     await this.offices.init();
-    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','init','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','officeContext','link','receive','exchange']);
+    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','init','migrateModel','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','link']);
     await this.roles.init();
     this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay']);
     await this.building.init();
@@ -1145,6 +1145,7 @@ export class GraphMemory {
     await this.officeCollaboration.init();
     this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential']);
     await this.memoryOwners.init();
+    await this.roles.migrateModel();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');
@@ -1156,6 +1157,15 @@ export class GraphMemory {
     } catch (error) { await this.db.exec('ROLLBACK'); throw error; }
     await this.db.exec(`CREATE TABLE IF NOT EXISTS memory_dimension_config (id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL,payload TEXT NOT NULL);`);
     await this.db.run('INSERT OR IGNORE INTO memory_dimension_config(id,revision,payload) VALUES (1,1,?)',[JSON.stringify(DEFAULT_DIMENSION_CONFIGURATION)]);
+    await this.growthWrite(async()=>{
+      if(await this.db!.get("SELECT 1 FROM office_meta WHERE key='dimension-presentation.v1'"))return;
+      const current=await this.getDimensionConfiguration(),next=migrateDimensionPresentation(current);
+      if(JSON.stringify(current)!==JSON.stringify(next)){
+        next.revision=current.revision+1;
+        await this.db!.run('UPDATE memory_dimension_config SET revision=?,payload=? WHERE id=1',[next.revision,JSON.stringify(next)]);
+      }
+      await this.db!.run("INSERT INTO office_meta VALUES('dimension-presentation.v1',?)",[String(this.clock())]);
+    });
     this.anchors=new AnchorStore(this.db, work => this.growthWrite(work));await this.anchors.init();
     this.revisions=new MemoryRevisions(this.db);await this.revisions.init();
     this.profileRetrieval=new ProfileRetrieval(this.db,work=>this.growthWrite(work),this.retrievalConfig,this.retrievalDependencies);

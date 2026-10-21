@@ -32,7 +32,7 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
   const name = o.name ?? 'mindpond_' + compact(o.id.replace(/[^A-Za-z0-9_]/g, '_'));
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(env) || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) throw new Error('Invalid public configuration identifier');
   if (o.sessionLabel && !/^[A-Za-z0-9_.:-]{1,128}$/.test(o.sessionLabel)) throw new Error('Invalid session label');
-  const headers = o.sessionLabel&&o.host!=='opencode' ? { 'X-MindPond-Session': o.sessionLabel } : {};
+  const headers = o.sessionLabel&&!['codex','opencode'].includes(o.host) ? { 'X-MindPond-Session': o.sessionLabel } : {};
   const warnings = [
     ...(url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? ['远程明文 HTTP 会暴露凭据，请改用 HTTPS。'] : []),
     ...(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? ['这是本机地址，其他机器需要可达的中心地址。'] : [])
@@ -41,7 +41,7 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
   const memoryUrl=memoryMcpEndpoint(o.url);
   const base = { env, name, warnings, capabilities: OFFICE_CAPABILITIES };
   if (o.host === 'codex') return { ...base, place: 'Codex .codex/config.toml', docs: 'https://learn.chatgpt.com/docs/config-file/config-reference',
-    text: [name,memoryName].map((entry,i)=>`[mcp_servers.${entry}]\nurl = ${JSON.stringify(i===0?o.url:memoryUrl)}\nbearer_token_env_var = ${JSON.stringify(env)}\n${o.sessionLabel ? `http_headers = { "X-MindPond-Session" = ${JSON.stringify(o.sessionLabel)} }\n` : ''}tool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS}\n`).join('\n') };
+    text: [name,memoryName].map((entry,i)=>`[mcp_servers.${entry}]\nurl = ${JSON.stringify(i===0?o.url:memoryUrl)}\nbearer_token_env_var = ${JSON.stringify(env)}\ntool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS}\n`).join('\n') };
   const config = o.host === 'opencode' ? { mcp: { [name]: { type: 'remote', url: o.url, oauth: false, headers: { Authorization: `Bearer {env:${env}}`, ...headers }, timeout: OFFICE_TOOL_TIMEOUT_MS },[memoryName]:{type:'remote',url:memoryUrl,oauth:false,headers:{Authorization:`Bearer {env:${env}}`},timeout:OFFICE_TOOL_TIMEOUT_MS} } }
     : { mcpServers: { [name]: { type: 'http', url: o.url, headers: { Authorization: 'Bearer ${' + env + '}', ...headers }, timeout: OFFICE_TOOL_TIMEOUT_MS },[memoryName]:{type:'http',url:memoryUrl,headers:{Authorization:'Bearer ${'+env+'}',...headers},timeout:OFFICE_TOOL_TIMEOUT_MS} } };
   if (o.host === 'opencode' || o.host === 'claude') return { ...base, config,

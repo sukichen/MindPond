@@ -44,7 +44,7 @@
                     const edge = node('div');
                     edge.className = 'office-memory-edge';
                     const role = getState().data?.characters?.roles.find(p => p.id === r.role_id);
-                    edge.append(node('span', role?.name ?? '历史角色'), node('span', '→'), button(r.payload.title, () => openMemory(officeId, r.id)));
+                    edge.append(node('span', role?.name ?? '角色不可用'), node('span', '→'), button(r.payload.title, () => openMemory(officeId, r.id)));
                     map.append(edge);
                 }
                 body.append(map);
@@ -209,7 +209,7 @@
             detail.append(button('创建私有数据库备份', async () => { const backup = await api('operations', { action: 'backup' }); showDetail('备份恢复检查', await api('operations', { action: 'checkBackup', id: backup.id })); }));
             for (const backup of data.backups)
                 detail.append(button('检查备份 ' + new Date(backup.created_at).toLocaleString(), async () => showDetail('备份恢复检查', await api('operations', { action: 'checkBackup', id: backup.id }))));
-            detail.append(button('预览清理 30 天前的临时运行记录', async () => { const preview = await api('operations', { action: 'retentionPreview', days: 30 }); showDetail('临时记录清理预览', preview); document.getElementById('officeDetail').append(button('确认清理临时记录', async () => { if (await confirmAction('仅清理过期响应页、已结束等待和旧宿主报告；消息、材料、记忆、交接及审计记录保留。'))
+            detail.append(button('预览清理 30 天前的临时运行记录', async () => { const preview = await api('operations', { action: 'retentionPreview', days: 30 }); showDetail('临时记录清理预览', preview); document.getElementById('officeDetail').append(button('确认清理临时记录', async () => { if (await confirmAction('仅清理过期响应页、已结束等待和过期宿主报告；消息、材料、记忆、交接及审计记录保留。'))
                 showDetail('清理结果', await api('operations', { action: 'retentionApply', days: 30 })); })); }));
         }));
         toolbar.append(button('记录当前办公室布局', async () => {

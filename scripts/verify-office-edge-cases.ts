@@ -1,3 +1,4 @@
+import {attachOfficeEngine} from './fixtures/office-engine-client.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -84,6 +85,7 @@ try {
         requestInit: { headers: { Authorization: 'Bearer ' + tokens[id] } }
       })
     );
+    attachOfficeEngine(c,graph,{v:1,principal:'account',agentId:id,transport:'http-mcp',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
     sessions[id] = (
       await call(c, 'work_session_open', { assignmentId: seat })
     ).context.workSessionId;
@@ -427,7 +429,7 @@ try {
   assert(pending.nextAction.includes('work_office_wait'));
   assert(!pending.nextAction.includes('call work_wait'));
   console.log(
-    'PASS office edge cases: discovery/cache, transfer-submit race, correlated and idle waits, terminal waits, browser pagination, safe rotation, MCP-only text publication, loaded-page refresh'
+    'PASS office edge cases: discovery/cache, transfer-submit race, correlated and idle waits, terminal waits, browser pagination, safe rotation, internal text publication, loaded-page refresh'
   );
 } finally {
   for (const c of clients) await c.close().catch(() => {});

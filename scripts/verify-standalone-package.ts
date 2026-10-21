@@ -120,7 +120,7 @@ try {
   const {configuration}=await dimensionResponse.json() as any;
   assert.equal(configuration.defaultDimension,'work');
   assert.deepEqual(configuration.definitions.slice(0,5).map((d:any)=>d.id),['profile','commitment','environment','work','practice']);
-  assert(configuration.definitions.slice(5).every((d:any)=>d.label.includes('历史兼容')));
+  assert(configuration.definitions.every((d:any)=>!d.label.includes('兼容')));
   for (const route of ['/', '/health', '/vendor/vis-network.min.js', '/licenses/third-party.txt']) {
     const response = await fetch(`http://127.0.0.1:${port}${route}`, { signal: AbortSignal.timeout(5000) });
     assert.equal(response.status, 200, route);

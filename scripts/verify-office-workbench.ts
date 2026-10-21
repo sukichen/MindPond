@@ -164,9 +164,9 @@ try {
   await graph.roles.review({action:'approve',applicationId:application.applicationId,expectedRevision:1},operator);
   assert.equal((await req('agent/delete',{id:'cli-agent',expectedRevision:cliState.agents.find((a:any)=>a.id==='cli-agent').revision})).status,400,'associated roles require explicit removal');
   const historicalAgentRevision=(await graph.offices.registry(operator)).agents.find((a:any)=>a.id==='agent')!.revision;
-  await graph.roles.configureOffice({id:'connector-history',title:'History',state:'active',expectedRevision:0,seats:[{id:'historical-seat',agentId:'agent',label:'Legacy participant'}]},operator);
+  await graph.offices.configureOffice({id:'connector-history',title:'History',state:'active',expectedRevision:0,seats:[{id:'historical-seat',agentId:'agent',label:'Legacy participant'}]},operator);
   assert.equal((await req('agent/delete',{id:'agent',expectedRevision:historicalAgentRevision})).status,400,'active seats cannot silently disappear');
-  await graph.roles.configureOffice({id:'connector-history',title:'History',state:'active',expectedRevision:1,seats:[]},operator);
+  await graph.offices.configureOffice({id:'connector-history',title:'History',state:'active',expectedRevision:1,seats:[]},operator);
   assert.equal((await req('agent/delete',{id:'agent',expectedRevision:historicalAgentRevision})).status,200);
   assert.equal((await (graph as any).db.get('SELECT state FROM office_agents WHERE id=?',['agent'])).state,'deleted','only a minimal historical FK target is retained');
   assert.equal((await (graph as any).db.all('PRAGMA foreign_key_check')).length,0);

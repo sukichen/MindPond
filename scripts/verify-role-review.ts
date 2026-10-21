@@ -29,17 +29,14 @@ try {
     { id: 'test', agentId: 'cli', roleId: b.roleId, label: 'Reviewer', role: 'reviewer' }
   ] }, admin);
   const opened = await graph.offices.open({ assignmentId: 'dev' }, a);
-  assert.equal((await graph.roles.officeContext(a)).workSessionId, opened.context!.workSessionId, 'implicit role context resumes an explicit authorized session');
-  // Remove only the cache to preserve the original explicit-session failure case.
   const db = (graph as any).db;
-  await db.run('DELETE FROM role_office_contexts WHERE binding_id=?', a.roleBindingId);
   const created = await graph.offices.item({ action: 'create', workSessionId: opened.context!.workSessionId, title: 'Fix fixture', acceptance: 'Exact evidence', owner: 'dev', reviewer: 'test', key: 'create' }, a);
+  const reviewSession=(await graph.offices.open({assignmentId:'test'},b)).context!;
   await check('role inbox exposes office messages AND assigned work', async () => {
-    const reviewSession = await graph.roles.officeContext(b);
     await graph.offices.exchange({ action: 'send', workSessionId: reviewSession.workSessionId, recipient: 'dev', kind: 'request', body: 'Please inspect this fixture', key: 'office-msg' }, b);
-    const inbox = await graph.roles.receive({}, a);
-    assert(inbox.officePending?.some((x: any) => x.kind === 'message' && x.assignmentId === 'dev'));
-    assert(inbox.officePending?.some((x: any) => x.kind === 'item' && x.itemId === created.item.id));
+    const inbox = await graph.offices.pending(a);
+    assert(inbox.items?.some((x: any) => x.kind === 'message' && x.assignmentId === 'dev'));
+    assert(inbox.items?.some((x: any) => x.kind === 'item' && x.itemId === created.item.id));
   });
   const claimed = await graph.offices.item({ action: 'claim', workSessionId: opened.context!.workSessionId, itemId: created.item.id, expectedRevision: created.item.revision, key: 'claim' }, a);
   assert(claimed);
@@ -63,26 +60,24 @@ try {
   });
   await graph.roles.configure({ roleId: a.roleId, expectedRevision: 2, name: 'a', introduction: 'Restored', state: 'active' }, admin);
   await check('stale binding epoch cannot reopen or send after restore', async () => {
-    await assert.rejects(graph.roles.officeContext(a));
-    await assert.rejects(graph.roles.exchange({ action: 'send', recipient: b.roleId, kind: 'inform', body: 'Stale', key: 'stale' }, a));
-    await assert.rejects(graph.offices.open({ assignmentId: 'dev' }, a));
-    assert((await graph.roles.officeContext({ ...a, roleBindingEpoch: 3 })).workSessionId);
+    await assert.rejects(graph.offices.open({assignmentId:'dev'},a));
+    await assert.rejects(graph.building.message({ action: 'send', recipient: b.roleId, kind: 'inform', body: 'Stale', key: 'stale' }, a));
+    assert(((await graph.offices.open({assignmentId:'dev'},{ ...a, roleBindingEpoch: 3 })).context!).workSessionId);
   });
   await check('expired context cannot read role inbox', async () => {
-    await assert.rejects(graph.roles.receive({}, { ...b, expiresAt: 1 }));
+    await assert.rejects(graph.building.receive({action:'list'}, { ...b, expiresAt: 1 }));
   });
   await check('role discovery/source attribution obey restricted assignments', async () => {
     const restricted = { ...b, assignmentIds: ['not-this-office'] };
     assert.deepEqual((await graph.roles.sync(restricted)).assignments, []);
-    assert.deepEqual((await graph.roles.receive({}, restricted)).officePending, []);
-    await assert.rejects(graph.roles.exchange({ action: 'send', recipient: a.roleId, kind: 'inform', body: 'Unauthorized source', officeId: 'room', key: 'bad-source' }, restricted));
+    assert.deepEqual((await graph.offices.pending(restricted)).items, []);
+    await assert.rejects(graph.building.message({ action: 'send', recipient: a.roleId, kind: 'inform', body: 'Unauthorized source', officeId: 'room', key: 'bad-source' }, restricted));
   });
   await check('completed office requests disappear from role summary', async () => {
-    const reviewSession = await graph.roles.officeContext(b);
     await graph.offices.exchange({ action: 'send', workSessionId: reviewSession.workSessionId, recipient: 'dev', kind: 'reply', requestId: outgoing.messageId, final: true, body: 'Done', key: 'wait-final' }, b);
-    const inbox = await graph.roles.receive({}, b);
-    assert(!inbox.officePending.some((x: any) => x.messageId === outgoing.messageId));
-    assert(inbox.officePending.some((x: any) => x.messageKind === 'reply') === false, 'sender cannot see another seat reply inbox');
+    const inbox = await graph.offices.pending(b);
+    assert(!inbox.items.some((x: any) => x.messageId === outgoing.messageId));
+    assert(inbox.items.some((x: any) => x.messageKind === 'reply') === false, 'sender cannot see another seat reply inbox');
   });
   await check('cross-process role snapshot never swallows a concurrent approval', async () => {
     const runtime: TrustedCallContext = { v: 1, principal: 'owner', agentId: 'cli', transport: 'http-mcp', runtimeId: 'race', issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };

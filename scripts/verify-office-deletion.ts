@@ -37,9 +37,9 @@ try {
   await createOffice('delete-room');await createOffice('keep-room');
   await graph.saveMemory('Independent personal knowledge must survive office deletion.',{dimensions:['work']});
   const fill=async(officeId:string)=>{
-    const session=await graph.roles.officeContext(a,officeId);
+    const session=(await graph.offices.open({assignmentId:officeId+'-a'},a)).context!;
     const legacy=await graph.offices.exchange({action:'send',workSessionId:session.workSessionId,recipient:officeId+'-b',kind:'inform',body:'办公室准备好了，完整草案会放在文本材料里。',key:'legacy-'+officeId},a);
-    await graph.offices.exchange({action:'ack',workSessionId:(await graph.roles.officeContext(b,officeId)).workSessionId,messageId:legacy.messageId,kind:'read',key:'ack-'+officeId},b);
+    await graph.offices.exchange({action:'ack',workSessionId:((await graph.offices.open({assignmentId:officeId+'-b'},b)).context!).workSessionId,messageId:legacy.messageId,kind:'read',key:'ack-'+officeId},b);
     const materialRequest={action:'publish',officeId,title:'交通与预算草案',version:'草案 v1',content:'两位成年人，从杭州出发，两天一夜。预算上限约 2000 元，出发日期、交通时刻与住宿价格待确认。请结合景点顺序继续调整。',key:'material-'+officeId};
     const material=await graph.building.material(materialRequest,a);
     await graph.building.container({action:'put',officeId,id:officeId+'-note',title:'待确认清单',content:{date:'待确认'},expectedRevision:0,key:'note-'+officeId},a);
@@ -125,7 +125,7 @@ try {
     }
     console.log('PASS archived/completed rooms can be read and permanently deleted at the current revision');
 
-    const counts=async()=>Promise.all(['offices','office_sessions','office_messages','role_messages','office_materials','office_chunks','office_containers','office_items','office_rounds','role_office_contexts'].map(async table=>[table,(await db.get(`SELECT COUNT(*) n FROM ${table}`)).n]));
+    const counts=async()=>Promise.all(['offices','office_sessions','office_messages','role_messages','office_materials','office_chunks','office_containers','office_items','office_rounds'].map(async table=>[table,(await db.get(`SELECT COUNT(*) n FROM ${table}`)).n]));
     const before=await counts();
     const run=db.run.bind(db);db.run=async(sql:string,...args:unknown[])=>{
       if(sql==='DELETE FROM offices WHERE id=?')throw Error('Injected deletion failure');
@@ -165,7 +165,7 @@ try {
       {id:'transfer-b',agentId:'connector',roleId:b.roleId,label:'B',role:'worker'},
       {id:'transfer-c',agentId:'connector',roleId:c.roleId,label:'C',role:'reviewer'},
     ]},admin);
-    const transferContext=await graph.roles.officeContext(b,'transfer-room');
+    const transferContext=(await graph.offices.open({assignmentId:'transfer-b'},b)).context!;
     const otherTask=await graph.offices.item({action:'create',workSessionId:transferContext.workSessionId,title:'Other owner task',acceptance:'Evidence',owner:'transfer-b',reviewer:'transfer-c',key:'other-task'},b);
     await graph.offices.item({action:'transfer',workSessionId:transferContext.workSessionId,itemId:otherTask.item.id,expectedRevision:otherTask.item.revision,target:'transfer-a',key:'propose-transfer'},b);
 

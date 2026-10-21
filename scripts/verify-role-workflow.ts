@@ -136,17 +136,15 @@ try {
   // Real office controls accept characters and auto-resolve a bound context.
   const room = { id: 'role-room', title: 'Synthetic role validation', goal: 'Check a synthetic task.', acceptance: 'Report actual evidence.', expectedRevision: 0, state: 'active', deadline: Date.now() + 3600000, maxRounds: 3, seats: [{ id: 'role-worker', agentId: 'codex', roleId: roleA, label: 'Maintainer', role: 'worker' }, { id: 'role-reviewer', agentId: 'codex', roleId: roleB, label: 'Verifier', role: 'reviewer' }] };
   assert.equal((await req('office', room)).status, 200);
-  const material = await call(a, 'work_material', { action: 'publish', label: 'Synthetic reproduction', version: 'v1', content: 'Only synthetic fixture evidence.', key: 'material' });assert(material.materialId);
-  const aOffice = await call(a, 'work_bootstrap');
-  const aSession = aOffice.sessions.find((s: any) => s.seat_id === 'role-worker').id;
-  assert((await raw(b, 'work_material', { action: 'publish', workSessionId: aSession, label: 'Invalid', version: 'v1', content: 'Wrong role', key: 'bad-material' })).isError);
-  assert.equal((await call(b, 'work_office_get', { officeId: 'role-room' })).office.id, 'role-room');
-  // Disable fences contexts and memory calls carrying an obsolete role.
-  assert.equal((await req('role/configure', { roleId: roleA, expectedRevision: 2, name: '栗子', introduction: 'Disabled fixture role.', state: 'disabled' })).status, 200);
-  assert((await raw(a, 'role_sync')).isError);assert((await raw(a, 'work_material', { action: 'publish', workSessionId: aSession, label: 'Late', version: 'v1', content: 'Rejected', key: 'late' })).isError);
-  assert.equal((await req('role/configure', { roleId: roleA, expectedRevision: 3, name: '栗子', introduction: 'Restored fixture role.', state: 'active' })).status, 200);
-  assert.equal((await call(a, 'role_sync')).identity.bindingEpoch, 3);
-  assert((await call(a, 'work_material', { action: 'publish', label: 'After recovery', version: 'v2', content: 'Fresh context required by server.', key: 'new-material' })).materialId);
+  assert((await a.listTools()).tools.every(t=>!t.name.startsWith('work_')),'registered Office connections expose one current tool catalog');
+  const material=await call(a,'office_material',{action:'publish',officeId:'role-room',title:'Synthetic reproduction',version:'v1',content:'Only synthetic fixture evidence.',key:'material'});assert(material.materialId);
+  const directory=await call(b,'office_directory',{action:'rooms',officeId:'role-room'});assert(directory.rooms.some((r:any)=>r.officeId==='role-room'));
+  assert((await raw(b,'work_material',{action:'publish',key:'removed'})).isError);
+  assert.equal((await req('role/configure',{roleId:roleA,expectedRevision:2,name:'栗子',introduction:'Disabled fixture role.',state:'disabled'})).status,200);
+  assert((await raw(a,'role_sync')).isError);assert((await raw(a,'office_material',{action:'publish',officeId:'role-room',title:'Late',version:'v1',content:'Rejected',key:'late'})).isError);
+  assert.equal((await req('role/configure',{roleId:roleA,expectedRevision:3,name:'栗子',introduction:'Restored fixture role.',state:'active'})).status,200);
+  assert.equal((await call(a,'role_sync')).identity.bindingEpoch,3);
+  assert((await call(a,'office_material',{action:'publish',officeId:'role-room',title:'After recovery',version:'v2',content:'Fresh context required by server.',key:'new-material'})).materialId);
   const database = (graph as any).db;
   assert((await database.get("SELECT COUNT(*) n FROM memory_action_log WHERE action LIKE 'collaboration_role_%' ")).n > 10);
   const logs = JSON.stringify(await database.all('SELECT * FROM role_events'));
@@ -167,7 +165,7 @@ try {
         const parsed=JSON.parse(cli.stdout);
         assert.equal(parsed.transport.url,url.href);
         assert.equal(parsed.transport.bearer_token_env_var,'FIXTURE_MINDPOND_AUTH');
-        assert.equal(parsed.transport.http_headers['X-MindPond-Session'],bundle.sessionLabel);
+        assert(!parsed.transport.http_headers?.['X-MindPond-Session']);
         assert(!cli.stdout.includes(tokens.codex));
         console.log('PASS installed Codex CLI parses generated native HTTP MCP/session/env-reference configuration (no model invocation).');
         await probeCodexSkill(process.env.MINDPOND_TEST_CODEX_BIN,directory);

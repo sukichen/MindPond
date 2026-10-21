@@ -205,7 +205,7 @@ export function officeWorkbench(
     graph.offices.configureProject(projectConfigurationSchema.parse(req.body), operator)
   );
   route('/office', async (req) => {
-    const input=officeConfigurationSchema.parse(req.body);
+    const input=officeConfigurationSchema.extend({seats:officeConfigurationSchema.shape.seats.unwrap().element.extend({roleId:z.string().uuid()}).strict().array().max(50).optional()}).strict().parse(req.body);
     const result=await graph.roles.configureOffice(input,operator);
     await graph.officeCollaboration.layout(input.id,operator);
     return result;
@@ -337,7 +337,7 @@ export function officeWorkbench(
       return {
         token: (await fs.readFile(file, 'utf8')).trim(),
         agentId: agent.id,
-        notice: '仅这次响应含凭据。请保存到宿主秘密设置，不发送给 agent。重新签发会替换旧凭据。'
+        notice: '仅这次响应含凭据。请保存到宿主秘密设置，不发送给 agent。重新签发会替换当前凭据。'
       };
     } finally {
       await fs.rm(directory, { recursive: true, force: true });

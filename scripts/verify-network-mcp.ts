@@ -48,6 +48,12 @@ try {
     await client.connect(transport);return {client,transport};
   };
   const [a,b,privateClient]=await Promise.all(['account-one','account-two','unrelated'].map(p=>connect(p)));
+  const excessive=await a.client.callTool({name:'memory_save',arguments:{content:'Must never save oversized structured input',tags:Array(10001).fill('fixture'),idempotencyKey:'too-many-elements'}});
+  assert(excessive.isError);assert.match(JSON.stringify(excessive.content),/maximum of 10000 elements/);
+  assert.equal((await (graph as any).db.get('SELECT COUNT(*) n FROM nodes')).n,0,'oversized arguments rejected before mutation');
+  const hugeBody=await fetch(url,{method:'POST',headers:{...headers('account-one'),'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'memory_save',arguments:{content:'x'.repeat(1024*1024)}}})});
+  assert.equal(hugeBody.status,413,'HTTP byte budget remains independent of element count');
+  console.log('PASS SDK element limit before schema/mutation, 1MB HTTP limit, service remains usable');
   const capA=await call(a.client,'memory_capabilities'),capB=await call(b.client,'memory_capabilities');
   assert.notEqual(capA.mcpConnection.sessionId,capB.mcpConnection.sessionId);
   assert.equal(capA.mcpConnection.toolProfile,'work');

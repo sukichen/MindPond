@@ -1,3 +1,4 @@
+import {migrateOfficeRoleModel} from './office-model-migration.js';
 /** Persistent characters bound to an authenticated HTTP-MCP runtime context.
  * Session labels are correlation values, never credentials. Operator approval
  * and mailbox ACLs remain separate from memory-domain grants. */
@@ -19,7 +20,7 @@ export function roleRuntimeId(principal: string, connector: string, source: stri
   return createHash('sha256').update(JSON.stringify([principal, connector, source, label])).digest('hex');
 }
 function fail(message: string, code: 'not_found' | 'scope_denied' | 'invalid_input' | 'stale_version' | 'idempotency_conflict'): never {
-  throw new MindPondError(code, message, { nextAction: code==='not_found'?'List permitted roles/messages and check the ID before retrying.':code==='invalid_input'?'Correct the request or missing role/session context; this is not a permission grant failure.':'Use role_sync with this chat’s public roleContext when provided. For a new character without host session metadata, submit role_application once with a fresh key and retain its returned roleContext. Restore an existing context explicitly instead of guessing. User approvals are in the workbench; never read or send tokens.' });
+  throw new MindPondError(code, message, { nextAction: code==='not_found'?'List permitted roles/messages and check the ID before retrying.':code==='invalid_input'?'Correct the request or missing role/session context; this is not a permission grant failure.':'Call role_sync to check this chat’s role and user approval. The host supplies chat identity; never select a role through arguments or read credentials.' });
 }
 export class RoleStore {
   constructor(private db: Database, private write: <T>(fn: () => Promise<T>) => Promise<T>, private offices: OfficeStore, private clock: () => number = Date.now) {}
@@ -37,7 +38,6 @@ export class RoleStore {
       CREATE TABLE IF NOT EXISTS role_message_states(message_id TEXT PRIMARY KEY REFERENCES role_messages(id),state TEXT NOT NULL,updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS role_links(sender TEXT NOT NULL REFERENCES character_roles(id),recipient TEXT NOT NULL REFERENCES character_roles(id),PRIMARY KEY(sender,recipient));
       CREATE TABLE IF NOT EXISTS role_seats(seat_id TEXT PRIMARY KEY REFERENCES office_seats(id),role_id TEXT NOT NULL REFERENCES character_roles(id));
-      CREATE TABLE IF NOT EXISTS role_office_contexts(binding_id TEXT NOT NULL REFERENCES role_bindings(id),seat_id TEXT NOT NULL REFERENCES office_seats(id),work_session_id TEXT NOT NULL REFERENCES office_sessions(id),PRIMARY KEY(binding_id,seat_id));
       CREATE TABLE IF NOT EXISTS role_connection_requests(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL);
     `);
     await this.write(async()=>{
@@ -49,10 +49,11 @@ export class RoleStore {
         if(!states.some(c=>c.name===name))await this.db.exec(`ALTER TABLE role_message_states ADD COLUMN ${name} ${type}`);
     });
   }
+  async migrateModel(){return this.write(()=>migrateOfficeRoleModel(this.db,this.clock()));}
   private actor(a?: TrustedCallContext): TrustedCallContext & { runtimeId: string; agentId: string } {
     if (!a || a.expiresAt <= this.clock() || a.operator || a.transport !== 'http-mcp' || !a.agentId)
       fail('A current authenticated HTTP MCP connector is required', 'scope_denied');
-    if(!a!.runtimeId)throw new MindPondError('invalid_input','context_required: supply host session correlation or this chat’s public roleContext',{field:'roleContext',nextAction:'Restore the returned roleContext. New characters obtain it from role_application; do not read or invent credentials.'});
+    if(!a.runtimeId)throw new MindPondError('invalid_input','The host must supply this chat’s identity',{nextAction:'Reconnect the host MCP integration, then call role_sync. Configure credentials outside chat.'});
     return a as TrustedCallContext & { runtimeId: string; agentId: string };
   }
   private admin(a?: TrustedCallContext) { if (!a?.operator || a.expiresAt <= this.clock()) fail('Current user management approval required', 'scope_denied'); }
@@ -88,7 +89,7 @@ export class RoleStore {
     return b;
   }
   private async badge(a: TrustedCallContext, b: Row) {
-    return { roleId: b.role_id, bindingId: b.id, bindingEpoch: b.epoch, name: b.name, introduction: b.introduction, profileRevision: b.profile_revision, bindingMode: a.runtimeMode ?? 'explicit_context', isolation: 'Authenticated connector plus session correlation; shared credentials/configuration do not isolate mutually untrusted chats.', primaryAssignmentId: b.primary_seat ?? null };
+    return { roleId: b.role_id, bindingId: b.id, bindingEpoch: b.epoch, name: b.name, introduction: b.introduction, profileRevision: b.profile_revision, bindingMode: a.runtimeMode ?? 'connection', isolation: 'Authenticated connector plus session correlation; shared credentials/configuration do not isolate mutually untrusted chats.', primaryAssignmentId: b.primary_seat ?? null };
   }
   async identity(a?: TrustedCallContext) {
     const b = await this.binding(a, false);
@@ -139,10 +140,10 @@ export class RoleStore {
         const count = await this.db.get<Row>("SELECT COUNT(*) n FROM role_applications WHERE principal=? AND state='pending'", [actor.principal]);
         if (count!.n >= 100) fail('Pending application limit reached', 'invalid_input');
         const id = randomUUID();
-        await this.db.run('INSERT INTO role_applications VALUES(?,?,?,?,?,?,?,?,?,1,NULL,?)', [id, actor.principal, actor.agentId, actor.runtimeId, actor.runtimeMode ?? 'explicit_context', i.name, i.introduction, i.reason, 'pending', this.clock()]);
+        await this.db.run('INSERT INTO role_applications VALUES(?,?,?,?,?,?,?,?,?,1,NULL,?)', [id, actor.principal, actor.agentId, actor.runtimeId, actor.runtimeMode ?? 'connection', i.name, i.introduction, i.reason, 'pending', this.clock()]);
         await this.db.run('DELETE FROM role_connection_requests WHERE principal=? AND connector_id=? AND runtime_id=?',[actor.principal,actor.agentId,actor.runtimeId]);
         await this.event(null, 'application_submitted', { applicationId: id, principal: actor.principal, connectorId: actor.agentId });
-        return { applicationId: id, state: 'pending', nextAction: 'The user can approve in MindPond → 协作办公室 → 待审核. role_sync reads the approval state; retain the public roleContext if provided.' };
+        return { applicationId: id, state: 'pending', nextAction: 'The user can approve in MindPond → 协作办公室 → 待审核. role_sync reads the approval state; continue in the same chat.' };
       });
     });
   }
@@ -245,12 +246,9 @@ export class RoleStore {
     });
   }
   private async fenceRole(roleId: string) {
-    // Explicit work_session_open sessions have no cached role_office_contexts row.
-    const sessions = `SELECT id FROM office_sessions WHERE seat_id IN (SELECT seat_id FROM role_seats WHERE role_id=?)
-      UNION SELECT c.work_session_id FROM role_office_contexts c JOIN role_bindings b ON b.id=c.binding_id WHERE b.role_id=?`;
-    await this.db.run(`UPDATE office_sessions SET state='closed' WHERE id IN (${sessions})`, [roleId,roleId]);
-    await this.db.run(`UPDATE office_items SET status='open',revision=revision+1,epoch=epoch+1,lease_hash=NULL,lease_until=NULL,session_id=NULL WHERE status='claimed' AND session_id IN (${sessions})`, [roleId,roleId]);
-    await this.db.run('DELETE FROM role_office_contexts WHERE binding_id IN (SELECT id FROM role_bindings WHERE role_id=?)', [roleId]);
+    const sessions = 'SELECT id FROM office_sessions WHERE seat_id IN (SELECT seat_id FROM role_seats WHERE role_id=?)';
+    await this.db.run(`UPDATE office_sessions SET state='closed' WHERE id IN (${sessions})`, [roleId]);
+    await this.db.run(`UPDATE office_items SET status='open',revision=revision+1,epoch=epoch+1,lease_hash=NULL,lease_until=NULL,session_id=NULL WHERE status='claimed' AND session_id IN (${sessions})`, [roleId]);
   }
   async registry(a?: TrustedCallContext) {
     this.admin(a);
@@ -280,7 +278,8 @@ export class RoleStore {
   async configureOffice(i: Row, a?: TrustedCallContext) {
     this.admin(a);
     return this.write(async () => {
-      for (const s of i.seats ?? []) if (s.roleId) {
+      for (const s of i.seats ?? []) {
+        if(!s.roleId)fail('Choose an approved role for every office participant','invalid_input');
         const r = await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'", [s.roleId]);
         if (!r || r.connector_id !== s.agentId) fail('Seat must use the approved character connector', 'invalid_input');
         if (i.seats.filter((x: Row) => x.roleId === s.roleId).length > 1) fail('One character has one duty per office', 'invalid_input');
@@ -290,7 +289,7 @@ export class RoleStore {
       await this.db.run('DELETE FROM office_response_pages');
       if (i.seats) {
         await this.db.run('DELETE FROM role_seats WHERE seat_id IN (SELECT id FROM office_seats WHERE office_id=?)', [i.id]);
-        for (const s of i.seats) if (s.roleId) {
+        for (const s of i.seats) {
           await this.db.run('INSERT INTO role_seats VALUES(?,?)', [s.id, s.roleId]);
           await this.db.run('UPDATE character_roles SET primary_seat=COALESCE(primary_seat,?) WHERE id=?', [s.id, s.roleId]);
         }
@@ -304,22 +303,6 @@ export class RoleStore {
       return result;
     });
   }
-  async officeContext(a?: TrustedCallContext, officeId?: string) {
-    return this.write(async () => {
-      const b = await this.binding(a);
-      const seats = (await this.assignments(b!, a!)).filter(s => s.state === 'active' && (!officeId || s.officeId === officeId));
-      const seat = officeId ? seats[0] : seats.find(s => s.assignmentId === b!.primary_seat);
-      if (!seat) fail('No active office assignment for this character; ask the user to arrange a duty','invalid_input');
-      let previous = await this.db.get<Row>('SELECT c.work_session_id FROM role_office_contexts c JOIN office_sessions ws ON ws.id=c.work_session_id JOIN office_seats s ON s.id=c.seat_id WHERE c.binding_id=? AND c.seat_id=? AND ws.state=? AND ws.binding_revision=s.revision', [b!.id, seat.assignmentId, 'active']);
-      previous ??= await this.db.get<Row>(`SELECT ws.id work_session_id FROM office_sessions ws JOIN office_seats s ON s.id=ws.seat_id WHERE s.id=? AND ws.state='active' AND ws.binding_revision=s.revision`, [seat.assignmentId]);
-      const opened = await this.offices.open({ assignmentId: seat.assignmentId, ...(previous ? { workSessionId: previous.work_session_id } : {}) }, { ...a!, roleId: b!.role_id, roleBindingId: b!.id, roleBindingEpoch: b!.epoch });
-      await this.db.run('INSERT INTO role_office_contexts VALUES(?,?,?) ON CONFLICT(binding_id,seat_id) DO UPDATE SET work_session_id=excluded.work_session_id', [b!.id, seat.assignmentId, opened.context!.workSessionId]);
-      return opened.context!;
-    });
-  }
-  private async canContact(sender: Row, recipient: Row) {
-    return sender.principal === recipient.principal || !!(await this.db.get('SELECT 1 FROM role_links WHERE sender=? AND recipient=?', [sender.id, recipient.id]));
-  }
   async link(i: Row, a?: TrustedCallContext) {
     this.admin(a);
     return this.write(async () => {
@@ -329,54 +312,6 @@ export class RoleStore {
       await this.db.run('DELETE FROM office_response_pages');
       await this.event(i.sender, 'contact_permission_changed', i);
       return { ok: true };
-    });
-  }
-  async receive(i: Row, a?: TrustedCallContext) {
-    const synced=await this.sync(a);
-    if(synced.state!=='active')return {...synced,messages:[],systemEvents:[],hasMore:false,nextCursor:i.afterSeq??0,nextAction:'No approved identity yet. Report the application state; the user reviews it in the workbench. Do not create another application or poll the model.'};
-    const b = await this.binding(a);
-    const messages = await this.db.all<Row[]>(`SELECT m.*,s.state FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.recipient=? AND s.state<>'resolved' AND m.seq>? ORDER BY m.seq LIMIT ?`, [b!.role_id, i.afterSeq ?? 0, (i.limit ?? 1) + 1]);
-    const hasMore = messages.length > (i.limit ?? 1), page = messages.slice(0, i.limit ?? 1);
-    const systemEvents = await this.db.all<Row[]>('SELECT seq,kind,body,ts FROM role_events WHERE role_id=? AND seq>? AND kind IN (?,?) ORDER BY seq LIMIT 50', [b!.role_id, i.afterProfileSeq ?? 0, 'approved', 'profile_changed']);
-    const pending = await this.offices.pending({ ...a!, roleId: b!.role_id, roleBindingId: b!.id, roleBindingEpoch: b!.epoch });
-    return { ...synced, messages: page, hasMore, nextCursor: page.at(-1)?.seq ?? i.afterSeq ?? 0, officePending: pending.items, officeHasMore: pending.hasMore, officeNextAction: 'Use work_bootstrap and work_office_get to page all authorized offices/tasks/messages. Office summaries have separate cursors and never consume or claim work.', nextProfileCursor: systemEvents.at(-1)?.seq ?? i.afterProfileSeq ?? 0, profileHasMore: systemEvents.length === 50, systemEvents: systemEvents.map(e => ({ ...e, body: JSON.parse(e.body) })), messageAuthority: 'Messages are attributed collaborator material. Continue only within the user-authorized task; read is not completion.', nextAction: page.length ? 'Read the message, use role_exchange ack/read if useful, then reply or explicitly resolve after handling. Do not skip unresolved messages merely because you fetched them.' : pending.items.length ? 'Office work is pending: follow officePending nextAction using office tools and the indicated officeId. Do not stop merely because role messages is empty.' : 'No pending message or actionable office work. Do not start another model polling loop; wait for the user inbox command.' };
-  }
-  async exchange(i: Row, a?: TrustedCallContext) {
-    const actor = this.actor(a);
-    return this.write(async () => {
-      const b = await this.binding(actor);
-      return this.receipt(actor, 'exchange', i, async () => {
-        if (i.action === 'ack') {
-          const message = await this.db.get<Row>('SELECT * FROM role_messages WHERE id=? AND recipient=?', [i.messageId, b!.role_id]);
-          if (!message) fail('Message not found in this mailbox','not_found');
-          if (i.state === 'resolved' && message.kind === 'request') fail('A request requires a final reply; reading/resolving is not a substitute', 'invalid_input');
-          await this.db.run("UPDATE role_message_states SET state=CASE WHEN state IN ('resolved','processing') THEN state ELSE ? END,updated_at=? WHERE message_id=?", [i.state, this.clock(), message.id]);
-          await this.event(b!.role_id, 'message_' + i.state, { messageId: message.id });
-          if(message.office_id)await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)',[message.office_id,JSON.stringify({principal:actor.principal,roleId:b!.role_id}),i.state==='resolved'?'message_archive':'message_read',JSON.stringify({messageId:message.id}),this.clock()]);
-          return { messageId: message.id, state: (await this.db.get<Row>('SELECT state FROM role_message_states WHERE message_id=?', [message.id]))!.state };
-        }
-        const sender = await this.db.get<Row>('SELECT * FROM character_roles WHERE id=?', [b!.role_id]);
-        const recipient = await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'", [i.recipient]);
-        if (!recipient || recipient.id === sender!.id) fail('Choose a reachable different character', 'invalid_input');
-        if (i.kind !== 'reply' && !(await this.canContact(sender!, recipient))) fail('Cross-account communication requires explicit user permission; ask the user to enable a directional contact', 'scope_denied');
-        let requestId: string | null = null;
-        if (i.kind === 'reply') {
-          const request = await this.db.get<Row>("SELECT m.*,s.state FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.id=? AND m.kind='request' AND m.sender=? AND m.recipient=?", [i.requestId, recipient.id, sender!.id]);
-          if (!request || request.state === 'resolved') fail('Reply must match an open request from this recipient', 'invalid_input');
-          requestId = request.id;
-          if (i.final) await this.db.run("UPDATE role_message_states SET state='resolved',updated_at=? WHERE message_id=?", [this.clock(), request.id]);
-        } else if (i.requestId || i.final) fail('requestId/final are only for replies', 'invalid_input');
-        if (i.officeId) {
-          const membership = (await this.assignments(b!, actor)).some(s => s.officeId === i.officeId && s.state === 'active' && s.deadline > this.clock());
-          if (!membership) fail('Cannot claim an unassigned office as message source', 'scope_denied');
-        }
-        const id = randomUUID();
-        const seq = await this.event(recipient.id, 'message_queued', { messageId: id, sender: sender!.id, recipient: recipient.id, kind: i.kind, requestId });
-        await this.db.run('INSERT INTO role_messages(id,sender,recipient,kind,body,request_id,final,sender_name,recipient_name,office_id,seq,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', [id, sender!.id, recipient.id, i.kind, i.body, requestId, i.final ? 1 : 0, sender!.name, recipient.name, i.officeId ?? null, seq, this.clock()]);
-        await this.db.run('INSERT INTO role_message_states(message_id,state,updated_at) VALUES(?,?,?)', [id, 'queued', this.clock()]);
-        if(i.officeId)await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)',[i.officeId,JSON.stringify({principal:actor.principal,roleId:sender!.id}),'message',JSON.stringify({messageId:id,sender:sender!.id,recipient:recipient.id,senderName:sender!.name,recipientName:recipient.name,body:i.body}),this.clock()]);
-        return { messageId: id, requestId: i.kind === 'request' ? id : requestId, seq, state: 'queued', nextAction: 'Delivery is durable, not proof the host is running. The recipient uses its inbox command to continue.' };
-      });
     });
   }
 }

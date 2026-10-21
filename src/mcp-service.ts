@@ -1,11 +1,10 @@
+import {MAX_MCP_INPUT_ELEMENTS} from './core/mcp-limits.js';
 import {hostChatIdentity} from './integrations/host-correlation.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
-import {officeMemorySession} from './core/office.js';
 import { roleRuntimeId } from './core/roles.js';
 import { roleOperations } from './core/role-tools.js';
 import { buildingOperations } from './core/building-tools.js';
 import { BUILDING_INSTRUCTIONS } from './core/office-building.js';
-import { createHash } from 'node:crypto';
 import { recallEntry } from './core/context-assembly.js';
 import { MEMORY_BOOTSTRAP, OFFICE_MEMORY_BOOTSTRAP } from './core/bootstrap.js';
 import { parseMcpToolProfile, exposesMcpTool } from './core/mcp-tool-profile.js';
@@ -45,7 +44,7 @@ import type { McpToolProfile } from './core/mcp-tool-profile.js';
 import type {WorkCallRuntime} from './core/collaboration-wait.js';
 
 /** Same catalog and scope checks for stdio and each authenticated HTTP connection. */
-export function createMemoryMcpServer(graphMemory:GraphMemory, options:{trusted?:TrustedCallContext;toolProfile?:McpToolProfile;enableTasks?:boolean;legacyOfficeWork?:boolean;pinnedRoleId?:string;authorizeWait?:()=>Promise<void>;waitSignal?:(requestId:string|number)=>AbortSignal|undefined}={}) {
+export function createMemoryMcpServer(graphMemory:GraphMemory, options:{trusted?:TrustedCallContext;toolProfile?:McpToolProfile;enableTasks?:boolean;pinnedRoleId?:string;authorizeWait?:()=>Promise<void>;waitSignal?:(requestId:string|number)=>AbortSignal|undefined}={}) {
 const trustBound=options.trusted!==undefined;
 const baseTrusted=options.trusted??{v:1 as const,principal:'stdio-host',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
 const contextStorage=new AsyncLocalStorage<TrustedCallContext>();
@@ -83,7 +82,7 @@ const taskStore=options.enableTasks!==false&&baseTrusted.agentId&&baseTrusted.ru
 const server = new McpServer({
   name: 'agent-memory',
   version: '0.1.0',
-}, { instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+(toolProfile==='office'?'':'\n'+OFFICE_MEMORY_BOOTSTRAP):MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
+}, { maxToolInputElements:MAX_MCP_INPUT_ELEMENTS,instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+(toolProfile==='office'?'':'\n'+OFFICE_MEMORY_BOOTSTRAP):MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
 
 const exposedTools: string[] = [];
 if(taskStore){
@@ -102,19 +101,15 @@ const seenRoleProfiles=new Map<string,string>();
 /** R01: every tool failure returns isError with the structured error shape
  * (code/retryable/nextAction) so MCP clients react to data, not prose. */
 function tool(name: string, description: string, shape: any, handler: (args: any,runtime?:WorkCallRuntime) => Promise<any>) {
-  if (!exposesMcpTool(toolProfile, name)&&!(toolProfile==='office'&&options.legacyOfficeWork&&name.startsWith('work_'))) return;
-  if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))return;
-  if(baseTrusted.agentId&&toolProfile!=='office')shape={...shape,roleContext:z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/).optional()};
+  if (!exposesMcpTool(toolProfile, name)) return;
+  if(baseTrusted.agentId&&name.startsWith('work_'))return;
   if(name.startsWith('office_')||name==='role_sync')shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
-  if(options.trusted?.agentId&&name.startsWith('memory_'))shape={...shape,workSessionId:z.string().min(1).max(128).optional()};
   exposedTools.push(name);
   server.tool(name, description, shape, async (args: any,extra:{signal:AbortSignal;requestId:string|number;_meta?:Record<string,unknown>}) => {
     if(closing)return {content:[{type:'text' as const,text:'Memory server is closing; retry the same operation key'}],isError:true};
     let release!:()=>void;const active=new Promise<void>(r=>release=r);activeCalls.add(active);
     let auditContext:TrustedCallContext=baseTrusted;
     try {
-      if(baseTrusted.agentId&&name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open','work_office_get','work_office_exchange','work_material','work_office_item','work_office_progress','work_office_wait'].includes(name))
-        throw new MindPondError('scope_denied','Independent agents use office v2 tools; legacy account-wide collaboration cannot represent this identity. Call work_bootstrap.');
       let current:TrustedCallContext={...baseTrusted};
       const native = hostChatIdentity(extra._meta);
       // The authenticated harness supplies this on every call. Installation
@@ -123,15 +118,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         current.runtimeId=roleRuntimeId(current.principal,current.agentId,native.source,native.id);
         current.runtimeMode=native.mode;
       }
-      if(current.runtimeId && args.roleContext)throw new MindPondError('invalid_input','This host already supplies session correlation; omit roleContext instead of selecting another identity.');
-      if(!current.runtimeId && current.agentId && current.transport==='http-mcp') {
-        let roleContext=args.roleContext;
-        if(!roleContext && name==='role_application' && args.action==='submit' && typeof args.key==='string')
-          roleContext='ctx-'+createHash('sha256').update(JSON.stringify([current.connectionId,args.key])).digest('hex').slice(0,40);
-        if(roleContext){current={...current,roleContext,runtimeId:roleRuntimeId(current.principal,current.agentId,'explicit',roleContext),runtimeMode:'explicit_context',sessionId:'net-explicit:'+roleRuntimeId(current.principal,current.agentId,'explicit',roleContext)};}
-      }
-      // Keep the pre-existing header-derived session namespace so previously
-      // saved session memory remains readable after this additive rollout.
+      // Bind per-call session context to the authenticated chat.
       if(current.runtimeMode==='opencode_metadata'||current.runtimeMode==='codex_metadata') current.sessionId='net-native:'+current.runtimeId;
       auditContext=current;
       const activation=toolProfile==='office'&&name==='role_sync'&&current.agentId&&current.runtimeId?await graphMemory.roles.connectionRequest(current):null;
@@ -140,17 +127,6 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       if(roleIdentity) {
         current={...current,roleId:roleIdentity.roleId,roleBindingId:roleIdentity.bindingId,roleBindingEpoch:roleIdentity.bindingEpoch};
         auditContext=current;
-        // Existing session grants remain narrow, but native per-call contexts
-        // must not share session memory through a multiplexed MCP connection.
-        if(name.startsWith('work_')&&!['work_bootstrap','work_guide_get','work_session_open'].includes(name)&&!args.workSessionId) {
-          const context=await graphMemory.roles.officeContext(current,args.officeId);
-          args={...args,workSessionId:context.workSessionId};
-        }
-      }
-      if(options.trusted?.agentId&&name.startsWith('memory_')&&args.workSessionId){
-        const binding=await graphMemory.offices.resolveContext(args.workSessionId,current);
-        current={...current,workSessionId:binding.workSessionId,assignmentId:binding.assignmentId,bindingRevision:binding.bindingRevision,
-          sessionId:officeMemorySession(current.principal,current.agentId!,binding.workSessionId)};
       }
       return await contextStorage.run(current,async()=>{
       // Zod omits absent optional keys. Preserve declared context slots for
@@ -173,10 +149,6 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
       if(activation){const entry=result.content?.find((c:any)=>c.type==='text');if(entry){try{const data=JSON.parse(entry.text);data.activation={...activation,notice:'Ask the user to activate an existing role for this chat in the office, or submit a new role application. Transport reconnection never chooses a role by recency.'};entry.text=JSON.stringify(data);}catch{}}}
-      if(current.roleContext && (name==='role_application'||name==='role_sync'||name.startsWith('office_'))) {
-        const entry=result.content?.find((c:any)=>c.type==='text');
-        if(entry){const payload=JSON.parse(entry.text);entry.text=JSON.stringify({...payload,...(name==='office_wait'&&payload.resume?{resume:{...payload.resume,roleContext:current.roleContext}}:{}),roleContext:current.roleContext,contextMode:'public_correlation'});}
-      }
       if(roleIdentity) {
         const revision=String(roleIdentity.profileRevision)+':'+String(roleIdentity.bindingEpoch);
         const changed=seenRoleProfiles.get(roleIdentity.bindingId)!==revision;
@@ -184,7 +156,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         seenRoleProfiles.set(roleIdentity.bindingId,revision);
         // Keep routine tool calls cheap; explicit sync/receive always include
         // the full profile in their normal result. Cache is NOT authorization.
-        const badge={...(changed&&!(name==='office_context'&&args.action==='page')?roleIdentity:{roleId:roleIdentity.roleId,bindingId:roleIdentity.bindingId,bindingEpoch:roleIdentity.bindingEpoch,name:roleIdentity.name,profileRevision:roleIdentity.profileRevision,primaryAssignmentId:roleIdentity.primaryAssignmentId}),...(current.roleContext?{roleContext:current.roleContext}:{})};
+        const badge={...(changed&&!(name==='office_context'&&args.action==='page')?roleIdentity:{roleId:roleIdentity.roleId,bindingId:roleIdentity.bindingId,bindingEpoch:roleIdentity.bindingEpoch,name:roleIdentity.name,profileRevision:roleIdentity.profileRevision,primaryAssignmentId:roleIdentity.primaryAssignmentId})};
         result.content.push({type:'text' as const,text:JSON.stringify({mindpondIdentity:badge,profileChanged:changed,notice:changed?'Use this updated server profile. role_sync restores the full introduction after context loss.':'role_sync restores your full introduction if needed.'})});
       }
       await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(trusted.sessionId?{kind:'session',id:trusted.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal,agentId:trusted.agentId,workSessionId:trusted.workSessionId,roleId:trusted.roleId,roleBindingEpoch:trusted.roleBindingEpoch}:{})})});

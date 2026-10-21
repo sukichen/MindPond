@@ -448,7 +448,7 @@
     },
     {
       "package": "@modelcontextprotocol/sdk",
-      "version": "1.31.0",
+      "version": "1.32.1",
       "license": "MIT",
       "location": "node_modules/@modelcontextprotocol/sdk"
     },

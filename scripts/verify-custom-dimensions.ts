@@ -20,8 +20,8 @@ try{
   const initial=await graph.getDimensionConfiguration();
   assert.equal(initial.defaultDimension,'work');
   assert.deepEqual(initial.definitions.slice(0,5).map(d=>d.id),['profile','commitment','environment','work','practice']);
-  assert.equal(initial.definitions.length,9,'five preferred identities plus explicit legacy compatibility');
-  assert(initial.definitions.slice(5).every(d=>d.label.includes('历史兼容')));
+  assert.equal(initial.definitions.length,9,'nine named classification views');
+  assert(initial.definitions.every(d=>!d.label.includes('兼容')));
   const initialPolicy=await graph.getDimensionPolicy();
   assert.equal(memorySavePolicyPayload(initialPolicy).example.memberships[0].memoryType,'work');
   assert.deepEqual(memorySavePolicyPayload(initialPolicy).example.dimensions,['work']);
@@ -38,6 +38,24 @@ try{
     const legacyPolicy=await oldGraph.getDimensionPolicy();
     assert.equal(memorySavePolicyPayload(legacyPolicy).example.memberships[0].memoryType,'fact','live policy overrides the published default');
   } finally {await oldGraph.close();}
+  const presentationPath=path.join(dir,'dimension-presentation.db');
+  let presentation=new GraphMemory('.', {dbPath:presentationPath});
+  try {
+    await presentation.init();
+    const config=await presentation.getDimensionConfiguration();
+    config.definitions.find(d=>d.id==='fact')!.label='事实（历史兼容）';
+    config.definitions.find(d=>d.id==='decision')!.label='我定义的选择';
+    config.prompt='User classification instructions must remain intact.';
+    await (presentation as any).db.run('UPDATE memory_dimension_config SET revision=2,payload=? WHERE id=1',[JSON.stringify(config)]);
+    await (presentation as any).db.run("DELETE FROM office_meta WHERE key='dimension-presentation.v1'");
+    await presentation.close();presentation=new GraphMemory('.', {dbPath:presentationPath});await presentation.init();
+    const converted=await presentation.getDimensionConfiguration();
+    assert.equal(converted.definitions.find(d=>d.id==='fact')!.label,'事实');
+    assert.equal(converted.definitions.find(d=>d.id==='decision')!.label,'我定义的选择');
+    assert.equal(converted.prompt,config.prompt);assert.equal(converted.revision,3);
+    await presentation.close();presentation=new GraphMemory('.', {dbPath:presentationPath});await presentation.init();
+    assert.deepEqual(await presentation.getDimensionConfiguration(),converted,'presentation migration runs once');
+  } finally {await presentation.close();}
   const ids=['人物画像','procedure','constructor',...Array.from({length:17},(_,i)=>'custom-'+i)];
   const input={expectedRevision:initial.revision,defaultDimension:ids[0],prompt:'CLASSIFICATION-CUSTOM-PROMPT: use only evidenced identities.',definitions:ids.map(id=>({id,label:'用户 '+id,description:'Meaning of '+id,instructions:'RULE-'+id+': preserve conditions.',color:'#aabbcc',enabled:true}))};
   const config=await graph.configureDimensions(input);assert.equal(config.definitions.length,20);

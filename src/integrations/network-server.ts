@@ -209,7 +209,7 @@ export function createNetworkMcpApp(
         if(pinnedMemoryRole&&!memory&&!pinnedBinding)throw new MindPondError('scope_denied','Activate an office chat for this role before connecting');
         const waitSignals = new Map<string | number, AbortController>();
         const serviceOptions = {
-          toolProfile: agentId?'office' as const:grant.toolProfile,legacyOfficeWork:grant.toolProfile==='full',enableTasks:!!pinnedMemoryRole,pinnedRoleId:pinnedMemoryRole?.role_id,
+          toolProfile: agentId?'office' as const:grant.toolProfile,enableTasks:!!pinnedMemoryRole,pinnedRoleId:pinnedMemoryRole?.role_id,
           waitSignal: (requestId:string|number) => waitSignals.get(requestId)?.signal,
           trusted: {
             v: 1 as const,
@@ -357,7 +357,11 @@ export function createNetworkMcpApp(
   });
   app.use(
     (error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-      if (!res.headersSent) res.status(400).json({ error: 'Malformed or oversized request' });
+      if(res.headersSent)return;
+      const type=(error as {type?:string})?.type;
+      if(type==='entity.too.large')res.status(413).json({code:'invalid_input',error:'Request body exceeds 1MB',nextAction:'Reduce the request body or split the work into smaller batches.'});
+      else if(type==='entity.parse.failed')res.status(400).json({code:'invalid_input',error:'Malformed JSON request',nextAction:'Send a valid JSON request.'});
+      else res.status(500).json({code:'internal',error:'MCP request failed',retryable:false,nextAction:'Report the failure with the operation and service version.'});
     }
   );
   return {

@@ -55,6 +55,9 @@ try {
     assert.equal((await call(office, 'role_sync', {}, 'chat-a')).data.identity.roleId, a.roleId);
     assert.equal((await call(office, 'role_sync', {}, 'chat-b')).data.identity.roleId, b.roleId);
     const memory = await connect('/memory/mcp');
+    const oversized=await memory.callTool({name:'memory_identity',arguments:{extra:Array(10001).fill(0)},_meta:{'ai.opencode/sessionID':'chat-a'}});
+    assert(oversized.isError);assert.match(JSON.stringify(oversized.content),/maximum of 10000 elements/,'independent Memory server enables the SDK input limit');
+
     assert((await memory.listTools()).tools.every(t => t.name.startsWith('memory_')));
     for (const t of (await memory.listTools()).tools)
         assert(!['domains', 'domain', 'sessionId', 'spaceId', 'ownerId', 'roleId'].some(k => k in (t.inputSchema.properties ?? {})));

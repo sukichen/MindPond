@@ -80,7 +80,7 @@
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
     "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection && npm run verify:office-collaboration",
     "verify:office-deletion": "tsx scripts/verify-office-deletion.ts",
-    "verify:roles": "tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts",
+    "verify:roles": "npm run verify:office-model-migration && tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts",
     "verify:office-building": "tsx scripts/verify-office-building.ts",
     "verify:office-replay": "tsx scripts/verify-office-replay.ts && node scripts/verify-office-replay-ui.mjs",
     "verify:office-markdown": "node scripts/verify-office-markdown.mjs",
@@ -94,11 +94,12 @@
     "verify:opencode-role-session": "tsx scripts/verify-opencode-role-session.ts",
     "verify:production-role-memory": "tsx scripts/verify-production-role-memory.ts",
     "verify:memory-ui": "node scripts/verify-memory-ui.mjs",
-    "verify:codex-role-session": "tsx scripts/verify-codex-role-session.ts"
+    "verify:codex-role-session": "tsx scripts/verify-codex-role-session.ts",
+    "verify:office-model-migration": "tsx scripts/verify-office-model-migration.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",
-    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "marked": "18.1.1",
@@ -162,9 +163,6 @@
     "web/office-guide.css",
     "web/office-guide.js",
     "docs/collaboration-offices.md",
-    "docs/design/collaboration-office-2026-10-15.md",
-    "docs/design/collaboration-auth-sessions-2026-10-15.md",
-    "docs/design/role-offices-2026-10-16.md",
     "docs/role-cli.md",
     "docs/office-building.md",
     "web/guide/01-login.jpg",

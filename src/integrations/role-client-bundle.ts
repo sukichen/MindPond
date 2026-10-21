@@ -69,8 +69,8 @@ export async function roleClientLaunch(directory: string, extraArgs: string[] = 
   if (!environment[m.tokenEnv]) throw new Error(`Set ${m.tokenEnv} in the CLI process environment outside the chat; do not ask the LLM to obtain it`);
   if(m.client==='opencode'&&environment.OPENCODE_CONFIG_CONTENT)throw new Error('OPENCODE_CONFIG_CONTENT could override this session connection; use a process environment without that inline override');
   // Codex overrides make this native connection available even before project
-  // config trust. --no-daemon keeps separate launches from sharing cached headers.
-  const server = `{ url = ${JSON.stringify(m.url)}, bearer_token_env_var = ${JSON.stringify(m.tokenEnv)}, http_headers = { "X-MindPond-Session" = ${JSON.stringify(m.sessionLabel)} }, tool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS} }`;
+  // config trust. Per-call native metadata distinguishes chats.
+  const server = `{ url = ${JSON.stringify(m.url)}, bearer_token_env_var = ${JSON.stringify(m.tokenEnv)}, tool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS} }`;
   return m.client === 'codex'
     ? { command: 'codex', args: ['--no-daemon', '-c', `mcp_servers.mindpond_office=${server}`, '-c', `mcp_servers.mindpond_memory=${server.replace(JSON.stringify(m.url),JSON.stringify(m.url.replace(/\/mcp\/?$/,'/memory/mcp')))}`, ...extraArgs], cwd: directory, env: { ...environment } }
     : { command: 'opencode', args: [...extraArgs], cwd: directory, env: { ...environment, OPENCODE_CONFIG: path.join(directory, 'opencode.json') } };

@@ -3,7 +3,7 @@
 import { parseArgs } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-const { values } = parseArgs({ options: { url: { type: 'string' }, 'token-env': { type: 'string', default: 'MINDPOND_TOKEN' }, session: { type: 'string' }, 'role-context': { type: 'string' }, 'timeout-ms': { type: 'string', default: '360000' }, 'long-wait': { type: 'boolean', default: false } } });
+const { values } = parseArgs({ options: { url: { type: 'string' }, 'token-env': { type: 'string', default: 'MINDPOND_TOKEN' }, session: { type: 'string' }, 'timeout-ms': { type: 'string', default: '360000' }, 'long-wait': { type: 'boolean', default: false } } });
 const url = new URL(values.url ?? 'http://127.0.0.1:7904/mcp');
 if (url.username || url.password || url.search || url.hash)
     throw Error('Use a public MCP URL without credentials, query or fragment');
@@ -19,7 +19,7 @@ if (values.session)
 const client = new Client({ name: 'mindpond-office-doctor', version: '1' }), transport = new StreamableHTTPClientTransport(url, { requestInit: { headers } });
 const checks: Record<string, unknown> = { version: 'mindpond.office-doctor.v1', caller: 'This doctor process; native chat timeout must be tested inside that chat.' };
 const call = async (name: string, args: Record<string, unknown>) => {
-    const result = await client.callTool({ name, arguments: { ...args, ...(values['role-context'] ? { roleContext: values['role-context'] } : {}) } }, undefined, { timeout, resetTimeoutOnProgress: false });
+    const result = await client.callTool({ name, arguments: args }, undefined, { timeout, resetTimeoutOnProgress: false });
     const data = JSON.parse((result.content as any[]).find(c => c.type === 'text').text);
     if (result.isError)
         throw Error(data.error?.message ?? 'Host call rejected');

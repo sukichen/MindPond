@@ -117,7 +117,7 @@ function card(n, result = false) {
   const c = text('article', '', 'card'), header = text('div', '', 'row between'), tags = text('div', '', 'row');
 
   for(const id of n.dimensions?.length?n.dimensions:[n.dimension].filter(Boolean)){const b=badge(dimensionLabel(id),'dimension-badge');b.dataset.dimensionId=id;b.style.setProperty('--dimension-color',dimensionDefinition(id)?.color||'#8a9a8e');b.title=id+' · '+(dimensionDefinition(id)?.description||'');tags.append(b);}
-  if(n.owner)tags.append(badge(n.owner.kind==='user'?'人类记忆':'角色 · '+(memoryRoles.find(r=>r.id===n.owner.id)?.name||'历史角色')));
+  if(n.owner)tags.append(badge(n.owner.kind==='user'?'人类记忆':'角色 · '+(memoryRoles.find(r=>r.id===n.owner.id)?.name||'角色不可用')));
   if(n.profiles?.length)tags.append(badge('画像','direct'));
   if(n.freshness)tags.append(badge(freshnessName(n.freshness.status),n.freshness.status==='needs_review'?'review':''));
   if(result)c.dataset.review=n.freshness?.status==='needs_review'?'yes':'no';
@@ -157,7 +157,7 @@ async function search() {
     if(response.retrieval?.degraded) {
       const labels={'body-vector':'正文向量','body-text':'正文文本','body-zh':'中文向量','anchors':'锚点','reranker':'重排'};
       const failed=[...new Set(response.retrieval.channels.filter(c=>c.status==='failed'||(c.status==='unavailable'&&c.channel!=='anchors')).map(c=>labels[c.channel]||c.channel))];
-      const reasons=[];if(failed.length)reasons.push(failed.join('、')+'暂不可用');if(response.retrieval.profile?.fallbackReason)reasons.push('配置模型尚未就绪，使用旧索引');if(response.retrieval.profile?.algorithm?.fallbackReason)reasons.push('HNSW 不可用，使用精确检索');
+      const reasons=[];if(failed.length)reasons.push(failed.join('、')+'暂不可用');if(response.retrieval.profile?.fallbackReason)reasons.push('配置模型尚未就绪，使用基础索引');if(response.retrieval.profile?.algorithm?.fallbackReason)reasons.push('HNSW 不可用，使用精确检索');
       $('searchSummary').textContent+=' ｜'+reasons.join('；');
     }
 
@@ -207,7 +207,7 @@ async function loadLibrary() {
     check.disabled = !m.length || n.layer === 'L0'; check.setAttribute('aria-label', '选择记忆 ' + n.content.slice(0, 30));
     check.onchange = () => { if (check.checked) state.selected.set(n.id, n); else state.selected.delete(n.id); c.classList.toggle('selected', check.checked); selectionChanged(); };
     c.classList.toggle('selected', check.checked); c.querySelector('.row').prepend(check);
-    const placements=document.createElement('details');placements.append(text('summary','历史分类与整理范围'));
+    const placements=document.createElement('details');placements.append(text('summary','分类与整理范围'));
     for (const membership of n.memberships || []) placements.append(badge(membership.spaceId + ' / ' + membership.memoryType + (membership.active ? '' : ' · 已整合来源')));
     c.append(placements); return c;
   }));
@@ -231,7 +231,7 @@ async function openMemory(id) {
   $('memoryTags').value = (data?.node.tags || []).join(', '); $('newScope').hidden = !!id;
   $('newSpace').value='memory';$('newType').value=state.dimensions?.defaultDimension||'work';for(const id of ['newSpace','newType','newDomainKind','newDomainId','newTeamAuthorization'])$(id).closest('label').hidden=true;
   $('newDomainKind').value = data?.node.domain?.kind || 'personal'; $('newDomainId').value = data?.node.domain?.id || 'default'; $('newTeamAuthorization').value = '';
-  $('memoryScope').textContent=data?(data.node.owner?.kind==='agent'?'角色记忆 · '+(memoryRoles.find(r=>r.id===data.node.owner.id)?.name||'历史角色'):'人类记忆')+'。独立副本的修改不会同步到来源。':'创建人类记忆；保存后可以选择添加独立副本给角色。';
+  $('memoryScope').textContent=data?(data.node.owner?.kind==='agent'?'角色记忆 · '+(memoryRoles.find(r=>r.id===data.node.owner.id)?.name||'角色不可用'):'人类记忆')+'。独立副本的修改不会同步到来源。':'创建人类记忆；保存后可以选择添加独立副本给角色。';
   if(data?.node.provenance){const p=data.node.provenance;$('memoryScope').append(text('p','副本来源：'+p.sourceId+' · 来源版本 '+when(p.sourceRevision)),button('查看原记忆',()=>openMemory(p.sourceId)));}
   $('nodeLog').hidden = !id; $('deleteArea').hidden = !id; $('deleteConfirm').checked = false; $('deleteMemory').disabled = true;
   $('memoryRelations').replaceChildren();
@@ -530,7 +530,7 @@ function ensureEdgeOnCanvas(edgeId) {
   if (raw) state.graphModel.edges.add(edgeObject(raw));
 }
 // ── 神经元放电 v2：辉光呼吸 + 粒子沿边传导（叠加 canvas 层，参考神经网络 demo）──
-// 设计：不动 vis.js 的节点/边数据（旧版瞬变+硬重置的病根），动画全部画在独立叠加层。
+// 设计：不动 vis.js 的节点/边数据（先前瞬变与重置的原因），动画全部画在独立叠加层。
 const IGNITE = { canvas: null, ctx: null, particles: [], pulses: new Map(), edgesLit: new Map(), rings: [], timers: [], raf: 0, lastT: 0, running: false, kickTimer: 0, ambientT: 0, AMBIENT: false, MAX_PARTICLES: 900, REFRACTORY: 4000 };
 function igniteReset() { // 图谱重建时调用：清空放电状态（叠加层保留复用）
   for (const t of IGNITE.timers) clearTimeout(t);
@@ -973,7 +973,7 @@ on('nodeHistory',async()=>{
   const rows=await api('./api/memory/edit/history',{nodeId:memory.node.id,scope:'operator'});
   if(state.memory!==memory)return;
   const box=$('memoryHistory');box.replaceChildren(text('h3','编辑历史 · 撤销会创建新版本'),text('p','仅能撤销其后未变动的编辑；已有后续编辑、关联变动或画像依赖时会拒绝。永久删除不能从这里恢复。','note'));box.hidden=false;
-  if(!rows.length)box.append(text('p','尚无新版编辑历史。旧操作日志不作为可撤销快照。','muted'));
+  if(!rows.length)box.append(text('p','尚无可撤销的编辑记录。操作日志用于核对操作，不包含修订快照。','muted'));
   for(const r of rows){
     const entry=document.createElement('details');entry.append(text('summary',when(r.at)+' · '+r.reason));
     entry.append(text('h3','修改前'),text('div',r.before.node.content,'source'),text('h3','修改后'),text('div',r.after.node.content,'source'));
@@ -1041,13 +1041,13 @@ async function refreshRetrieval(){
   if(catalog.rerankers.some(p=>p.id===selectedRanker))$('searchReranker').value=selectedRanker;
   $('retrievalStatus').textContent='启用：'+catalog.activeProfile+' · 配置默认：'+catalog.preferredProfile+' · 模型文件不会自动下载';
   $('retrievalProfiles').replaceChildren(...catalog.profiles.map(p=>{
-    const box=text('article','','card');box.append(text('strong',p.label),text('p',p.model||'兼容现有向量与文本通道','muted'));
+    const box=text('article','','card');box.append(text('strong',p.label),text('p',p.model||'基础向量与文本检索','muted'));
     if(p.coverage)box.append(text('p',p.dimensions+' 维 · '+p.pooling+' · '+p.dtype+' · '+p.coverage.indexed+'/'+p.coverage.required+' 个正文 / 锚点已构建'+(p.building?' · 正在构建':'')));
     if(p.runtime)box.append(text('p','请求设备 '+p.runtime.requestedDevice+' → 实际 '+p.runtime.actualDevice,'muted'));
     if(p.error)box.append(text('p','状态：'+p.error,'warning'));
     const actions=text('div','','row');
     if(p.coverage&&!p.coverage.complete&&p.spaceKey)actions.append(button('构建下一批（64 项）',async()=>{const result=await api('./api/memory/retrieval/build',{profileId:p.id,maxItems:64});notice('已构建 '+result.completed+' 项，剩余 '+result.coverage.remaining+(result.failures.length?'；部分失败，请查看状态':''),!!result.failures.length);await refreshRetrieval();}));
-    const activate=button(p.id==='legacy'?'切回兼容索引':'启用模型',async()=>{await api('./api/memory/retrieval/activate',{profileId:p.id});notice('向量索引已切换');await refreshRetrieval();});
+    const activate=button(p.id==='legacy'?'使用基础索引':'启用模型',async()=>{await api('./api/memory/retrieval/activate',{profileId:p.id});notice('向量索引已切换');await refreshRetrieval();});
     activate.disabled=catalog.activeProfile===p.id||!!p.error||!!p.coverage&&!p.coverage.complete;actions.append(activate);box.append(actions);return box;
   }));
 }
@@ -1081,7 +1081,7 @@ on('confirmAssignment',async()=>{
 function updateRoleConnection(){
   const role=memoryRoles.find(r=>r.id===$('roleConnectionRole').value&&r.state==='active');
   $('roleRotationLabel').hidden=!role?.hasMemoryCredential;
-  $('roleConnectionStatus').textContent=!role?'请选择连接角色。':!memoryMcpUrl?'请先在办公室的连接设置中保存可达的 MCP 服务地址。':role.hasMemoryCredential?'此角色已有专用配置。重新生成会立即撤销旧专用配置。':'首次生成此角色的专用配置。';
+  $('roleConnectionStatus').textContent=!role?'请选择连接角色。':!memoryMcpUrl?'请先在办公室的连接设置中保存可达的 MCP 服务地址。':role.hasMemoryCredential?'此角色已有专用配置。重新生成会立即撤销当前专用配置。':'首次生成此角色的专用配置。';
   $('roleConnectionAddress').textContent=memoryMcpUrl?'Memory 服务地址：'+memoryMcpUrl:'';
   $('downloadRoleMemory').disabled=!memoryConnected||!role||!memoryMcpUrl||!!role.hasMemoryCredential&&!$('roleRotationConfirm').checked;
 }
@@ -1091,7 +1091,7 @@ $('roleRotationConfirm').onchange=updateRoleConnection;
 on('downloadRoleMemory',async()=>{
   const role=memoryRoles.find(r=>r.id===$('roleConnectionRole').value&&r.state==='active');
   if(!role||!memoryMcpUrl)throw Error('请选择角色并配置可达的服务地址');
-  if(role.hasMemoryCredential&&!$('roleRotationConfirm').checked)throw Error('请先确认替换旧专用配置');
+  if(role.hasMemoryCredential&&!$('roleRotationConfirm').checked)throw Error('请先确认替换当前专用配置');
   $('downloadRoleMemory').disabled=true;$('roleConnectionRole').disabled=true;
   try{
     const r=await api('./api/memory/role-credential',{roleId:role.id,replaceExisting:$('roleRotationConfirm').checked});

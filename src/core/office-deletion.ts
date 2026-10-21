@@ -26,8 +26,6 @@ export async function deleteRoleData(db: Database, roleId: string) {
   await db.run(`UPDATE offices SET revision=revision+1 WHERE id IN
     (SELECT office_id FROM office_seats WHERE id IN (${seats}))`, [roleId]);
   await db.run(`UPDATE office_seats SET enabled=0,revision=revision+1 WHERE id IN (${seats})`, [roleId]);
-  await db.run(`DELETE FROM role_office_contexts WHERE seat_id IN (${seats})
-    OR binding_id IN (SELECT id FROM role_bindings WHERE role_id=?)`, [roleId,roleId]);
   await deleteMessageReceipts(db,'sender=? OR recipient=?',[roleId,roleId]);
   await db.run('DELETE FROM role_message_states WHERE message_id IN (SELECT id FROM role_messages WHERE sender=? OR recipient=?)', [roleId,roleId]);
   await db.run('DELETE FROM role_messages WHERE sender=? OR recipient=?', [roleId,roleId]);
@@ -70,7 +68,6 @@ export async function deleteOfficeData(db: Database, officeId: string) {
   await db.run('DELETE FROM office_items WHERE office_id=?', [officeId]);
   await db.run('DELETE FROM office_materials WHERE office_id=?', [officeId]);
   await db.run('DELETE FROM office_containers WHERE office_id=?', [officeId]);
-  await db.run(`DELETE FROM role_office_contexts WHERE seat_id IN (${seats}) OR work_session_id IN (${sessions})`, [officeId,officeId]);
   await db.run('DELETE FROM office_waits WHERE office_id=?', [officeId]);
   await db.run(`DELETE FROM office_sessions WHERE seat_id IN (${seats})`, [officeId]);
   await db.run(`DELETE FROM role_seats WHERE seat_id IN (${seats})`, [officeId]);

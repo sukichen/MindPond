@@ -95,3 +95,9 @@ location /mindpond/ {
 8. 使用一份升级前一致备份，实际执行恢复到新文件并读取；确认磁盘容量、WAL和备份权限，以及程序/配置/备份的对应版本。
 
 仓库的 `npm run check`、`npm run verify:standalone-package`、`npm run verify:production-role-memory` 和页面回归覆盖工程契约；生产域名证书、网络、容量和恢复演练仍须在目标环境确认。不要把隔离测试通过写成目标机器已经部署验收。
+
+### MCP 输入边界
+
+MCP SDK 锁定在1.32.1。Office、角色 Memory 与维护 MCP 都设置 `maxToolInputElements=10000`，在工具 schema 校验之前限制参数中的对象键和数组元素总数；HTTP 解析器另有1MB正文限制。超过预算的工作应拆成有界批次。
+
+这是针对 [SDK 工具参数校验资源耗尽问题](https://github.com/advisories/GHSA-46jr-4wx8-v453) 的完整配置：仅升级 SDK 不会自动启用元素上限。MindPond 使用自己签发并逐次校验的 Bearer 凭据，不使用 SDK 的 OAuth `requireBearerAuth` / `verifyBearerToken` 验证器。

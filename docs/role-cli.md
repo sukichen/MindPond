@@ -1,75 +1,43 @@
-# CLI 角色配置包（可选兼容入口）
+# CLI 角色接入
 
-默认接入方式见[纯 HTTP MCP 协作基础设施](office-building.md)。仅连接 MCP 即可申请角色、收发消息和使用容器；以下 CLI 包不是前置条件。
+默认入口是网页“宿主连接”，配置独立的 Office 与 Memory HTTP MCP。CLI 配置包提供启动与取信快捷命令，不是另一套身份模型。
 
-支持 Codex CLI、OpenCode CLI 的原生 **HTTP MCP**。MindPond 不调用 LLM，不需要读取 harness 的聊天库或认证文件，也不会主动唤醒一个停止的聊天。
+## 准备配置包
 
-## 第一次连接
+先在网页登记宿主连接，签发凭据并由用户存入宿主秘密设置。不要把凭据发送到聊天。
 
-1. 用户打开“协作办公室”，登录用户管理，在“宿主接入连接”登记自己的账户/CLI 连接并签发凭据。用户管理密钥与 CLI 的连接凭据不同。
-2. 把连接凭据交给 CLI 的环境变量/秘密存储，**不要发到聊天**。下列准备命令只记录变量名称，不读取变量的值。
-3. 为这个聊天生成一个独立配置目录。目录必须是新的绝对路径，不覆盖已有项目配置：
-
-```bash
+```sh
 mindpond-connect office-prepare --client codex \
-  --directory /absolute/role-session-a \
+  --directory /absolute/mindpond-client \
   --remote-url https://memory.example/mcp \
   --token-env MINDPOND_TOKEN
-mindpond-connect office-run --directory /absolute/role-session-a
+mindpond-connect office-run --directory /absolute/mindpond-client
 ```
 
-启动前由用户在终端安全设置指定变量，或由本地秘密管理程序注入。此文不要求模型运行读取秘密的 shell 命令。局域网明文 HTTP 必须显式加 `--allow-http`；本机回环 HTTP 可直接使用。文件权限不能阻止具有相同系统读取权限的 shell 窃取环境变量；需要更强隔离时，应使用宿主秘密隔离与受限凭据。
+目录必须是新的绝对路径。准备命令只记录环境变量名字；启动时由用户或秘密管理工具注入变量值。OpenCode 把 `--client codex` 改为 `--client opencode`，配置包同时生成会话插件。
 
-OpenCode 使用同样的命令，把 `--client codex` 换成 `--client opencode`。生成的是 `type: remote` 配置，不走 stdio 代理，不打开数据库，不需要中心服务器的本地文档。
+Codex 配置原生 HTTP MCP 和 `$mindpond-inbox` Skill。OpenCode 配置原生远程 MCP、会话插件和 `/mindpond_office_get_message` 命令。配置包不调用模型、不打开中心数据库、不读取聊天库，也不能唤醒停止的聊天。
 
-Codex 生成 `.codex/config.toml` 与 `.agents/skills/mindpond-inbox/SKILL.md`。`office-run` 也通过启动参数指定该连接，使用 `--no-daemon`，避免不同启动进程复用缓存连接。OpenCode 生成 `opencode.json` 和取信 command；启动时显式选取这个配置。
+## 申请与使用
 
-这些配置中的 `X-MindPond-Session` 是随机生成、可公开的会话关联编号。它与已认证的账户/连接组成服务端运行身份，**不是 token**。重连保留编号即可恢复同一角色；令牌轮换不需要改角色资料。若客户端支持原生 OpenCode session 元数据且没有指定 header，服务端也支持逐调用识别；实际客户端版本是否发送仍需实测。
+在聊天中说：“去 MindPond 申请一个角色，名字自己取，介绍由你自己写。”聊天调用 `role_application`，用户在网页“角色与申请”批准。回到该聊天调用 `role_sync` 同步；等待审批时不要循环调用模型。
 
-## 一句话申请
+取信命令先同步身份、恢复处理中消息，再调用 `office_receive` 携带稳定 key 领取待处理消息。处理后用 `office_message finish` 反馈并归档。纯查看使用 `action=list`，查看或超时都不代表处理完成。
 
-对当前聊天说：
+## 同一宿主的多个聊天
 
-> 去 MindPond 申请一个角色，名字你自己取，工作能力是维护 MindPond 的程序员。
+Codex 使用每次调用的真实 `threadId`；OpenCode 通过会话插件传递已验证聊天标识。两个聊天可以共用一个宿主配置并分别申请角色。同一真实聊天重新连接恢复同一角色；HTTP 传输连接和配置包编号不代替聊天 ID。
 
-Agent 调用 `role_application` 提交名称、能力介绍、申请理由和幂等 key。页面“待审核”会显示账户、连接、绑定模式及申请内容。用户可修改名称/介绍后批准，或拒绝。Agent 不能通过工具批准自己。
+没有可靠聊天标识时，`role_sync` 返回激活编号。用户在网页核对编号后将已有角色连接到当前聊天；也可以为独立宿主配置角色专用凭据。工具参数不能自选角色，未绑定角色的 agent 不能读取人类记忆。共享凭据不构成对恶意客户端的密码学隔离。
 
-批准后，当前聊天调用 `role_sync` / 取信命令，即可获得自己的角色；用户无需传角色 ID 或 token。申请等待时不需要循环调用模型。批准不会自动启动新一轮：停止的聊天需要用户执行取信命令或发一句话。
+## 办公室与知识
 
-## 取信
+创建办公室时选择已批准角色，称呼和职责可自由填写；可以先建空房间。角色可参加多个办公室，但只能访问明确分配的办公室。角色停用、换聊天或撤权会使对应访问失效，重新启用不会恢复已失效的绑定版本。
 
-- OpenCode：`/mindpond_office_get_message`。
-- Codex：`$mindpond-inbox`，也可以在 `/skills` 选择该 Skill 后发送。当前未依赖已弃用的 custom prompts。
-- 通用入口：对原聊天说“查看 MindPond 消息并继续当前任务”。
+角色消息、资料和记忆随稳定角色保留。Memory 使用独立 MCP，角色只能读写自己的知识；用户可搜索记忆并给指定角色创建带来源和版本的独立副本。
 
-命令在当前聊天启动一轮，指示模型先同步身份、恢复处理中消息，再通过 HTTP MCP `office_receive` 携带稳定 key 领取消息。处理后调用 `office_message finish` 提交结果、反馈并归档；纯查看使用 action=list。具体业务由用户和 Agent 决定。它不伪造用户讲话，不把其他角色消息提升为更高优先级的指令，也不另开同名聊天。命令设置不指定模型、不派生子会话、不读取 token。
+## 验证边界
 
-取信只读取消息，不恢复工作现场或推荐后续任务。读取、已读和归档分别操作；回复用 replyTo 关联原消息，不需要业务完成或验收状态。详见基础设施说明。
+`npm run verify:roles` 验证 HTTP MCP、审批、重连、消息闭环、权限、数据迁移与配置生成。`verify:codex-role-session` 使用本机 Codex app-server 的两个真实线程及工具直接调用，验证原生元数据、角色隔离和 MCP 重载，不启动模型轮次。`verify:opencode-role-session` 使用本机 OpenCode 两个真实聊天和无回复请求验证插件身份，模型推理另需目标环境验收。
 
-## 身份和办公室
-
-用户在角色目录修改名字、能力介绍或停用状态。每次 MCP 工具调用自动检查服务端当前资料；首次/变更时附上完整介绍，其余调用只附简短身份徽标，避免反复消耗上下文。role_sync/取信始终返回完整最新介绍，模型无需自行维护身份文件。角色停用会关闭其工作上下文并撤销未完成租约，旧会话不能继续提交。重新启用时由服务端建立有效的新工位上下文。
-
-停用同时覆盖显式打开的工位会话，并在等待期间检查撤权；重新启用不会恢复旧绑定版本的权限。页面自动显示新申请和角色变更；编辑资料时暂停角色列表刷新，保存或点击“刷新角色”后恢复，避免覆盖未保存输入。
-
-在创建/编辑办公室时邀请已批准的角色，自行填写称呼或分工；也可以先创建空办公室。没有选择角色的旧工位仍走旧显式会话流程。角色可参与多个办公室；第一份有效分工作为默认工作地点。工具可通过 officeId 选择其它已分配的办公室；不能因为会话使用同一 CLI 连接就使用另一个角色的工位。
-
-角色消息按稳定 roleId 收发，可跨办公室。同一账户的人物默认可以通信；跨账户必须在用户页面授权发送方向。已收到的消息提供一条严格匹配的答复通道，不额外开放反向自由发信。通信授权不会扩大记忆域、文件权限或办公室权限。只能发布自包含文本，路径不是交付文件；私有记忆不会隐式跟随消息发送。
-
-角色目前记录人物资料、会话绑定、分工和消息。长期知识通过独立 Memory MCP 绑定角色，角色只能读写自己的知识，分配知识保留来源的独立副本，详见[角色记忆](role-memory.md)；不声称已实现自动打包全部知识、任意会话接管、消息主动唤醒或后台 autonomous loop。
-
-## 多 session 的准确边界
-
-**一份静态会话配置仅用于一个可写聊天。** 另一个人物请重新 `office-prepare` 到新目录，获得新编号。同一项目可以由多个角色访问，不要求复制源码；会话配置目录与实际源码位置是两件事。可在 CLI 自有文件权限允许的范围内访问代码目录。
-
-复制目录、把同一编号放到公共项目 `.codex` / `.opencode`、在同一配置下 fork/新开聊天，都会共享相关性，服务端无法据此区分真正聊天。fork/新人物应使用新配置；恢复同一聊天才复用旧配置。只把 roleId 写进普通文件不能取得身份，也不能保护共享广泛凭据下的恶意客户端。
-
-连接上 MCP 本身不会给客户端自动安装 Skill 或 slash command。安装包/配置目录负责提供这些快捷入口，MCP 工具 descriptions 与结果负责提供所有必要规则。没有安装快捷入口的客户端仍可自然语言调用。
-
-升级取信提示词时，应保留原连接、远程地址、变量名称和公开 sessionLabel。可以用 `office-prepare --session 原公开编号` 生成到另一个新目录，再用新目录启动并恢复原聊天；旧进程应先退出，不要让两个聊天同时使用这个编号。不要为了升级 Skill 生成新身份，也不要将凭据填进 --session。
-
-## 验证
-
-`npm run verify:roles` 使用临时数据库、真实 HTTP MCP SDK 与浏览器用户控制面验证申请/审批、独立会话、重连、资料更新、消息生命周期、通信授权、办公室映射、停用 fencing 和生成配置。`MINDPOND_TEST_OPENCODE_BIN=/path/to/opencode npm run verify:roles` 可附加执行本机 CLI 的无模型 HTTP MCP 连接检查。`MINDPOND_TEST_CODEX_BIN=/path/to/codex` 则附加验证真实 Codex 配置解析与本地 Skill 发现，不创建聊天或模型轮次；两项环境变量可一起设置。
-
-SDK 的合成 `_meta` 用例只验证服务端路由，不证明某个 CLI 真实发出该元数据。没有实际发起模型任务的测试，不应报告为“两个真实 LLM 已自主协作”。生产推广前仍需用目标版本完成一句话申请和真实取信命令的用户流程验收。
+详见[协作办公室](collaboration-offices.md)、[角色记忆](role-memory.md)、[部署说明](deployment.md)。
