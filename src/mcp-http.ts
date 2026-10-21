@@ -43,56 +43,53 @@ try {
     const report=await checkNetworkCredential({configFile:config,tokenFile:values['token-file'],dbPath:values.db});
     console.log(JSON.stringify(report,null,2));if(!report.ok)process.exitCode=2;
   } else if (command === 'grant') {
-    if (!values.principal || !values['token-file'])
-      throw new Error('grant requires --principal and --token-file');
+    if (!values.principal || !values['token-file'] || !values.agent)
+      throw new Error('grant requires --principal, --agent and --token-file; Memory roles require a registered host');
+    if(values.personal||values.profile)throw new Error('Personal domains and tool profiles do not select MCP identity; use a registered host and approved role.');
     if (values.assignments && values['unrestricted-assignments'])
       throw new Error('Choose --assignments or --unrestricted-assignments, not both');
     const grantOptions = {
       configFile: config,
       tokenFile: values['token-file'],
       principal: values.principal,
-      personalId: values.personal,
       rotate: values.rotate,
-      toolProfile: values.profile as 'work' | 'full' | undefined,
+      toolProfile: 'office' as const,
       agentId: values.agent,
       assignmentIds: values['unrestricted-assignments'] ? null : values.assignments?.split(',')
     };
-    let issued;
-    if (values.agent) {
-      const previousConfig = await readNetworkConfiguration(config).catch((error) => {
-        if (error.code !== 'ENOENT') throw error;
-        return { grants: [] };
-      });
-      if (!values.rotate && previousConfig.grants.some((g) => g.agentId === values.agent))
-        throw new Error('Agent credential exists; use --rotate with a new token file');
-      const graph = new GraphMemory('.', { dbPath: values.db ?? defaultDatabasePath() });
-      startupGraph = graph;
-      await graph.init();
-      const operator = {
-        v: 1 as const,
-        principal: 'local-operator',
-        operator: true,
-        issuedAt: 0,
-        expiresAt: Number.MAX_SAFE_INTEGER
-      };
-      const registry = await graph.offices.registry(operator),
-        old = registry.agents.find((a: any) => a.id === values.agent);
-      const registration = {
-        id: values.agent,
-        principal: values.principal,
-        name: old?.name ?? values.agent,
-        host: old?.host ?? 'other',
-        expectedRevision: old?.revision ?? 0
-      };
-      await graph.offices.configureAgent({ ...registration, state: 'pending' }, operator);
-      issued = await issueNetworkGrant(grantOptions);
-      await graph.offices.configureAgent(
-        { ...registration, state: 'active', expectedRevision: registration.expectedRevision + 1 },
-        operator
-      );
-      await graph.close();
-      startupGraph = undefined;
-    } else issued = await issueNetworkGrant(grantOptions);
+    const previousConfig = await readNetworkConfiguration(config).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+      return { grants: [] };
+    });
+    if (!values.rotate && previousConfig.grants.some((g) => g.agentId === values.agent))
+      throw new Error('Agent credential exists; use --rotate with a new token file');
+    const graph = new GraphMemory('.', { dbPath: values.db ?? defaultDatabasePath() });
+    startupGraph = graph;
+    await graph.init();
+    const operator = {
+      v: 1 as const,
+      principal: 'local-operator',
+      operator: true,
+      issuedAt: 0,
+      expiresAt: Number.MAX_SAFE_INTEGER
+    };
+    const registry = await graph.offices.registry(operator),
+      old = registry.agents.find((a: any) => a.id === values.agent);
+    const registration = {
+      id: values.agent,
+      principal: values.principal,
+      name: old?.name ?? values.agent,
+      host: old?.host ?? 'other',
+      expectedRevision: old?.revision ?? 0
+    };
+    await graph.offices.configureAgent({ ...registration, state: 'pending' }, operator);
+    const issued = await issueNetworkGrant(grantOptions);
+    await graph.offices.configureAgent(
+      { ...registration, state: 'active', expectedRevision: registration.expectedRevision + 1 },
+      operator
+    );
+    await graph.close();
+    startupGraph = undefined;
     console.log(JSON.stringify(issued, null, 2));
   } else if (command === 'workspace') {
     if (!values['workspace-file']) throw new Error('workspace requires --workspace-file');

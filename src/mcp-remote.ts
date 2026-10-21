@@ -19,7 +19,7 @@ try {
   const stat=await fs.stat(tokenFile);
   if(!stat.isFile()||stat.size>256||(process.platform!=='win32'&&(stat.mode&0o077)))throw new Error('Token file must be private');
   const token=(await fs.readFile(tokenFile,'utf8')).trim();
-  if(!/^[A-Za-z0-9_-]{43}$/.test(token))throw new Error('Invalid token');
+  if(!/^(?:mpr_)?[A-Za-z0-9_-]{43}$/.test(token))throw new Error('Invalid token');
   const session=values.session??process.env.MINDPOND_REMOTE_SESSION;
   if(session&&!/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u.test(session))throw new Error('Invalid host session label');
   const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:`Bearer ${token}`,...(session?{'X-MindPond-Session':session}:{})},redirect:'error'}});

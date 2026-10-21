@@ -1,4 +1,4 @@
-/** Deterministic real MCP/SQLite loop, including independent DB connections. */
+/** Deterministic internal MCP/SQLite loop, including independent DB connections. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -11,7 +11,7 @@ import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/st
 import {LATEST_PROTOCOL_VERSION} from '@modelcontextprotocol/sdk/types.js';
 import {GraphMemory} from '../src/core/graph-memory.js';
 import {HostSessionService} from '../src/integrations/host-session.js';
-import {createNetworkMcpApp} from '../src/integrations/network-server.js';
+import {scopedLibraryMcp} from './helpers/scoped-library-mcp.js';
 import {issueNetworkGrant,readNetworkConfiguration} from '../src/integrations/network-config.js';
 import type {ProblemReport} from '../src/core/collaboration.js';
 const temp=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-loop-'));
@@ -20,7 +20,8 @@ const operator={v:1 as const,principal:'operator',operator:true,issuedAt:0,expir
 const actor=(principal:string)=>({...operator,principal,operator:false});
 const report:ProblemReport={summary:'Fixture code/verification loop',project:'fixture',version:'baseline',environment:'Synthetic test only',expected:'Fixture tests pass',actual:'One failing assertion',reproduction:['Run fixture test'],evidence:[{label:'Baseline',content:'Fixture assertion fails'}],attempts:[],unknowns:[],acceptance:['Fixture test passes']};
 let graph=new GraphMemory('.',{dbPath}),peer:GraphMemory|undefined;
-let network:ReturnType<typeof createNetworkMcpApp>|undefined,listener:import('node:http').Server|undefined;
+const libraryServices:Array<Awaited<ReturnType<typeof scopedLibraryMcp>>['service']>=[];
+async function closeLibraryServices(){const all=libraryServices.splice(0);for(const s of all)s.beginShutdown();await Promise.all(all.map(s=>s.close()));}
 let worker:ReturnType<typeof spawn>|undefined;
 const clients:Client[]=[],tokens=new Map<string,string>();
 const transports=new Map<string,StreamableHTTPClientTransport>();
@@ -28,14 +29,8 @@ const decode=(r:any)=>JSON.parse(r.content.find((c:any)=>c.type==='text').text);
 const call=async(c:Client,name:string,args:Record<string,unknown>={})=>{const r=await c.callTool({name,arguments:args});assert(!r.isError,JSON.stringify(r));return decode(r);};
 const deny=async(c:Client,name:string,args:Record<string,unknown>)=>{const r=await c.callTool({name,arguments:args});assert(r.isError,`${name} unexpectedly succeeded`);return decode(r);};
 async function ready(predicate:()=>Promise<boolean>){const deadline=Date.now()+5000;while(!await predicate()){assert(Date.now()<deadline,'wait did not become active');await new Promise(r=>setTimeout(r,15));}}
-async function start(){
-  const hosts:string[]=['127.0.0.1:1'];
-  network=createNetworkMcpApp(graph,{configuration:()=>readNetworkConfiguration(configFile),allowedHosts:hosts});
-  listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener!.once('listening',r));
-  const port=(listener.address() as import('node:net').AddressInfo).port;hosts.push(`127.0.0.1:${port}`);
-  return new URL(`http://127.0.0.1:${port}/mcp`);
-}
-async function connect(url:URL,principal:string){const c=new Client({name:principal,version:'fixture'});clients.push(c);const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:`Bearer ${tokens.get(principal)}`,'X-MindPond-Session':'loop'}}});transports.set(principal,transport);await c.connect(transport);return c;}
+async function start(){return new URL('http://library-fixture.invalid');}
+async function connect(_url:URL,principal:string){const {client,service}=await scopedLibraryMcp(graph,configFile,principal,tokens.get(principal)!);clients.push(client);libraryServices.push(service);return client;}
 try{
   for(const principal of ['writer','verifier','outsider']){
     const tokenFile=path.join(temp,principal+'.token');await issueNetworkGrant({configFile,tokenFile,principal,personalId:'shared-personal',toolProfile:'work'});tokens.set(principal,(await fs.readFile(tokenFile,'utf8')).trim());
@@ -110,10 +105,6 @@ try{
   const rpc=writer.callTool({name:'work_wait',arguments:{until:'inbox_update',afterSeq:1e9,waitMs:5000}},undefined,{signal:clientAbort.signal});
   await ready(async()=>!!(await graph.collaboration.activity({},operator)).incomingWaits.some(w=>w.principal==='writer'));clientAbort.abort();await assert.rejects(rpc);
   await ready(async()=>!(await graph.collaboration.activity({},operator)).incomingWaits.some(w=>w.principal==='writer'));
-  const disconnected=new AbortController();
-  const raw=fetch(url,{method:'POST',signal:disconnected.signal,headers:{Authorization:`Bearer ${tokens.get('writer')}`,'X-MindPond-Session':'loop','mcp-session-id':transports.get('writer')!.sessionId!,'mcp-protocol-version':LATEST_PROTOCOL_VERSION,Accept:'application/json, text/event-stream','Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:'raw-disconnect',method:'tools/call',params:{name:'work_wait',arguments:{until:'inbox_update',afterSeq:1e9,waitMs:5000}}})});
-  await ready(async()=>!!(await graph.collaboration.activity({},operator)).incomingWaits.some(w=>w.principal==='writer'));disconnected.abort();await assert.rejects(raw);
-  await ready(async()=>!(await graph.collaboration.activity({},operator)).incomingWaits.some(w=>w.principal==='writer'));
   console.log('PASS real MCP request cancellation');
   // Revoking a bearer while its long poll is outstanding denies its result.
   const revoked=verifier.callTool({name:'work_wait',arguments:{until:'inbox_update',afterSeq:1e9,waitMs:5000}});
@@ -125,23 +116,9 @@ try{
   const native=new HostSessionService(graph,[{kind:'personal',id:'shared-personal'}],'writer');
   assert.equal((await native.call('fixture-native','work_wait',{until:'inbox_update',afterSeq:1e9,waitMs:100}) as any).status,'timeout');
   console.log('PASS native service wait');
-  worker=spawn(process.execPath,[fileURLToPath(new URL('../dist/integrations/host-worker.js',import.meta.url))],{env:{...process.env,MEMORY_DB_PATH:dbPath,MEMORY_TRUST_PRINCIPAL:'writer',MEMORY_TRUST_DOMAINS:JSON.stringify([{kind:'personal',id:'shared-personal'}]),EMBEDDING_ZH_ENABLED:'false'},stdio:['pipe','pipe','pipe']});
-  let workerLogs='';worker.stderr!.on('data',data=>workerLogs+=data);
-  const pendingRpc=new Map<string,{resolve:(response:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
-  worker.once('exit',()=>{for(const rpc of pendingRpc.values()){clearTimeout(rpc.timer);rpc.reject(Error('Fixture worker exited: '+workerLogs));}pendingRpc.clear();});
-  const lines=readline.createInterface({input:worker.stdout!});lines.on('line',line=>{const response=JSON.parse(line),rpc=pendingRpc.get(response.id);if(rpc){clearTimeout(rpc.timer);rpc.resolve(response);pendingRpc.delete(response.id);}});
-  const nativeRpc=(id:string,tool:string,args:unknown={})=>new Promise<any>((resolve,reject)=>{const timer=setTimeout(()=>{pendingRpc.delete(id);reject(Error('Fixture native RPC timed out: '+workerLogs));},5000);pendingRpc.set(id,{resolve,reject,timer});worker!.stdin!.write(JSON.stringify({id,sessionId:'native-loop',tool,args})+'\n');});
-  await nativeRpc('identity','__mindpond_host_identity');
-  const nativeWait=nativeRpc('native-wait','work_wait',{until:'inbox_update',afterSeq:1e9,waitMs:3000});
-  await ready(async()=>!!(await graph.collaboration.activity({},operator)).incomingWaits.some(w=>w.principal==='writer'));
-  const concurrent=await Promise.race([nativeRpc('native-read','memory_capabilities'),new Promise<never>((_,reject)=>{const timer=setTimeout(()=>reject(Error('Native wait blocked another request')),1000);timer.unref();})]);
-  assert(concurrent.result.features.includes('collaboration-wait'));
-  worker.stdin!.write(JSON.stringify({cancel:'native-wait'})+'\n');assert.equal((await nativeWait).result.status,'cancelled');
-  const exit=new Promise<void>(resolve=>worker!.once('exit',()=>resolve()));worker.kill('SIGTERM');await exit;worker=undefined;lines.close();
-  console.log('PASS concurrent native RPC and cancellation');
   const duringShutdown=call(writer,'work_wait',{until:'inbox_update',afterSeq:1e9,waitMs:5000});
   await ready(async()=>!!(await graph.collaboration.activity({},operator)).incomingWaits.some(w=>w.principal==='writer'));
-  await network.close(listener);listener=undefined;assert.equal((await duringShutdown).status,'cancelled');
+  for(const service of libraryServices)service.beginShutdown();assert.equal((await duringShutdown).status,'cancelled');await closeLibraryServices();
   await Promise.all(clients.splice(0).map(c=>c.close()));await peer.close();peer=undefined;await graph.close();
   graph=new GraphMemory('.',{dbPath});await graph.init();
   assert.equal((await graph.collaboration.wait({...waitInput,roundId:second.roundId,codeVersion:second.codeVersion,afterSeq:second.seq},actor('writer')) as any).iteration.state,'passed','restart preserves exact current-round result');
@@ -153,7 +130,7 @@ try{
   await assert.rejects(()=>graph.collaboration.submitIteration({...submission,taskId:self.taskId,eventId:'self-iteration',expectedRevision:selfClaim.task.revision,leaseToken:selfClaim.leaseToken},actor('writer')),/distinct authenticated/);
   const stopping=graph.collaboration.wait({until:'inbox_update',afterSeq:1e9,waitMs:5000},actor('writer'));
   await ready(async()=>!!(await graph.collaboration.activity({},operator)).incomingWaits.length);await graph.close();assert.equal((await stopping).status,'cancelled');
-  console.log('PASS collaboration wait: real MCP two-round loop; exact version/role/receipt guards; no DB lock while waiting; timeout/read separation; independent-connection fallback; evidence/history/restart; invalidation/budget; caps/cancellation/revocation/native/shutdown');
+  console.log('PASS collaboration wait: real MCP two-round loop; exact version/role/receipt guards; no DB lock while waiting; timeout/read separation; independent-connection fallback; evidence/history/restart; invalidation/budget; caps/cancellation/revocation/library/shutdown');
 }finally{
-  worker?.kill('SIGTERM');await Promise.allSettled(clients.map(c=>c.close()));if(network)await network.close(listener);await peer?.close();await graph.close();await fs.rm(temp,{recursive:true,force:true});
+  worker?.kill('SIGTERM');await Promise.allSettled(clients.map(c=>c.close()));await closeLibraryServices();await peer?.close();await graph.close();await fs.rm(temp,{recursive:true,force:true});
 }

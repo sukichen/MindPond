@@ -57,20 +57,20 @@ try{
   await issueNetworkGrant({configFile,tokenFile:hostToken,principal:'fixture-human',agentId:'new-host'});
   await graph.offices.configureAgent({id:'new-host',principal:'fixture-human',name:'Fictional host',host:'codex',state:'active',expectedRevision:0},{v:1,principal:'operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
   assert.equal((await readNetworkConfiguration(configFile)).version,2);
-  assert.equal((await checkNetworkCredential({configFile,tokenFile:accountToken,dbPath:file})).reason,'account_credential_matches');
+  assert.equal((await checkNetworkCredential({configFile,tokenFile:accountToken,dbPath:file})).reason,'account_requires_host_registration');
   const allowedHosts=['127.0.0.1'],network=createNetworkMcpApp(graph,{allowedHosts,configuration:()=>readNetworkConfiguration(configFile)}),clients:Client[]=[];
   const listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener.once('listening',r));
   const networkUrl='http://127.0.0.1:'+(listener.address() as import('node:net').AddressInfo).port;allowedHosts.push(new URL(networkUrl).host);
   const token=(await fs.readFile(accountToken,'utf8')).trim();
   async function connect(endpoint:string,credential=token){const client=new Client({name:'production-fixture',version:'1'});clients.push(client);await client.connect(new StreamableHTTPClientTransport(new URL(networkUrl+endpoint),{requestInit:{headers:{Authorization:'Bearer '+credential}}}));return client;}
   try{
-    const accounts=await Promise.all(Array.from({length:10},()=>connect('/mcp')));
-    assert((await accounts[0].callTool({name:'role_sync',arguments:{}})).isError,'Account migration cannot grant Office host authority');
-    const snapshot:any=await accounts[0].callTool({name:'memory_host_snapshot',arguments:{view:'stats'}});assert(!snapshot.isError,JSON.stringify(snapshot));assert.equal(JSON.parse(snapshot.content[0].text).total,0,'Migration retains the original personal scope');
-    const memory=await connect('/memory/mcp');assert((await memory.callTool({name:'memory_identity',arguments:{}})).isError,'An account-only credential cannot read human Memory through the remote endpoint');
-    const host=await connect('/mcp',(await fs.readFile(hostToken,'utf8')).trim());assert(!(await host.callTool({name:'role_sync',arguments:{}})).isError);
+    for(const endpoint of ['/mcp','/memory/mcp'])await assert.rejects(connect(endpoint),(e:any)=>e.code===403,'Account-only credentials require a registered host; never personal-domain tool access');
+    const hostCredential=(await fs.readFile(hostToken,'utf8')).trim();
+    const accounts=await Promise.all(Array.from({length:10},()=>connect('/mcp',hostCredential)));
+    assert(!(await accounts[0].callTool({name:'role_sync',arguments:{}})).isError);
+    assert((await accounts[0].listTools()).tools.every(t=>!t.name.startsWith('memory_')));
   }finally{await Promise.all(clients.map(c=>c.close()));await network.close(listener);}
-  console.log('PASS adding a host preserves existing account authentication and scope; more than eight connections can initialize');
+  console.log('PASS account-only credentials denied; registered hosts expose only Office tools and more than eight connections initialize');
   assert.throws(()=>createNetworkMcpApp(graph,{allowedHosts,configuration:()=>readNetworkConfiguration(configFile),maxPerAccount:0}),/connection limits/);
   const cliUrl=await start('mcp',{MINDPOND_MCP_MAX_CONNECTIONS:'3',MINDPOND_MCP_MAX_PER_ACCOUNT:'2'},['dist/mcp-http.js','serve','--config',configFile,'--db',file,'--port','0']);
   const cliClients:Client[]=[],cliTransports:StreamableHTTPClientTransport[]=[];

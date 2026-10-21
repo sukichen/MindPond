@@ -13,6 +13,7 @@ export type MindPondErrorCode =
   | 'stale_version'            // optimistic version check failed; reload and retry
   | 'material_over_budget'     // material exceeds the organization budget; shrink the batch or read in segments — never truncate
   | 'scope_denied'             // outside trusted context/authorization; never auto-expand
+  | 'identity_required'        // no approved role identity; activate/configure before retrying
   | 'temporarily_unavailable'  // transient (locks, index); bounded backoff within budget
   | 'internal';                // unexpected; report with diagnostics, do not blind-retry
 
@@ -86,6 +87,7 @@ export function httpStatus(code: MindPondErrorCode): number {
     case 'invalid_input': return 400;
     case 'not_found': return 404;
     case 'scope_denied': return 403;
+    case 'identity_required': return 403;
     case 'idempotency_conflict':
     case 'source_revision_conflict':
     case 'stale_lease':

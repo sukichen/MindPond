@@ -1,4 +1,4 @@
-/** Real SQLite + central HTTP MCP; no model, private files, or production database. */
+/** Internal generic task library through in-memory MCP; no model, private files, or production database. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -7,14 +7,15 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {GraphMemory} from '../src/core/graph-memory.js';
 import {getEmbeddingService} from '../src/core/embedding.js';
-import {createNetworkMcpApp} from '../src/integrations/network-server.js';
+import {scopedLibraryMcp} from './helpers/scoped-library-mcp.js';
 import {issueNetworkGrant,readNetworkConfiguration} from '../src/integrations/network-config.js';
 import type {ProblemReport} from '../src/core/collaboration.js';
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-collaboration-'));
 const configFile=path.join(dir,'accounts.json'),dbPath=path.join(dir,'central.db');
 const embedding=getEmbeddingService(),original=embedding.generateEmbedding;embedding.generateEmbedding=async()=>[1,...Array(383).fill(0)];
 let graph=new GraphMemory('.',{dbPath});
-let network:ReturnType<typeof createNetworkMcpApp>|undefined,listener:import('node:http').Server|undefined;
+const libraryServices:Array<Awaited<ReturnType<typeof scopedLibraryMcp>>['service']>=[];
+async function closeLibraryServices(){const all=libraryServices.splice(0);for(const s of all)s.beginShutdown();await Promise.all(all.map(s=>s.close()));}
 const clients:Client[]=[];const tokens=new Map<string,string>();
 const operator={v:1 as const,principal:'operator',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
 const workspace={id:'tool-project',teamId:'developers',title:'Tool development',expectedRevision:0,members:[{principal:'suki001',roles:['reporter','reviewer'] as const},{principal:'suki',roles:['worker'] as const},{principal:'helper',roles:['worker'] as const}]};
@@ -23,8 +24,8 @@ const decode=(r:any)=>JSON.parse(r.content.find((c:any)=>c.type==='text').text);
 const call=async(c:Client,name:string,args:Record<string,unknown>={})=>{const r=await c.callTool({name,arguments:args});assert(!r.isError,JSON.stringify(r));return decode(r);};
 const denied=async(c:Client,name:string,args:Record<string,unknown>)=>{const r=await c.callTool({name,arguments:args});assert(r.isError,`${name} unexpectedly succeeded`);return decode(r);};
 const allowedHosts:string[]=['127.0.0.1:1'];
-async function start(){network=createNetworkMcpApp(graph,{configuration:()=>readNetworkConfiguration(configFile),allowedHosts,maxPerAccount:5});listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener!.once('listening',r));const port=(listener.address() as import('node:net').AddressInfo).port;allowedHosts.push(`127.0.0.1:${port}`);return new URL(`http://127.0.0.1:${port}/mcp`);}
-async function connect(url:URL,principal:string){const client=new Client({name:principal,version:'1'});clients.push(client);await client.connect(new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:`Bearer ${tokens.get(principal)}`,'X-MindPond-Session':'fixture'}}}));return client;}
+async function start(){return new URL('http://library-fixture.invalid');}
+async function connect(_url:URL,principal:string){const {client,service}=await scopedLibraryMcp(graph,configFile,principal,tokens.get(principal)!);clients.push(client);libraryServices.push(service);return client;}
 try{
   for(const principal of ['suki001','suki','helper','stranger']){const tokenFile=path.join(dir,principal+'.token');await issueNetworkGrant({configFile,tokenFile,principal,personalId:principal,toolProfile:'full'});tokens.set(principal,(await fs.readFile(tokenFile,'utf8')).trim());}
   await graph.init();
@@ -91,9 +92,9 @@ try{
   assert.equal((await db.get('SELECT count(*) n FROM nodes')).n,1,'collaboration does not vectorize or become memory');
   await graph.collaboration.configure({...workspace,expectedRevision:1,members:workspace.members.filter(m=>m.principal!=='helper').map(m=>({...m,roles:[...m.roles]}))},operator);
   await denied(helper,'work_thread_get',{taskId:published.taskId});assert.equal((await call(helper,'work_inbox')).items.length,0);
-  await Promise.all(clients.splice(0).map(c=>c.close()));await network!.close(listener);listener=undefined;await graph.close();
+  await Promise.all(clients.splice(0).map(c=>c.close()));await closeLibraryServices();await graph.close();
   graph=new GraphMemory('.',{dbPath});await graph.init();const restartUrl=await start();const resumed=await connect(restartUrl,'suki');
   assert.equal((await call(resumed,'work_thread_get',{taskId:published.taskId})).task.status,'completed');assert((await call(resumed,'work_inbox')).items.some((v:any)=>v.kind==='completed'));
   assert.equal((await call(await connect(restartUrl,'suki001'),'work_handoff',input)).taskId,published.taskId,'response loss/restart keeps original receipt');
   console.log('PASS collaboration: authenticated identities/roles; atomic rollback/idempotency; complete versioned evidence; inbox cursors and old ack; account isolation; exclusive leases and reviewer acceptance; revocation/restart; no graph-memory pollution');
-}finally{await Promise.allSettled(clients.map(c=>c.close()));if(network)await network.close(listener);await graph.close();embedding.generateEmbedding=original;await fs.rm(dir,{recursive:true,force:true});}
+}finally{await Promise.allSettled(clients.map(c=>c.close()));await closeLibraryServices();await graph.close();embedding.generateEmbedding=original;await fs.rm(dir,{recursive:true,force:true});}

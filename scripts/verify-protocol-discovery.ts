@@ -1,3 +1,4 @@
+import {ROLE_MEMORY_INSTRUCTIONS} from '../src/role-memory-service.js';
 /** A01/A02 gate: progressive protocol rule discovery. Covers acceptance
  * "无先验工具发现、规则版本、合法示例和纠错" (A02 later extends the 纠错 half)
  * through three real service boundaries:
@@ -59,7 +60,7 @@ const save = async (content: string, spaceId: string) => {
 /** Minimal MCP stdio client: initialize → notifications/initialized, then
  * newline-delimited JSON-RPC. Rejects on error responses and timeouts. */
 async function withMcp(fn: (rpc: (method: string, params?: any) => Promise<any>, notify: (method: string, params?: any) => void) => Promise<void>) {
-  const mcp = spawn(process.execPath, [path.join(root, 'dist', 'mcp.js')], {
+  const mcp = spawn(process.execPath, [path.join(root, 'scripts', 'helpers', 'library-mcp-entry.mjs')], {
     env: { ...process.env, MEMORY_DB_PATH: path.join(dir, 'mcp.db'), MINDPOND_TOOL_PROFILE:'full', EMBEDDING_ZH_ENABLED: 'false' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -280,11 +281,11 @@ try {
     const directory = path.join(dir, `bundle-${client}`);
     await prepareClientBundle({ client, directory, dbPath: path.join(dir, 'shared-client.db'),
       mcpPath: path.join(root, 'dist', 'mcp.js') });
-    assert.equal(await fs.readFile(path.join(directory, 'instructions.md'), 'utf8'), MEMORY_BOOTSTRAP + '\n');
+    assert.equal(await fs.readFile(path.join(directory, 'instructions.md'), 'utf8'), ROLE_MEMORY_INSTRUCTIONS + '\n');
     const launch = await clientLaunch(directory);
     if (client === 'claude') {
       const index = launch.args.indexOf('--append-system-prompt');
-      assert.ok(index >= 0 && launch.args[index + 1] === MEMORY_BOOTSTRAP,
+      assert.ok(index >= 0 && launch.args[index + 1] === ROLE_MEMORY_INSTRUCTIONS,
         'Claude must receive the onboarding prompt as a launch argument');
     }
     if (client === 'opencode') {

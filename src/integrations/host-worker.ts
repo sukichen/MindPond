@@ -2,31 +2,42 @@
  * never a network endpoint or a model-callable context-switch tool. */
 import readline from 'node:readline';
 import { GraphMemory } from '../core/graph-memory.js';
-import { normalizeDomain } from '../core/domain.js';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
+import {createOwnerMemoryServer} from '../role-memory-service.js';
 import { MindPondError, toStructuredError } from '../core/errors.js';
-import { HostSessionService } from './host-session.js';
 process.env.MINDPOND_LOG_STDERR='1';
 const graph=new GraphMemory();
 await graph.init();
-const configured=JSON.parse(process.env.MEMORY_TRUST_DOMAINS??'[]');
-if(!Array.isArray(configured)||configured.some(d=>d.kind==='session'))throw new Error('Native adapter needs configured personal/team domains only');
-const service=new HostSessionService(graph,configured.map(d=>normalizeDomain(d)),process.env.MEMORY_TRUST_PRINCIPAL??'opencode/local');
+// Native adapters use the exact role-only MCP implementation. No parallel
+// personal-domain or lifecycle path may choose an identity for an agent.
+const service=createOwnerMemoryServer(graph),client=new Client({name:'mindpond-native-adapter',version:'1'});
+const [serverTransport,clientTransport]=InMemoryTransport.createLinkedPair();
+await Promise.all([service.server.connect(serverTransport),client.connect(clientTransport)]);
 let closing=false;
 const calls=new Map<string,{abort:AbortController;promise:Promise<void>}>();
 const close=async()=>{
   if(closing)return;closing=true;
   for(const call of calls.values())call.abort.abort();
   await Promise.allSettled([...calls.values()].map(call=>call.promise));
-  await graph.close();
+  await client.close();await service.close();await graph.close();
 };
 process.once('SIGTERM',()=>{void close().finally(()=>process.exit());});
 async function execute(request:any,signal:AbortSignal){
   try{
     let result:unknown;
-    if(request.tool==='__mindpond_host_identity')result={pondId:await graph.pondIdentity()};
-    else if(request.tool==='__mindpond_host_captured')result={captured:await graph.lifecycleCaptured(request.sessionId,process.env.MEMORY_TRUST_PRINCIPAL??'opencode/local',request.args.runId,request.args.checkpointId)};
-    else if(request.tool==='__mindpond_host_session_status')result={status:await graph.hostSessionStatus(request.sessionId)};
-    else result=await service.call(request.sessionId,request.tool,request.args,{signal});
+    if(request.tool==='__mindpond_native_schema'){
+      const tools=(await client.listTools()).tools;
+      const tool=tools.find(t=>t.name===request.args?.tool);
+      if(!tool)throw new MindPondError('invalid_input','Unknown role Memory tool');
+      result={name:tool.name,description:tool.description,inputSchema:tool.inputSchema};
+    }else{
+      const response=await client.callTool({name:request.tool,arguments:request.args??{},_meta:{'ai.opencode/sessionID':request.sessionId}},undefined,{signal});
+      const text=(response.content as Array<{type:string;text:string}>).find(c=>c.type==='text')!.text;
+      let payload;try{payload=JSON.parse(text);}catch{throw new MindPondError(response.isError?'invalid_input':'internal',response.isError?text:'Invalid role Memory response');}
+      if(response.isError){process.stdout.write(JSON.stringify({id:request.id,error:payload.error??payload})+'\n');return;}
+      result=payload;
+    }
     process.stdout.write(JSON.stringify({id:request.id,result})+'\n');
   }catch(error){process.stdout.write(JSON.stringify({id:request.id,error:toStructuredError(error)})+'\n');}
 }

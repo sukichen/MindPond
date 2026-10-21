@@ -4498,6 +4498,9 @@ export class GraphMemory {
     const clauses = ['active = 1', `memory_id IN (${nodeIds.map(() => '?').join(',')})`];
     const params: unknown[] = [...nodeIds];
     const domains = this.queryDomains(query);
+    // No readable domains is an empty result, never an invalid SQL predicate
+    // or a reason to fall back to the human domain.
+    if (!query.operatorAll && !domains.length) return new Set();
     if(!query.operatorAll)clauses.push('EXISTS (SELECT 1 FROM nodes dn LEFT JOIN memory_domains dd ON dd.kind=dn.domain_kind AND dd.id=dn.domain_id WHERE dn.id=memory_memberships.memory_id AND (' +
       domains.map(() => '(dn.domain_kind=? AND dn.domain_id=? AND (dn.domain_kind != \'session\' OR dd.status IN (\'active\',\'paused\')))').join(' OR ') + '))');
     if(!query.operatorAll)for (const domain of domains) params.push(domain.kind, domain.id);

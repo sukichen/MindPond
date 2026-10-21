@@ -1,7 +1,7 @@
 /**
  * M02 verify: domain semantics are enforced at the REAL HTTP and MCP entries,
  * not only inside core methods (handbook M02.d — "不能仅测核心方法后声称 API
- * 全覆盖").  Spawns src/server.ts (HTTP) and src/mcp.ts (stdio JSON-RPC)
+ * 全覆盖").  Spawns src/server.ts (HTTP) and a test-only trusted SDK stdio fixture
  * against a temp database and walks an interface × domain matrix.
  *
  * M02.a interface list — how each entry obtains its domain context:
@@ -141,9 +141,9 @@ class McpClient {
     });
   }
   static async start(dir: string): Promise<McpClient> {
-    const proc = spawn(process.execPath, ['--import', 'tsx', path.resolve('src/mcp.ts')], {
+    const proc = spawn(process.execPath, [path.resolve('scripts/helpers/library-mcp-entry.mjs')], {
       cwd: process.cwd(),
-      env: { ...childEnv(dir), MINDPOND_TOOL_PROFILE:'full', MINDPOND_LOG_STDERR: '1' },
+      env: { ...childEnv(dir), MINDPOND_LIBRARY_TEST_UNBOUND:'1',MINDPOND_TOOL_PROFILE:'full', MINDPOND_LOG_STDERR: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stderr = '';

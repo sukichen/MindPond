@@ -48,7 +48,7 @@ try{
   await graph.init();await graph.offices.configureAgent({id:'codex-fixture',principal:'human',name:'Codex fixture',host:'codex',state:'active',expectedRevision:0},admin);
   const hosts=['127.0.0.1'];network=createNetworkMcpApp(graph,{allowedHosts:hosts,maxPerAccount:32,configuration:async()=>({version:2,grants:[{principal:'human',agentId:'codex-fixture',credentialId:'fixture',tokenHash:tokenDigest(token),domains:[{kind:'personal',id:'default'}],toolProfile:'office'}]})});
   listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener.once('listening',r));const port=listener.address().port;hosts.push('127.0.0.1:'+port);
-  const config=['mindpond_office','mindpond_memory'].map((name,i)=>`[mcp_servers.${name}]\nurl = "http://127.0.0.1:${port}/${i?'memory/mcp':'mcp'}"\nbearer_token_env_var = "MINDPOND_FIXTURE_CODEX_TOKEN"\nhttp_headers = { "X-MindPond-Session" = "old-shared-installation" }\ntool_timeout_sec = 60\n`).join('\n')+`\n[mcp_servers.mindpond_local]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(path.resolve('dist/mcp.js'))}]\ntool_timeout_sec = 90\n[mcp_servers.mindpond_local.env]\nMEMORY_DB_PATH = ${JSON.stringify(path.join(dir,'fixture.db'))}\n`;
+  const config=['mindpond_office','mindpond_memory'].map((name,i)=>`[mcp_servers.${name}]\nurl = "http://127.0.0.1:${port}/${i?'memory/mcp':'mcp'}"\nbearer_token_env_var = "MINDPOND_FIXTURE_CODEX_TOKEN"\nhttp_headers = { "X-MindPond-Session" = "old-shared-installation" }\ntool_timeout_sec = 60\n`).join('\n')+`\n[mcp_servers.mindpond_local]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(path.resolve('dist/mcp.js'))}]\ntool_timeout_sec = 90\n[mcp_servers.mindpond_local.env]\nMEMORY_DB_PATH = ${JSON.stringify(path.join(dir,'fixture.db'))}\nMINDPOND_TOOL_PROFILE = \"full\"\nMEMORY_TRUST_OPERATOR = \"1\"\n`;
   const isolatedProvider=`model = "fixture-no-inference"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Disabled inference fixture"\nbase_url = "http://127.0.0.1:${port}/disabled-model"\nwire_api = "responses"\nrequires_openai_auth = false\n`;
   await fs.writeFile(path.join(dir,'config.toml'),isolatedProvider+'\n'+config,{mode:0o600});await start();
   const threads:string[]=[],roles:string[]=[];
@@ -59,7 +59,7 @@ try{
     const app=await tool(id,'mindpond_office','role_application',{action:'submit',name:'Fictional Codex '+label,introduction:'Installed harness isolation regression',reason:'No model inference',key:'apply'});
     const role=await graph.roles.review({action:'approve',applicationId:app.applicationId,expectedRevision:1},admin);roles.push(role.roleId);
     const sync=await tool(id,'mindpond_office','role_sync');assert.equal(sync.identity.roleId,role.roleId);assert.equal(sync.identity.bindingMode,'codex_metadata');
-    assert.equal((await tool(id,'mindpond_memory','memory_identity')).owner.id,role.roleId);assert.equal((await tool(id,'mindpond_local','memory_identity')).owner.id,role.roleId);
+    for(const endpoint of ['mindpond_memory','mindpond_local']){const identity=await tool(id,endpoint,'memory_identity');assert.equal(identity.owner.id,role.roleId);assert.equal(identity.identity.bindingId,sync.identity.bindingId);assert.equal(identity.identity.protocol,'mindpond.role-memory.v1');assert.equal(identity.identity.humanFallback,false);}
   }
   assert.notEqual(threads[0],threads[1]);assert.notEqual(roles[0],roles[1]);
   const saved=await tool(threads[0],'mindpond_local','memory_save',{content:'Fictional Codex A private knowledge',idempotencyKey:'save'});

@@ -90,7 +90,7 @@
     "verify:office-collaboration": "tsx scripts/verify-office-collaboration.ts && tsx scripts/verify-office-evaluation.ts && npm run verify:role-memory",
     "eval:office-judge": "tsx scripts/judge-office-collaboration.ts",
     "verify:office-native-host": "tsx scripts/verify-office-native-host.ts",
-    "verify:role-memory": "tsx scripts/verify-role-memory.ts && npm run verify:office-memory",
+    "verify:role-memory": "tsx scripts/verify-role-memory.ts && tsx scripts/verify-memory-identity-boundaries.ts && npm run verify:office-memory",
     "verify:opencode-role-session": "tsx scripts/verify-opencode-role-session.ts",
     "verify:production-role-memory": "tsx scripts/verify-production-role-memory.ts",
     "verify:memory-ui": "node scripts/verify-memory-ui.mjs",

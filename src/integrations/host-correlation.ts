@@ -7,6 +7,7 @@ import { MindPondError } from '../core/errors.js';
  * Keep source namespaces distinct and reject malformed IDs instead of falling
  * back to a shared installation header or a previous character. */
 export function hostChatIdentity(meta?: Record<string, unknown>) {
+    let identity:{source:'opencode'|'codex';mode:'opencode_metadata'|'codex_metadata';id:string}|undefined;
     for (const [key, source, mode] of [
         ['mindpond/verifiedSessionID', 'opencode', 'opencode_metadata'],
         ['ai.opencode/sessionID', 'opencode', 'opencode_metadata'],
@@ -16,9 +17,10 @@ export function hostChatIdentity(meta?: Record<string, unknown>) {
         const id = meta[key];
         if (typeof id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(id))
             throw new MindPondError('invalid_input', 'Invalid host chat identity; reconnect this chat instead of selecting another role');
-        return { source, mode, id };
+        if(identity&&(identity.id!==id||identity.source!==source))throw new MindPondError('invalid_input','Conflicting host chat identities; reconnect the host integration.');
+        identity={ source, mode, id };
     }
-    return undefined;
+    return identity;
 }
 export function canonical(value: any): string { return JSON.stringify(value === null || typeof value !== 'object' ? value : Array.isArray(value) ? value.map(v => JSON.parse(canonical(v))) : Object.fromEntries(Object.keys(value).sort().filter(k => value[k] !== undefined).map(k => [k, JSON.parse(canonical(value[k]))]))); }
 export function signHostSession(sessionId: string, tool: string, args: any, token: string, now = Date.now()) {

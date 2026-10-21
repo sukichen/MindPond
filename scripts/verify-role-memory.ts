@@ -85,17 +85,18 @@ try {
     clients.push(user);
     const [x, y] = InMemoryTransport.createLinkedPair();
     await Promise.all([userService.server.connect(x), user.connect(y)]);
-    const all = await call(user, 'memory_directory');
-    assert(all.data.memories.some((n: any) => n.id === human.id));
-    assert(all.data.memories.some((n: any) => n.id === copyId));
-    const found = await call(user, 'memory_search', { query: 'isolation fixture human environment knowledge', limit: 20 });
-    assert(found.data.results.some((n: any) => n.id === human.id), 'human searches old workspace without selecting it');
+    for(const name of ['memory_identity','memory_directory','memory_brief','memory_search','memory_get','memory_save','memory_update','memory_delete','memory_save_policy']){
+      const args:any={memory_brief:{task:'human data'},memory_search:{query:'human data'},memory_get:{nodeId:human.id},memory_save:{content:'Must not write human memory',idempotencyKey:'unidentified'},memory_update:{nodeId:human.id,expectedUpdatedAt:0,reason:'Must deny'},memory_delete:{nodeId:human.id,reason:'Must deny'}};
+      const denied=await call(user,name,args[name]??{});assert(denied.r.isError,name);assert.equal(denied.data.error.code,'identity_required');
+    }
+    const all = await graph.listNodes({operatorAll:true});assert(all.nodes.some(n=>n.id===human.id)&&all.nodes.some(n=>n.id===copyId));
+    const found=await graph.recall({query:'isolation fixture human environment knowledge',operatorAll:true,limit:20});assert(found.results.some(n=>n.node.id===human.id));
     const remoteWithoutRole=createOwnerMemoryServer(graph,{trusted:{v:1,principal:'legacy-account',transport:'http-mcp',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}});
     const legacy=new Client({name:'unbound-remote',version:'1'});clients.push(legacy);const [lx,ly]=InMemoryTransport.createLinkedPair();
     await Promise.all([remoteWithoutRole.server.connect(lx),legacy.connect(ly)]);
     try{assert((await call(legacy,'memory_directory')).r.isError,'remote legacy account cannot fall back to human memory');}finally{await legacy.close();await remoteWithoutRole.close();}
     const bounded=(await call(memory,'memory_search',{query:'knowledge',contextBudgetBytes:2048},'chat-a')).data;assert.equal(Buffer.byteLength(JSON.stringify({results:bounded.results})),bounded.contextBudget.used);assert(bounded.contextBudget.used<=2048);
-    console.log('PASS owner isolation, independent copies and human global search');
+    console.log('PASS owner isolation, independent copies and explicit human management');
     // Codex uses _meta.threadId, including on a shared transport with an old
     // fixed installation label. The same textual ID in OpenCode is distinct.
     const codexCall=async(c:Client,name:string,args:any={},threadId='chat-a')=>{const r:any=await c.callTool({name,arguments:args,_meta:{threadId}});return {r,data:JSON.parse(r.content[0].text)};};

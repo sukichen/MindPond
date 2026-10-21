@@ -269,45 +269,11 @@ try {
     await new Promise<void>(r => { if (child.exitCode !== null) r(); else { child.once('exit', () => r()); setTimeout(() => { child.kill('SIGKILL'); r(); }, 3000).unref(); } });
   }
 
-  const workerPath = fileURLToPath(new URL('../dist/integrations/host-worker.js', import.meta.url));
-  const host = { directory: temp, worktree: temp, client: {
-    session: { messages: async () => ({ data: [{ info: { id: 'fixture-message', role: 'user' },
-      parts: [{ type: 'text', text: 'Public fixture scene: proxy review marker' }] }] }) },
-    app: { log: async () => ({}) },
-  } };
-  const options = { workerPath, nodePath: process.execPath, timeoutMs: 20000 };
-  const first = await createOpenCodeMemoryPlugin(host, { ...options, dbPath: path.join(temp, 'native-a.db') });
-  try {
-    await first.event({ event: { type: 'session.idle', properties: { sessionID: 'same-session' } } });
-    const before = JSON.parse(await first.tool.memory_event_search.execute({ query: 'proxy review marker' }, { sessionID: 'same-session' }));
-    assert(before.results.length > 0);
-    const second = await createOpenCodeMemoryPlugin(host, { ...options, dbPath: path.join(temp, 'native-b.db') });
-    try {
-      await second.event({ event: { type: 'session.idle', properties: { sessionID: 'same-session' } } });
-      const other = JSON.parse(await second.tool.memory_event_search.execute({ query: 'proxy review marker' }, { sessionID: 'same-session' }));
-      const db = await open({ filename: path.join(temp, 'native-b.db'), driver: sqlite3.Database });
-      const count = await db.get("SELECT COUNT(*) n FROM nodes WHERE layer='L0'"); await db.close();
-      assert.equal(count.n,1);assert(other.results.length>0);
-      record('F04', { firstDatabaseSceneCount: before.results.length, secondDatabaseSceneCount: other.results.length,
-        secondDatabaseRawNodeCount: count.n, sameProjectAndNativeSessionDifferentDatabases: true });
-    } finally { await second.dispose(); }
-    const restorePath=path.join(temp,'native-restore.db');
-    const empty=await graphAt('native-restore.db');await empty.close();
-    const snapshot=path.join(temp,'native-restore.snapshot');await fs.copyFile(restorePath,snapshot);
-    const captureOnce=await createOpenCodeMemoryPlugin(host,{...options,dbPath:restorePath});
-    await captureOnce.event({event:{type:'session.idle',properties:{sessionID:'restore-session'}}});await captureOnce.dispose();
-    await fs.copyFile(snapshot,restorePath);await fs.rm(restorePath+'-wal',{force:true});await fs.rm(restorePath+'-shm',{force:true});
-    const afterRestore=await createOpenCodeMemoryPlugin(host,{...options,dbPath:restorePath});
-    try{await afterRestore.event({event:{type:'session.idle',properties:{sessionID:'restore-session'}}});const scene=JSON.parse(await afterRestore.tool.memory_event_search.execute({query:'proxy review marker'},{sessionID:'restore-session'}));assert(scene.results.length>0,'ACK must be checked against restored DB receipt');}finally{await afterRestore.dispose();}
-    await first.event({ event: { type: 'session.deleted', properties: { sessionID: 'same-session' } } });
-    const closed = JSON.parse(await first.tool.memory_event_search.execute({ query: 'proxy review marker' }, { sessionID: 'same-session' }));
-    assert.equal(closed.results.length, 0);
-    await assert.rejects(first.tool.memory_action.execute({ tool: 'memory_session_state', arguments: { status: 'active' } }, { sessionID: 'same-session' }),/lifecycle|host|session/i);
-    const reopened = JSON.parse(await first.tool.memory_event_search.execute({ query: 'proxy review marker' }, { sessionID: 'same-session' }));
-    assert.equal(reopened.results.length,0);
-    record('F05', { afterHostDeletionSceneCount: closed.results.length,
-      afterAgentAuthoredReopenSceneCount: reopened.results.length });
-  } finally { await first.dispose(); }
+  // The native adapter is role-only. Dedicated regression uses real worker
+  // processes and two databases, including reconnect and host revocation.
+  const native=await createOpenCodeMemoryPlugin({directory:temp,client:{}},{dbPath:path.join(temp,'unbound-native.db'),nodePath:process.execPath,workerPath:path.resolve('dist/integrations/host-worker.js'),timeoutMs:20000});
+  try{await assert.rejects(native.tool.memory_identity.execute({},{sessionID:'same-session'}),/identity|scope_denied/);record('F04',{unboundNativeDenied:true,humanFallback:false});}finally{await native.dispose();}
+
   const report = { verification:'production-safety',baselineCommit:'472e30e662941191e4266ce470b4b8c82c0c0d28', findings: results };
   if (process.env.MINDPOND_REVIEW_REPORT_PATH) await fs.writeFile(process.env.MINDPOND_REVIEW_REPORT_PATH, JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify(report, null, 2));

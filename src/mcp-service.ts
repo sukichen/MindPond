@@ -77,7 +77,9 @@ const pipeline = new MemoryPipelineManager(graphMemory, undefined);
 // uses the durable two-phase tools below.
 const hostConsolidation = new MemoryConsolidation(graphMemory, undefined);
 
-const toolProfile = parseMcpToolProfile(options.toolProfile);
+// A registered Office host can never expose the personal-domain tool catalog,
+// even when an embedding application requests work/full by mistake.
+const toolProfile = baseTrusted.agentId?'office':parseMcpToolProfile(options.toolProfile);
 const taskStore=options.enableTasks!==false&&baseTrusted.agentId&&baseTrusted.runtimeId?graphMemory.officeTaskStore(baseTrusted):undefined;
 const server = new McpServer({
   name: 'agent-memory',

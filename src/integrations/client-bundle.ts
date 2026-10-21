@@ -3,20 +3,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { MEMORY_BOOTSTRAP } from '../core/bootstrap.js';
+import { ROLE_MEMORY_INSTRUCTIONS } from '../role-memory-service.js';
 import { OFFICE_TOOL_TIMEOUT_MS, OFFICE_TOOL_TIMEOUT_SECONDS } from '../core/office-wait-policy.js';
-import { parseMcpToolProfile, type McpToolProfile } from '../core/mcp-tool-profile.js';
+import {memoryMcpEndpoint} from './office-connection.js';
 import { MindPondError } from '../core/errors.js';
 
 export type MemoryClient = 'codex' | 'claude' | 'opencode';
 export interface ClientBundleOptions {
-  client: MemoryClient; directory: string; dbPath?: string; sessionId?: string;
+  client: MemoryClient; directory: string; dbPath?: string;
   remoteUrl?:string;tokenFile?:string;allowHttp?:boolean;
-  personalId?: string; name?: string; embeddingConfigPath?:string;modelDirectory?:string; nodePath?: string; mcpPath?: string; toolProfile?: McpToolProfile; nativeAdapter?:boolean; capturePublicMessages?:boolean;
+  name?: string; embeddingConfigPath?:string;modelDirectory?:string; nodePath?: string; mcpPath?: string;
 }
 interface BundleManifest {
   version: 'mindpond.connection.v1'; client: MemoryClient; name: string;
-  sessionId?: string; files: Record<string,string>;
+  files: Record<string,string>;
   launch: {command:string; args:string[]; env:Record<string,string>};
 }
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -33,25 +33,23 @@ export async function prepareClientBundle(options:ClientBundleOptions) {
   if(!['codex','claude','opencode'].includes(options.client))throw conflict('Unsupported client');
   const directory=absolute(options.directory,'directory'), remote=!!options.remoteUrl;
   const dbPath=remote?'':absolute(options.dbPath!,'dbPath');
-  if(remote&&(options.dbPath||options.personalId||options.nativeAdapter||options.embeddingConfigPath||options.modelDirectory))throw conflict('Remote connection identities, database and model are controlled by the central server');
+  if(remote&&(options.dbPath||options.embeddingConfigPath||options.modelDirectory))throw conflict('Remote connection identities, database and model are controlled by the central server');
   if(remote){const url=new URL(options.remoteUrl!);if(url.username||url.password||url.search||url.hash||!['https:','http:'].includes(url.protocol))throw conflict('Invalid remote endpoint');const token=absolute(options.tokenFile!,'tokenFile');if(token===directory||token.startsWith(directory+path.sep))throw conflict('Keep credentials outside the removable bundle');}
   if(dbPath===directory||dbPath.startsWith(directory+path.sep))throw conflict('Keep the database outside the removable connection bundle');
   const name=options.name??'mindpond';
   if(!/^[a-z][a-z0-9_-]{0,63}$/.test(name))throw conflict('name must be a simple lowercase MCP identifier');
-  for(const [key,value] of Object.entries({sessionId:options.sessionId,personalId:options.personalId}))
-    if(value!==undefined&&(!value.trim()||value.length>256||value!==value.trim()))throw conflict(key+' requires 1–256 characters without surrounding whitespace');
-  if(remote&&options.sessionId&&!/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u.test(options.sessionId))throw conflict('Remote session requires a stable host label of 1–128 characters');
-  const toolProfile = parseMcpToolProfile(options.toolProfile ?? 'work');
-  const localEnv={MINDPOND_TOOL_PROFILE:toolProfile,MEMORY_DB_PATH:dbPath,MEMORY_TRUST_PRINCIPAL:`${options.client}/local`,
-    MEMORY_TRUST_DOMAINS:JSON.stringify([{kind:'personal',id:options.personalId??'default'}]),
+  // Reject removed selectors even when JavaScript callers bypass TypeScript.
+  if(['personalId','sessionId','toolProfile','nativeAdapter','capturePublicMessages'].some(key=>key in options))throw conflict('Memory identity selectors are not supported; bind the native chat to an Office role.');
+  let remoteUrl=options.remoteUrl;
+  if(remoteUrl){const u=new URL(remoteUrl);if(!u.pathname.replace(/\/$/,'').endsWith('/memory/mcp'))remoteUrl=memoryMcpEndpoint(remoteUrl);}
+  const localEnv={MEMORY_DB_PATH:dbPath,
     ...(options.embeddingConfigPath?{MINDPOND_EMBEDDING_CONFIG:absolute(options.embeddingConfigPath,'embeddingConfigPath')}:{}),
-    ...(options.modelDirectory?{EMBEDDING_MODEL_DIR:absolute(options.modelDirectory,'modelDirectory')}:{}),
-    MEMORY_TRUST_SESSION:options.sessionId??'',MEMORY_TRUST_OPERATOR:'0'};
-  const env=remote?{MINDPOND_REMOTE_URL:options.remoteUrl!,MINDPOND_REMOTE_TOKEN_FILE:absolute(options.tokenFile!,'tokenFile'),...(options.sessionId?{MINDPOND_REMOTE_SESSION:options.sessionId}:{})}:localEnv;
+    ...(options.modelDirectory?{EMBEDDING_MODEL_DIR:absolute(options.modelDirectory,'modelDirectory')}:{})};
+  const env=remote?{MINDPOND_REMOTE_URL:remoteUrl!,MINDPOND_REMOTE_TOKEN_FILE:absolute(options.tokenFile!,'tokenFile')}:localEnv;
   const server={command:absolute(options.nodePath??process.execPath,'nodePath'),
     args:remote?[absolute(options.mcpPath??fileURLToPath(new URL('../mcp-remote.js',import.meta.url)),'mcpPath'),...(options.allowHttp?['--allow-http']:[])]:[absolute(options.mcpPath??fileURLToPath(new URL('../mcp.js',import.meta.url)),'mcpPath')],env};
   await fs.access(server.args[0]);
-  const files:Record<string,string>={'instructions.md':MEMORY_BOOTSTRAP+'\n'};
+  const files:Record<string,string>={'instructions.md':ROLE_MEMORY_INSTRUCTIONS+'\n'};
   let launch:BundleManifest['launch'];
   if(options.client==='codex') {
     const codexServer={...server,tool_timeout_sec:OFFICE_TOOL_TIMEOUT_SECONDS};
@@ -59,19 +57,19 @@ export async function prepareClientBundle(options:ClientBundleOptions) {
     launch={command:'codex',args:['-c',`mcp_servers.${name}=${toml(codexServer)}`],env:{}};
   } else if(options.client==='claude') {
     files['mcp.json']=json({mcpServers:{[name]:{type:'stdio',...server}}});
-    launch={command:'claude',args:['--mcp-config',path.join(directory,'mcp.json'),'--append-system-prompt',MEMORY_BOOTSTRAP],env:{}};
+    launch={command:'claude',args:['--mcp-config',path.join(directory,'mcp.json'),'--append-system-prompt',ROLE_MEMORY_INSTRUCTIONS],env:{}};
   } else {
-    const native=!remote&&(options.nativeAdapter??(!options.sessionId));
+    const native=!remote;
     if(native){
       const pluginPath=path.join(path.dirname(server.args[0]),'integrations','opencode-plugin.js');
       await fs.access(pluginPath);
-      files['mindpond-plugin.mjs']=`import { createOpenCodeMemoryPlugin } from ${JSON.stringify(pathToFileURL(pluginPath).href)};\nexport default (host)=>createOpenCodeMemoryPlugin(host,${JSON.stringify({dbPath,personalId:options.personalId??'default',nodePath:server.command,capturePublicMessages:options.capturePublicMessages??true,...(options.embeddingConfigPath?{embeddingConfigPath:absolute(options.embeddingConfigPath,'embeddingConfigPath')}:{}),...(options.modelDirectory?{modelDirectory:absolute(options.modelDirectory,'modelDirectory')}: {})})});\n`;
+      files['mindpond-plugin.mjs']=`import { createOpenCodeMemoryPlugin } from ${JSON.stringify(pathToFileURL(pluginPath).href)};\nexport default (host)=>createOpenCodeMemoryPlugin(host,${JSON.stringify({dbPath,nodePath:server.command,...(options.embeddingConfigPath?{embeddingConfigPath:absolute(options.embeddingConfigPath,'embeddingConfigPath')}:{}),...(options.modelDirectory?{modelDirectory:absolute(options.modelDirectory,'modelDirectory')}: {})})});\n`;
     }
     const config={...(native?{plugin:[pathToFileURL(path.join(directory,'mindpond-plugin.mjs')).href]}:{}),mcp:{[name]:{type:'local',command:[server.command,...server.args],environment:env,enabled:!native,timeout:native?15000:OFFICE_TOOL_TIMEOUT_MS}},instructions:[path.join(directory,'instructions.md')]};
     files['opencode.json']=json(config);
     launch={command:'opencode',args:[],env:{OPENCODE_CONFIG_CONTENT:JSON.stringify(config)}};
   }
-  const manifest:BundleManifest={version:'mindpond.connection.v1',client:options.client,name,...(options.sessionId?{sessionId:options.sessionId}:{}),files:Object.fromEntries(Object.entries(files).map(([n,s])=>[n,hash(s)])),launch};
+  const manifest:BundleManifest={version:'mindpond.connection.v1',client:options.client,name,files:Object.fromEntries(Object.entries(files).map(([n,s])=>[n,hash(s)])),launch};
   // Idempotent prepare reuses only exact bytes; no overwrite/update of owned or unrelated content.
   await fs.mkdir(path.dirname(directory),{recursive:true});
   try { await fs.mkdir(directory,{recursive:false,mode:0o700}); }

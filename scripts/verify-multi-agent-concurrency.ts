@@ -1,4 +1,4 @@
-/** Real simultaneous MCP processes; protocol/concurrency evidence, not autonomous LLM behavior. */
+/** Internal SDK regression through simultaneous test-only MCP processes; protocol/concurrency evidence, not autonomous LLM behavior. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -18,7 +18,7 @@ async function call(c:Client,name:string,args:Record<string,unknown>={}) {
 }
 async function connect(i:number,profile:'work'|'full'='work') {
   const c=new Client({name:'parallel-'+i,version:'1'});clients.push(c);
-  await c.connect(new StdioClientTransport({command:process.execPath,args:[path.join(root,'dist/mcp.js')],
+  await c.connect(new StdioClientTransport({command:process.execPath,args:[path.join(root,'scripts/helpers/library-mcp-entry.mjs')],
     env:{...process.env,MEMORY_DB_PATH:path.join(dir,'pond.db'),MINDPOND_TOOL_PROFILE:profile,
       MEMORY_TRUST_PRINCIPAL:'agent-'+i,MEMORY_TRUST_SESSION:'session-'+i,
       MEMORY_TRUST_DOMAINS:JSON.stringify([personal]),MEMORY_TRUST_OPERATOR:'0',

@@ -32,7 +32,7 @@ try{
  const call=async(c:Client,name:string,args:any={},chat?:string)=>{const r:any=await raw(c,name,args,chat);assert(!r.isError,JSON.stringify(r));return JSON.parse(r.content[0].text);};
  const denied=async(c:Client,name:string,args:any={},chat?:string)=>{const r:any=await raw(c,name,args,chat);assert(r.isError,'Expected denial: '+name);return JSON.parse(r.content[0].text);};
  assert.equal((await call(local,'memory_identity',{},'worker')).owner.id,roles[0].roleId,'stdio native metadata resolves role, never human fallback');
- assert.equal((await call(local,'memory_identity')).owner.kind,'user','deliberate local human connection remains available');
+ assert.equal((await denied(local,'memory_identity')).error.code,'identity_required','unidentified local calls must never become human');
  await denied(local,'memory_save',{content:'unapproved must not become human',idempotencyKey:'bad'},'unapproved');
  const privateMemory=await call(local,'memory_save',{content:'## Private task technique',idempotencyKey:'private'},'worker');
  assert.equal((await graph.memoryOwners.owner((await graph.getNodeById(privateMemory.id))!)).id,roles[0].roleId);
@@ -54,7 +54,7 @@ try{
  node=await call(local,'memory_get',{nodeId:shared.id},'worker');assert(node.officePolicy.locked);
  await denied(local,'memory_update',{nodeId:shared.id,content:'Must not override rules',expectedUpdatedAt:node.updatedAt,reason:'Forbidden'},'worker');
  await denied(local,'memory_delete',{nodeId:shared.id,reason:'Forbidden'},'worker');
- await call(local,'memory_update',{nodeId:shared.id,content:'## Human rule\n\nHuman edits remain allowed.',expectedUpdatedAt:node.updatedAt,reason:'Human reviewed'});
+ await graph.editMemory(shared.id,{content:'## Human rule\n\nHuman edits remain allowed.',expectedUpdatedAt:node.updatedAt,reason:'Human reviewed'});
  assert((await call(local,'memory_get',{nodeId:shared.id},'colleague')).officePolicy.locked,'human edit does not unlock');
  await graph.memoryOwners.setPolicy(shared.id,false,lock.revision);
  // Human locks during expensive embedding; the writer must recheck after model work.
@@ -85,10 +85,10 @@ try{
  await denied(local,'memory_save',{content:'Paused room update',officeId:'room',idempotencyKey:'paused'},'colleague');
  await graph.roles.deleteOffice({id:'room',expectedRevision:3},admin);
  await denied(local,'memory_get',{nodeId:shared.id},'colleague');
- assert.equal((await call(local,'memory_get',{nodeId:shared.id})).owner.kind,'office','human retains office knowledge after office deletion');
+ assert.equal((await graph.memoryOwners.present((await graph.getNodeById(shared.id))!)).owner.kind,'office','human management retains office knowledge after office deletion');
  assert((await graph.memoryOwners.offices()).some(o=>o.id==='room'&&o.state==='deleted'));
- assert((await call(local,'memory_directory',{officeId:'room'})).memories.some((m:any)=>m.id===shared.id),'Human can filter preserved knowledge by a deleted office');
- assert((await call(local,'memory_search',{officeId:'room',query:'Human rule'})).results.some((m:any)=>m.id===shared.id));
+ assert((await graph.listNodes({...await graph.memoryOwners.context({kind:'user',id:'default'},'room')})).nodes.some(m=>m.id===shared.id),'Human management can filter preserved knowledge by a deleted office');
+ assert((await graph.recall({query:'Human rule',...await graph.memoryOwners.context({kind:'user',id:'default'},'room')})).results.some(m=>m.node.id===shared.id));
  await denied(local,'memory_directory',{officeId:'room'},'colleague');
  await assert.rejects(graph.roles.configureOffice({id:'room',title:'Different audience',state:'active',expectedRevision:0,seats:[seats[0]]},admin),/retained knowledge/,'deleted office IDs cannot expose preserved knowledge to a new audience');
  assert.equal((await (graph as any).db.get('PRAGMA quick_check')).quick_check,'ok');

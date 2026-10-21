@@ -2,15 +2,14 @@
 import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { prepareClientBundle, readClientBundle, removeClientBundle, clientLaunch, type MemoryClient } from './integrations/client-bundle.js';
-import { parseMcpToolProfile } from './core/mcp-tool-profile.js';
 import { toStructuredError } from './core/errors.js';
 import { prepareRoleClientBundle, roleClientLaunch } from './integrations/role-client-bundle.js';
 const usage = `Usage:
   mindpond-connect office-prepare --client codex|opencode --directory /new/session --remote-url https://memory.example/mcp [--token-env MINDPOND_TOKEN] [--session public-label] [--allow-http]
   mindpond-connect office-run --directory /session [--dry-run] [-- CLI arguments]
-  mindpond-connect prepare --client codex|claude|opencode --directory /new/bundle (--db /memory.db | --remote-url https://memory.example/mcp --token-file /private/token) [--session logical-session] [--tools work|full]
+  mindpond-connect prepare --client codex|claude|opencode --directory /new/bundle (--db /memory.db | --remote-url https://memory.example/memory/mcp --token-file /private/token)
   mindpond-connect inspect|remove|run --directory /bundle [--dry-run] [-- CLI arguments]
-Office bundles use native HTTP MCP, public per-session labels and environment variable names only. One configuration per writable chat; do not copy its label to a different chat. Set credentials outside the LLM context.`;
+Office bundles use native HTTP MCP, public per-session labels and environment variable names only. Native chat IDs distinguish roles across chats; verify memory_identity after approval. Set credentials outside the LLM context.`;
 async function runCli(launch:{command:string;args:string[];env:NodeJS.ProcessEnv;cwd?:string}) {
   const child=spawn(launch.command,launch.args,{env:launch.env,cwd:launch.cwd,stdio:'inherit',shell:false});
   const stop=()=>child.kill('SIGTERM');
@@ -24,7 +23,7 @@ async function runCli(launch:{command:string;args:string[];env:NodeJS.ProcessEnv
 try {
   const args=process.argv.slice(2), action=args.shift();
   const separator=args.indexOf('--'), extra=separator<0?[]:args.splice(separator).slice(1);
-  const {values}=parseArgs({args,options:{help:{type:'boolean',short:'h'},client:{type:'string'},directory:{type:'string'},db:{type:'string'},'remote-url':{type:'string'},'token-file':{type:'string'},'token-env':{type:'string'},'allow-http':{type:'boolean'},session:{type:'string'},personal:{type:'string'},'embedding-config':{type:'string'},'model-dir':{type:'string'},name:{type:'string'},tools:{type:'string'},native:{type:'boolean'},'no-capture':{type:'boolean'},'dry-run':{type:'boolean'}}});
+  const {values}=parseArgs({args,options:{help:{type:'boolean',short:'h'},client:{type:'string'},directory:{type:'string'},db:{type:'string'},'remote-url':{type:'string'},'token-file':{type:'string'},'token-env':{type:'string'},'allow-http':{type:'boolean'},session:{type:'string'},'embedding-config':{type:'string'},'model-dir':{type:'string'},name:{type:'string'},'dry-run':{type:'boolean'}}});
   if(!action||['help','--help','-h'].includes(action)||values.help)console.log(usage);
   else if(action==='office-prepare') {
     console.log(JSON.stringify(await prepareRoleClientBundle({directory:values.directory??'',client:values.client as 'codex'|'opencode',url:values['remote-url']??'',tokenEnv:values['token-env'],sessionLabel:values.session,allowHttp:values['allow-http']}),null,2));
@@ -34,7 +33,8 @@ try {
     else process.exitCode=await runCli(launch);
   } else {
   if(!values.directory||!['prepare','inspect','remove','run'].includes(action??''))throw new Error(usage);
-  if(action==='prepare')console.log(JSON.stringify(await prepareClientBundle({client:values.client as MemoryClient,directory:values.directory,dbPath:values.db,remoteUrl:values['remote-url'],tokenFile:values['token-file'],allowHttp:values['allow-http'],sessionId:values.session,personalId:values.personal,embeddingConfigPath:values['embedding-config'],modelDirectory:values['model-dir'],name:values.name,toolProfile:parseMcpToolProfile(values.tools??'work'),nativeAdapter:values.native,capturePublicMessages:!values['no-capture']}),null,2));
+  if(action==='prepare'&&values.session)throw new Error('Memory uses the native chat identity, not --session. Configure Office first.');
+  if(action==='prepare')console.log(JSON.stringify(await prepareClientBundle({client:values.client as MemoryClient,directory:values.directory,dbPath:values.db,remoteUrl:values['remote-url'],tokenFile:values['token-file'],allowHttp:values['allow-http'],embeddingConfigPath:values['embedding-config'],modelDirectory:values['model-dir'],name:values.name}),null,2));
   else if(action==='inspect')console.log(JSON.stringify(await readClientBundle(values.directory),null,2));
   else if(action==='remove')console.log(JSON.stringify(await removeClientBundle(values.directory),null,2));
   else {

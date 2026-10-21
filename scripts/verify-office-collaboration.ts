@@ -120,7 +120,8 @@ try {
     const missingMessage:any=await client.callTool({name:'office_message',arguments:{action:'get',seq:9999999}});
     assert.equal(JSON.parse(missingMessage.content[0].text).error.code,'not_found');
     const memoryRead:any=await client.callTool({name:'memory_get',arguments:{nodeId:privateMemory.id}});
-    assert.equal(JSON.parse(memoryRead.content[0].text).id,privateMemory.id,'office and memory tools on one MCP connection use the same underlying graph and preserve the granted domain');
+    assert(memoryRead.isError,'Office never exposes personal-domain Memory tools, including when an embedding caller requests the work catalog');
+    assert((await client.listTools()).tools.every(t=>!t.name.startsWith('memory_')));
     await assert.rejects(graph.officeCollaboration.responsePage({ id: pointer.id }, b));
     await assert.rejects(graph.officeCollaboration.responsePage({ id: pointer.id }, {...a,domains:[]}), (e:any)=>e.code==='not_found','a narrowed grant cannot read an earlier cached response');
     await assert.rejects(graph.officeCollaboration.responsePage({ id: pointer.id, offset: 9999999 }, a), /offset/);

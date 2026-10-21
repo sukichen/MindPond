@@ -28,7 +28,7 @@ export async function checkNetworkCredential(options:{configFile:string;tokenFil
       if(!r.connector_id)return result(false,'role_has_no_active_chat');
       agentId=r.connector_id;principal=r.principal;
     }
-    if(!agentId)return result(true,'account_credential_matches',{hostBound:false,toolProfile:grant?.toolProfile});
+    if(!agentId)return result(false,'account_requires_host_registration',{credentialRecognized:true,hostBound:false,nextAction:'Generate a registered host connection in the workbench; account-domain MCP access is no longer served.'});
     if(!tables.has('office_agents'))return result(false,'host_registry_missing');
     if(tables.has('office_agent_tombstones')&&await db.get('SELECT 1 FROM office_agent_tombstones WHERE id=?',[agentId]))return result(false,'host_deleted',{hostId:agentId});
     const host=await db.get('SELECT principal,state FROM office_agents WHERE id=?',[agentId]);

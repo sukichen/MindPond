@@ -1,167 +1,49 @@
-/** Real HTTP + stdio clients, per-account credentials, shared personal memory and isolated sessions. */
+/** Public HTTP and stdio bridge enforce the same role identity and distinct catalogs. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {GraphMemory} from '../src/core/graph-memory.js';
-import {getEmbeddingService} from '../src/core/embedding.js';
 import {createNetworkMcpApp} from '../src/integrations/network-server.js';
 import {issueNetworkGrant,readNetworkConfiguration} from '../src/integrations/network-config.js';
-import {prepareClientBundle,readClientBundle,clientLaunch} from '../src/integrations/client-bundle.js';
-const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-network-'));
-const configFile=path.join(dir,'server.accounts.json');
-const embedding=getEmbeddingService(),oldGenerate=embedding.generateEmbedding;
-embedding.generateEmbedding=async()=>[1,...Array(383).fill(0)];
-const graph=new GraphMemory('.',{dbPath:path.join(dir,'central.db')});
-const clients:Client[]=[],transports:StreamableHTTPClientTransport[]=[];
-let network:ReturnType<typeof createNetworkMcpApp>|undefined;
-let listener:import('node:http').Server|undefined;
-const decode=(r:any)=>JSON.parse(r.content.find((v:any)=>v.type==='text').text);
-const call=async(c:Client,name:string,args:Record<string,unknown>={})=>{const r=await c.callTool({name,arguments:args});assert(!r.isError,JSON.stringify(r));return decode(r);};
-const tokenFiles=new Map<string,string>(),tokens=new Map<string,string>();
-try {
-  for(const principal of ['account-one','account-two','unrelated']) {
-    const tokenFile=path.join(dir,principal+'.token');
-    await issueNetworkGrant({configFile,tokenFile,principal,personalId:principal==='unrelated'?'private':'default'});
-    tokenFiles.set(principal,tokenFile);tokens.set(principal,(await fs.readFile(tokenFile,'utf8')).trim());
-  }
-  const fullConfig=await readNetworkConfiguration(configFile);fullConfig.grants.find(g=>g.principal==='unrelated')!.toolProfile='full';
-  await fs.writeFile(configFile,JSON.stringify(fullConfig),{mode:0o600});
-  assert(!((await fs.readFile(configFile,'utf8')).includes(tokens.get('account-one')!)),'server file stores only token hashes');
-  await graph.init();
-  const allowedHosts=['127.0.0.1:7904'];
-  network=createNetworkMcpApp(graph,{configuration:()=>readNetworkConfiguration(configFile),allowedHosts,maxConnections:8,maxPerAccount:3});
-  listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>listener!.once('listening',resolve));
-  const port=(listener.address() as import('node:net').AddressInfo).port;
-  allowedHosts.push(`127.0.0.1:${port}`);
-  const url=new URL(`http://127.0.0.1:${port}/mcp`);
-  // Tests send an explicitly allowed Host instead of broadening the production rule.
-  const headers=(principal:string)=>({Authorization:`Bearer ${tokens.get(principal)}`,Host:'127.0.0.1:7904'});
-  const connect=async(principal:string,logicalSession?:string)=>{
-    const client=new Client({name:principal,version:'1'});clients.push(client);
-    const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{...headers(principal),...(logicalSession?{'X-MindPond-Session':logicalSession}:{})}}});transports.push(transport);
-    await client.connect(transport);return {client,transport};
-  };
-  const [a,b,privateClient]=await Promise.all(['account-one','account-two','unrelated'].map(p=>connect(p)));
-  const excessive=await a.client.callTool({name:'memory_save',arguments:{content:'Must never save oversized structured input',tags:Array(10001).fill('fixture'),idempotencyKey:'too-many-elements'}});
-  assert(excessive.isError);assert.match(JSON.stringify(excessive.content),/maximum of 10000 elements/);
-  assert.equal((await (graph as any).db.get('SELECT COUNT(*) n FROM nodes')).n,0,'oversized arguments rejected before mutation');
-  const hugeBody=await fetch(url,{method:'POST',headers:{...headers('account-one'),'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'memory_save',arguments:{content:'x'.repeat(1024*1024)}}})});
-  assert.equal(hugeBody.status,413,'HTTP byte budget remains independent of element count');
-  console.log('PASS SDK element limit before schema/mutation, 1MB HTTP limit, service remains usable');
-  const capA=await call(a.client,'memory_capabilities'),capB=await call(b.client,'memory_capabilities');
-  assert.notEqual(capA.mcpConnection.sessionId,capB.mcpConnection.sessionId);
-  assert.equal(capA.mcpConnection.toolProfile,'work');
-  assert(a.client.getInstructions()?.includes('memory_brief'));
-  const sharedInput={content:'Network shared development guide: the proxy uses a checked loopback endpoint; production is unknown.',domain:{kind:'personal',id:'default'},dimensions:['environment'],memberships:[{spaceId:'project:one',memoryType:'environment'}],idempotencyKey:'shared-observation'};
-  const [saved,replayed]=await Promise.all([call(a.client,'memory_save',sharedInput),call(b.client,'memory_save',sharedInput)]);
-  assert.equal(saved.id,replayed.id,'one shared DB and durable idempotent receipt');
-  assert.equal((await call(b.client,'memory_get',{nodeId:saved.id})).id,saved.id);
-  const other=await call(b.client,'memory_save',{...sharedInput,content:'Different project endpoint remains independently scoped.',memberships:[{spaceId:'project:two',memoryType:'environment'}],idempotencyKey:'other-project'});
-  const search=await call(a.client,'memory_search',{query:'development guide',spaceId:'project:one',minScore:0});
-  assert(search.results.some((v:any)=>v.id===saved.id));assert(!search.results.some((v:any)=>v.id===other.id));
-  for(const name of ['memory_l2_batch','memory_l3_batch','memory_dedupe_scan']){
-    const forbidden=await privateClient.client.callTool({name,arguments:{}});assert(forbidden.isError,'full catalog must not grant operator authority');
-  }
-  const hidden=await privateClient.client.callTool({name:'memory_get',arguments:{nodeId:saved.id}});assert(hidden.isError||!!decode(hidden).error);
-
-  assert.equal((await call(privateClient.client,'memory_host_snapshot',{view:'stats'})).total,0,'scoped counts must not expose unrelated memories');
-  assert.equal((await call(privateClient.client,'memory_host_snapshot',{view:'graph'})).nodes.length,0,'graph must apply account grants before the window limit');
-  assert.equal((await call(privateClient.client,'memory_work_scopes')).length,0);
-  const checkpoint=await call(a.client,'memory_checkpoint',{hostId:'fixture',runId:'run',checkpointId:'checkpoint',domain:{kind:'personal',id:'default'},spaceId:'project:one',memoryType:'environment',outcome:'saved',reason:'Observed guide',memoryIds:[saved.id],requestOrganization:true});
-  assert(checkpoint.workId);
-  const otherWork=await privateClient.client.callTool({name:'memory_work_retry',arguments:{workId:checkpoint.workId,reason:'Unauthorized attempt'}});assert(otherWork.isError,'work ids must not bypass account/domain ownership');
-  const capPrivate=await call(privateClient.client,'memory_capabilities');
-  const message={sessionId:capPrivate.mcpConnection.sessionId,content:'A fixture session observes a pending environment question.',role:'user',messageId:'fixture-message'};
-  const raw=await call(privateClient.client,'memory_message_save',message);assert.equal((await call(privateClient.client,'memory_message_save',message)).id,raw.id,'host message identity survives retries');
-  const isolatedRecall=await call(privateClient.client,'memory_host_recall',{query:'environment',minScore:0});assert(!isolatedRecall.results.some((r:any)=>r.node.id===saved.id));
-  const ownSession={kind:'session',id:capPrivate.mcpConnection.sessionId};
-  const collaboration=await call(privateClient.client,'work_context_create',{goal:'Current-session collaboration',domain:ownSession});
-  const task=await call(privateClient.client,'work_task_create',{contextId:collaboration.id,title:'Check the current session',domains:[ownSession]});
-  assert((await call(privateClient.client,'work_task_list',{contextId:collaboration.id,domains:[ownSession]})).some((item:any)=>item.id===task.id));
-  const claim=await call(privateClient.client,'work_task_claim',{taskId:task.id,agentId:'fixture-agent',domains:[ownSession]});
-  await call(privateClient.client,'work_task_renew',{taskId:task.id,agentId:'fixture-agent',leaseToken:claim.leaseToken,domains:[ownSession]});
-  const submitted=await call(privateClient.client,'work_task_transition',{taskId:task.id,agentId:'fixture-agent',eventId:'fixture-submit',expectedRevision:claim.task.revision,leaseToken:claim.leaseToken,status:'submitted',reason:'Fixture checked',domains:[ownSession]});
-  assert.equal(submitted.status,'submitted');
-  for(const name of ['work_context_create','work_task_list']){
-    const forbidden=await privateClient.client.callTool({name,arguments:name==='work_context_create'?{goal:'Wrong session',domain:{kind:'session',id:capA.mcpConnection.sessionId}}:{contextId:collaboration.id,domains:[{kind:'session',id:capA.mcpConnection.sessionId}]}});
-    assert(forbidden.isError,'collaboration cannot widen the trusted session');
-  }
-
-  const processMemory=await call(a.client,'memory_save',{content:'Only account one current investigation may read this unfinished hypothesis.',dimensions:['work']});
-  const processNode=await graph.getNodeById(processMemory.id,{trackAccess:false});assert.equal(processNode!.domain.kind,'session');
-  const hiddenSession=await b.client.callTool({name:'memory_get',arguments:{nodeId:processMemory.id}});assert(hiddenSession.isError||!!decode(hiddenSession).error);
-  for(const args of [{sessionId:capA.mcpConnection.sessionId},{domains:[{kind:'personal',id:'private'}]}]) {
-    const r=await b.client.callTool({name:'memory_brief',arguments:{task:'scope check',...args}});assert(r.isError,'widening denied');
-  }
-  assert(!(await b.client.listTools()).tools.some(t=>t.name==='memory_dedupe_resolve'));
-  const continued=await connect('account-one','project-conversation');
-  const continuedCap=await call(continued.client,'memory_capabilities');
-  const durableSession=await call(continued.client,'memory_save',{content:'A resumable investigation keeps its observations through central transport restarts.',dimensions:['work']});
-  const resumed=await connect('account-one','project-conversation');
-  const resumedCap=await call(resumed.client,'memory_capabilities');
-  assert.equal(continuedCap.mcpConnection.sessionId,resumedCap.mcpConnection.sessionId,'same account/session resumes across independent connections');
-  const otherLabel=await connect('account-two','project-conversation');
-  assert.notEqual((await call(otherLabel.client,'memory_capabilities')).mcpConnection.sessionId,resumedCap.mcpConnection.sessionId,'same host label is namespaced by account');
-  const limited=new Client({name:'limit',version:'1'});clients.push(limited);
-  await assert.rejects(limited.connect(new StreamableHTTPClientTransport(url,{requestInit:{headers:headers('account-one')}})),(error:any)=>error.code===429);
-  const makeRequest=(extra:Record<string,string>={})=>fetch(url,{method:'POST',headers:{...headers('account-one'),Accept:'application/json, text/event-stream','Content-Type':'application/json',...extra},body:JSON.stringify({jsonrpc:'2.0',id:91,method:'tools/list',params:{}})});
-  assert.equal((await makeRequest({Authorization:''})).status,401);
-  assert.equal((await makeRequest({Origin:'https://untrusted.example'})).status,403);
-  allowedHosts.pop();assert.equal((await makeRequest()).status,403,'unlisted Host denied');allowedHosts.push(`127.0.0.1:${port}`);
-  assert.equal((await makeRequest({'Mcp-Session-Id':b.transport.sessionId!})).status,404,'another account cannot hijack a transport');
-  assert.equal((await makeRequest()).status,400,'non-initialize request needs a session');
-  assert.equal((await fetch(new URL('/api/memory/graph',url),{headers:{Host:'127.0.0.1:7904'}})).status,404,'no operator API exposed');
-  const audit=await (graph as any).db.all("SELECT reason FROM memory_action_log WHERE action='host_tool_completed'");
-  assert(audit.some((entry:any)=>JSON.parse(entry.reason).principal==='account-one'));
-  assert(audit.some((entry:any)=>JSON.parse(entry.reason).principal==='account-two'));
-  console.log('PASS real central HTTP MCP: shared personal/idempotency, independent projects, account/domain/session/Origin/Host guards');
-
-  // Proxy runs in a separate process, with no database path or local model.
-  // Rebind Host allowlist to include the actual port for unmodified bridge HTTP requests.
-  await Promise.all(clients.map(c=>c.close()));clients.length=0;
-  await network.close(listener);listener=undefined;
-  network=createNetworkMcpApp(graph,{configuration:()=>readNetworkConfiguration(configFile),allowedHosts:[`127.0.0.1:${port}`],maxPerAccount:2});
-  listener=network.app.listen(port,'127.0.0.1');await new Promise<void>(resolve=>listener!.once('listening',resolve));
-  const rejoined=new Client({name:'another-machine',version:'1'});clients.push(rejoined);
-  await rejoined.connect(new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:`Bearer ${tokens.get('account-one')}`,'X-MindPond-Session':'project-conversation'}}}));
-  assert.equal((await call(rejoined,'memory_get',{nodeId:durableSession.id})).id,durableSession.id,'account and logical session survive transport restart without an IP binding');
-  const bridge=new Client({name:'bridge-consumer',version:'1'});clients.push(bridge);
-  await bridge.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp-remote.js'),'--url',url.href,'--token-file',tokenFiles.get('account-two')!],stderr:'pipe'}));
-  assert.equal((await call(bridge,'memory_get',{nodeId:saved.id})).id,saved.id);
-  assert((await bridge.listResources()).resources.some(r=>r.uri==='mindpond://protocol/rules'));
-  const policy=await bridge.readResource({uri:'mindpond://protocol/rules'});assert(policy.contents.length);
-  for(const client of ['codex','claude','opencode'] as const){
-    const bundle=path.join(dir,'bundle-'+client);
-    await prepareClientBundle({client,directory:bundle,mcpPath:path.resolve('dist/mcp-remote.js'),remoteUrl:url.href,tokenFile:tokenFiles.get('account-two')!});
-    const manifest=await readClientBundle(bundle);
-    assert(!JSON.stringify(manifest).includes(tokens.get('account-two')!),'bundles contain paths, never bearer values');
-    assert(!JSON.stringify(manifest).includes('MEMORY_DB_PATH'),'remote host does not open local storage');
-    if(client==='opencode'){const c=JSON.parse(await fs.readFile(path.join(bundle,'opencode.json'),'utf8'));assert(c.mcp.mindpond.enabled);assert(!c.plugin);}
-  }
-  if(process.env.MINDPOND_TEST_OPENCODE_BIN){
-    const launch=await clientLaunch(path.join(dir,'bundle-opencode'),['--pure','mcp','list']);
-    const checked=await promisify(execFile)(process.env.MINDPOND_TEST_OPENCODE_BIN,launch.args,{cwd:dir,timeout:45000,maxBuffer:1000000,env:{...launch.env,XDG_CONFIG_HOME:path.join(dir,'config'),XDG_DATA_HOME:path.join(dir,'client-data'),XDG_CACHE_HOME:path.join(dir,'cache')}});
-    assert.match(checked.stdout+'\n'+checked.stderr,/mindpond[\s\S]*connected/i);
-    assert.doesNotMatch(checked.stdout+'\n'+checked.stderr,/disconnected|failed/i);
-    console.log('PASS actual OpenCode CLI connects its generated remote bundle through the stdio bridge (no model run)');
-  }else console.log('NOT_RUN actual remote OpenCode CLI: set MINDPOND_TEST_OPENCODE_BIN');
-  const rotated=path.join(dir,'rotated.token');
-  await issueNetworkGrant({configFile,tokenFile:rotated,principal:'account-one',personalId:'default',rotate:true});
-  const revoked=await fetch(url,{method:'POST',headers:{...headers('account-one'),Host:`127.0.0.1:${port}`,'Content-Type':'application/json'},body:'{}'});
-  assert.equal(revoked.status,401,'revocation takes effect without restarting');
-  tokens.set('account-one',(await fs.readFile(rotated,'utf8')).trim());
-  const replacement=await connect('account-one','project-conversation');
-  assert.equal((await call(replacement.client,'memory_get',{nodeId:durableSession.id})).id,durableSession.id,'rotation preserves the account session and releases obsolete transport slots');
-  console.log('PASS separate-process stdio bridge, three remote bundles, no local DB/model/token exposure and hot credential rotation');
-} finally {
-  await Promise.allSettled(clients.map(c=>c.close()));
-  if(network)await network.close(listener);
-  await graph.close();embedding.generateEmbedding=oldGenerate;
-  await fs.rm(dir,{recursive:true,force:true});
-}
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-network-role-')),configFile=path.join(dir,'accounts.json');
+const graph=new GraphMemory('.',{dbPath:path.join(dir,'fixture.db')}),clients:Client[]=[],tokens=new Map<string,string>();
+const admin={v:1 as const,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+let network:any,listener:any;
+try{
+ await graph.init();
+ for(const id of ['unbound-account','one','two']){
+  const tokenFile=path.join(dir,id+'.token');await issueNetworkGrant({configFile,tokenFile,principal:id,...(id==='unbound-account'?{}:{agentId:id})});tokens.set(id,(await fs.readFile(tokenFile,'utf8')).trim());
+  if(id!=='unbound-account')await graph.offices.configureAgent({id,principal:id,name:id,host:'codex',state:'active',expectedRevision:0},admin);
+ }
+ const allowedHosts=['127.0.0.1'];network=createNetworkMcpApp(graph,{configuration:()=>readNetworkConfiguration(configFile),allowedHosts,maxPerAccount:12});
+ listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener.once('listening',r));const base='http://127.0.0.1:'+listener.address().port;allowedHosts.push(new URL(base).host);
+ const connect=async(id:string,endpoint='/mcp',credential=tokens.get(id)!)=>{const c=new Client({name:'fixture',version:'1'});clients.push(c);await c.connect(new StreamableHTTPClientTransport(new URL(base+endpoint),{requestInit:{headers:{Authorization:'Bearer '+credential,'X-MindPond-Session':'same-installation'}}}));return c;};
+ for(const endpoint of ['/mcp','/memory/mcp'])await assert.rejects(connect('unbound-account',endpoint),(e:any)=>e.code===403,'account-domain credentials cannot enter either role MCP endpoint');
+ const call=async(c:Client,name:string,args:any={},threadId?:string)=>{const r:any=await c.callTool({name,arguments:args,...(threadId?{_meta:{threadId}}:{})});let data;try{data=JSON.parse(r.content[0].text);}catch{data={message:r.content[0].text};}return {r,data};};
+ const office=await connect('one'),office2=await connect('two'),memory=await connect('one','/memory/mcp'),memory2=await connect('two','/memory/mcp');
+ assert((await office.listTools()).tools.every(t=>!t.name.startsWith('memory_')));assert((await memory.listTools()).tools.every(t=>t.name.startsWith('memory_')));
+ const roles=[];
+ for(const c of [office,office2]){const app=await call(c,'role_application',{action:'submit',name:'Fictional',introduction:'Fixture',reason:'Network identity',key:'apply'},'chat');assert(!app.r.isError,JSON.stringify(app));roles.push(await graph.roles.review({action:'approve',applicationId:app.data.applicationId,expectedRevision:1},admin));}
+ const identity=await call(memory,'memory_identity',{},'chat');assert.equal(identity.data.owner.id,roles[0].roleId);assert.equal(identity.data.identity.bindingId,(await call(office,'role_sync',{},'chat')).data.identity.bindingId);
+ const missing=await call(memory,'memory_save',{content:'Must not save as a human',idempotencyKey:'missing'});assert(missing.r.isError);assert.equal(missing.data.error.code,'identity_required','static installation header cannot replace native chat identity');
+ const saved=await call(memory,'memory_save',{content:'Role one network knowledge',idempotencyKey:'save'},'chat');assert(!saved.r.isError,JSON.stringify(saved));assert.equal(saved.data.owner.id,roles[0].roleId);
+ assert((await call(memory2,'memory_get',{nodeId:saved.data.id},'chat')).r.isError);
+ const excessive=await call(memory,'memory_save',{content:'Must deny',tags:Array(10001).fill('fixture'),idempotencyKey:'oversized'},'chat');assert(excessive.r.isError);assert.match(JSON.stringify(excessive.r),/maximum of 10000 elements/);
+ const request=(extra:any={},body:any={})=>fetch(base+'/mcp',{method:'POST',headers:{Authorization:'Bearer '+tokens.get('one'),'Content-Type':'application/json',...extra},body:JSON.stringify(body)});
+ assert.equal((await request({Authorization:''})).status,401);assert.equal((await request({Origin:'https://untrusted.example'})).status,403);
+ assert.equal((await request({}, {jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'role_sync',arguments:{x:'x'.repeat(1024*1024)}}})).status,413);
+ assert.equal((await request({'mcp-session-id':'foreign-session'})).status,404);
+ const bridge=new Client({name:'bridge',version:'1'});clients.push(bridge);await bridge.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp-remote.js'),'--url',base+'/memory/mcp','--token-file',path.join(dir,'one.token'),'--session','same-installation'],stderr:'pipe'}));
+ assert.equal((await call(bridge,'memory_get',{nodeId:saved.data.id},'chat')).data.content,'Role one network knowledge');assert((await call(bridge,'memory_identity')).r.isError,'bridge cannot lose native identity and become human');
+ const dedicated=await graph.memoryOwners.issue(roles[0].roleId),dedicatedFile=path.join(dir,'dedicated.token');await fs.writeFile(dedicatedFile,dedicated.token,{mode:0o600});
+ const fixed=new Client({name:'fixed-bridge',version:'1'});clients.push(fixed);await fixed.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp-remote.js'),'--url',base+'/memory/mcp','--token-file',dedicatedFile],stderr:'pipe'}));
+ assert.equal((await call(fixed,'memory_identity')).data.owner.id,roles[0].roleId,'verified dedicated credential is an explicit role identity, never a human');
+ const rotated=path.join(dir,'rotated.token');await issueNetworkGrant({configFile,tokenFile:rotated,principal:'one',agentId:'one',rotate:true});assert.equal((await request()).status,401,'old host credential is revoked without a restart');
+ tokens.set('one',(await fs.readFile(rotated,'utf8')).trim());const reconnected=await connect('one','/memory/mcp');assert.equal((await call(reconnected,'memory_get',{nodeId:saved.data.id},'chat')).data.owner.id,roles[0].roleId);
+ assert.equal((await (graph as any).db.get("SELECT COUNT(*) n FROM nodes WHERE content='Must not save as a human'")).n,0);
+ console.log('PASS public role-only HTTP/bridge: account-only and missing-native rejection, Office/Memory same binding, isolation, SDK/HTTP budgets, Origin/session guards, dedicated role credentials and hot rotation');
+}finally{await Promise.allSettled(clients.map(c=>c.close()));if(network)await network.close(listener);await graph.close();await fs.rm(dir,{recursive:true,force:true});}

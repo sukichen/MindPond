@@ -64,7 +64,7 @@ try {
   console.log('PASS installed consumer dependency versions and official production audit (0 findings)');
   assert.equal((await fs.lstat(installed)).isSymbolicLink(), false);
   const networkConfig=path.join(temp,'central.accounts.json'),networkToken=path.join(temp,'account.token');
-  await exec(path.join(temp,'node_modules/.bin/mindpond-mcp-http'),['grant','--config',networkConfig,'--principal','package-account','--personal','default','--token-file',networkToken],{cwd:temp,env,timeout:10000});
+  await exec(path.join(temp,'node_modules/.bin/mindpond-mcp-http'),['grant','--config',networkConfig,'--principal','package-account','--agent','package-host','--db',path.join(temp,'network.db'),'--token-file',networkToken],{cwd:temp,env,timeout:10000});
   const probe=createPortProbe();probe.listen(0,'127.0.0.1');await new Promise<void>(resolve=>probe.once('listening',resolve));
   const networkPort=(probe.address() as import('node:net').AddressInfo).port;await new Promise<void>(resolve=>probe.close(()=>resolve()));
   const central=spawn(path.join(temp,'node_modules/.bin/mindpond-mcp-http'),['serve','--config',networkConfig,'--db',path.join(temp,'network.db'),'--port',String(networkPort)],{cwd:temp,env,stdio:['ignore','pipe','pipe']});children.push(central);
@@ -72,14 +72,17 @@ try {
   const centralDeadline=Date.now()+15000;
   while(!centralOutput.includes('[mindpond-mcp-http] listening')&&Date.now()<centralDeadline&&central.exitCode===null)await new Promise(resolve=>setTimeout(resolve,50));
   assert(centralOutput.includes('[mindpond-mcp-http] listening'),centralOutput);
+  const seedNetwork=`import {MindPond} from 'mindpond';import {createHash} from 'node:crypto';const m=new MindPond({dbPath:${JSON.stringify(path.join(temp,'network.db'))}});await m.init();const admin={v:1,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};const actor={...admin,operator:false,principal:'package-account',agentId:'package-host',runtimeId:createHash('sha256').update(JSON.stringify(['package-account','package-host','codex','package-thread'])).digest('hex'),transport:'http-mcp'};const a=await m.graph.roles.application({action:'submit',name:'Package role',introduction:'Fictional',reason:'Install test',key:'apply'},actor);await m.graph.roles.review({action:'approve',applicationId:a.applicationId,expectedRevision:1},admin);await m.close();`;
+  await fs.writeFile(path.join(temp,'seed-network.mjs'),seedNetwork);await exec(process.execPath,[path.join(temp,'seed-network.mjs')],{cwd:temp,env,timeout:20000});
   const remoteClient=new Client({name:'package-network',version:'1'});
   try {
-    await remoteClient.connect(new StdioClientTransport({command:path.join(temp,'node_modules/.bin/mindpond-mcp-remote'),args:['--url',`http://127.0.0.1:${networkPort}/mcp`,'--token-file',networkToken,'--session','installed-session'],env,stderr:'pipe'}));
-    const remoteSave=await remoteClient.callTool({name:'memory_save',arguments:{content:'Installed network entry writes centrally, not in the client process.',domain:{kind:'personal',id:'default'},dimensions:['work'],idempotencyKey:'package-network'}});
+    await remoteClient.connect(new StdioClientTransport({command:path.join(temp,'node_modules/.bin/mindpond-mcp-remote'),args:['--url',`http://127.0.0.1:${networkPort}/memory/mcp`,'--token-file',networkToken],env,stderr:'pipe'}));
+    const denied=await remoteClient.callTool({name:'memory_identity',arguments:{}});assert(denied.isError);
+    const identity:any=await remoteClient.callTool({name:'memory_identity',arguments:{},_meta:{threadId:'package-thread'}});assert(!identity.isError);assert.equal(JSON.parse(identity.content[0].text).identity.protocol,'mindpond.role-memory.v1');
+    const remoteSave=await remoteClient.callTool({name:'memory_save',arguments:{content:'Installed network entry writes to the approved role.',idempotencyKey:'package-network'},_meta:{threadId:'package-thread'}});
     assert(!remoteSave.isError);assert((await fs.stat(path.join(temp,'network.db'))).isFile());
-    const remoteConfig=(await remoteClient.callTool({name:'memory_dimension_policy',arguments:{}}));assert(!remoteConfig.isError);
   }finally{await remoteClient.close();}
-  console.log('PASS installed account grant, central HTTP executable and separate stdio remote executable');
+  console.log('PASS installed host grant, central HTTP and stdio bridge preserve native role identity; missing identity denied');
   const pkg = JSON.parse(await fs.readFile(path.join(installed, 'package.json'), 'utf8'));
   assert.equal(pkg.dependencies.zod, '4.5.4');assert(!pkg.dependencies['@huggingface/transformers']);assert(pkg.peerDependenciesMeta['@huggingface/transformers'].optional);
   const {stdout:deviceOutput}=await exec(path.join(temp,'node_modules/.bin/mindpond-models'),['devices'],{cwd:temp,env,timeout:15000});
@@ -150,51 +153,16 @@ try {
     await optional.init();try{await optional.save('Public optional model fallback fixture');await optional.buildRetrievalProfile('fixture');const recalled=await optional.recall('Public fixture',{retrievalProfile:'fixture',vectorAlgorithm:'hnsw'});assert.equal(recalled.retrieval.profile.algorithm.actual,'exact');assert.equal(recalled.retrieval.profile.algorithm.fallbackReason,'hnsw_unavailable');assert(recalled.results.length>0);}finally{await optional.close();}
     console.log('PASS installed model profile works without the optional native HNSW plugin');
     const seed = new MindPond({dbPath: ${JSON.stringify(path.join(temp, 'data', 'mindpond.db'))}});
-    await seed.init();
-    let foreignRequest, foreignJob;
-    try {
-      await seed.save('private foreign-session evidence', {sessionId:'foreign-session', memberships:[{spaceId:'private', memoryType:'fact'}]});
-      await seed.graph.ingestTranscript('private foreign extraction', 'foreign-session', 'foreign-extract');
-      foreignRequest = await seed.graph.organizationRequests.createRequest({domain:{kind:'session',id:'foreign-session'}, spaceId:'private',memoryType:'fact',batchSize:1});
-      foreignJob = (await seed.graph.organizationRequests.nextBatch(foreignRequest.requestId)).batch;
-    } finally { await seed.close(); }
-    const userClient=new Client({name:'installed-human-memory',version:'1'});
-    await userClient.connect(new StdioClientTransport({command:${JSON.stringify(path.join(temp,'node_modules/.bin/mindpond-mcp'))},args:[],env:{...process.env,MINDPOND_TOOL_PROFILE:'memory'}}));
-    const userTools=(await userClient.listTools()).tools;assert(userTools.every(t=>t.name.startsWith('memory_')));
-    const userIdentity=await userClient.callTool({name:'memory_identity',arguments:{}});
-    assert.equal(JSON.parse(userIdentity.content[0].text).owner.kind,'user');await userClient.close();
-    const transport = new StdioClientTransport({ command: ${JSON.stringify(path.join(temp, 'node_modules/.bin/mindpond-mcp'))}, args: [], env: {...process.env,MINDPOND_TOOL_PROFILE:'full'} });
-    const client = new Client({name:'package-test', version:'1.0.0'});
-    try {
-      await client.connect(transport);
-      const {tools} = await client.listTools();
-      assert.ok(tools.some(t => t.name === 'memory_save_validate'));
-      const result = await client.callTool({name:'memory_protocol_rules', arguments:{}});
-      assert.ok(!result.isError);
-      const status = await client.callTool({name:'memory_retrieval_status', arguments:{}});
-      assert.ok(!status.isError);
-      const hidden = await client.callTool({name:'memory_organization_request_status', arguments:{requestId:foreignRequest.requestId}});
-      assert.equal(hidden.isError, true, 'MCP request IDs cannot cross the launch-time session binding');
-      const commit = await client.callTool({name:'memory_organization_commit', arguments:{jobId:foreignJob.id, plan:{operations:[]}}});
-      assert.equal(commit.isError, true, 'direct MCP commit cannot bypass request ownership');
-      const invoke=async(name,args={})=>{
-        const value=await client.callTool({name,arguments:args});
-        assert.ok(!value.isError,JSON.stringify(value));
-        return JSON.parse(value.content.find(c=>c.type==='text').text);
-      };
-      assert.equal((await invoke('memory_extraction_job')).job,null,'MCP claim cannot read a foreign extraction');
-      const capture=await invoke('memory_lifecycle_prepare',{kind:'before_compact',hostId:'package-host',runId:'run',checkpointId:'capture',spaceId:'package/project',memoryType:'fact',
-        observations:[{id:'module-a',content:'The local module uses a transaction. Production is unverified.',sourceRefs:[{uri:'repo:module.ts',context:'main',revision:'r1'}]}]});
-      assert.equal(capture.sessionId,'package-session','omitted session binds to MCP startup identity');
-      const job=(await invoke('memory_extraction_job')).job;
-      assert.equal(job.id,capture.extractionJobId);
-      assert.equal(job.captureContext.spaceId,'package/project');
-      const done=await invoke('memory_extraction_commit',{jobId:job.id,expectedAttempt:job.attempts,reply:JSON.stringify({memories:[{
-        content:'The local module uses a transaction. Production is unverified.',type:'fact',priority:5,dimensions:['fact'],source_message_ids:['msg-0'],source_observation_ids:['module-a']}]})});
-      assert.equal(done.atomsCreated,1);
-
-    } finally { await client.close(); }
-    console.log('PASS installed MCP executable, protocol discovery, session isolation and lifecycle capture/extraction');
+    await seed.init();const human=await seed.save('Human knowledge never available to unbound agent MCP');await seed.close();
+    const client=new Client({name:'installed-role-memory',version:'1'});
+    await client.connect(new StdioClientTransport({command:${JSON.stringify(path.join(temp,'node_modules/.bin/mindpond-mcp'))},args:[],env:{...process.env,MINDPOND_TOOL_PROFILE:'full',MEMORY_TRUST_OPERATOR:'1'}}));
+    try{
+      const tools=(await client.listTools()).tools;assert(tools.every(t=>t.name.startsWith('memory_')));assert(!tools.some(t=>t.name==='memory_organization_commit'||t.name==='memory_save_validate'));
+      const identity=await client.callTool({name:'memory_identity',arguments:{}});assert(identity.isError);assert.equal(JSON.parse(identity.content[0].text).error.code,'identity_required');
+      const denied=await client.callTool({name:'memory_save',arguments:{content:'Must not fall back to human',idempotencyKey:'deny'}});assert(denied.isError);
+      assert((await client.callTool({name:'memory_get',arguments:{nodeId:human.id}})).isError);
+    }finally{await client.close();}
+    console.log('PASS installed stdio denies missing identity, human access and full-profile bypass');
   `;
   await fs.writeFile(path.join(temp, 'mcp-smoke.mjs'), mcpScript);
   const mcp = await exec(process.execPath, [path.join(temp, 'mcp-smoke.mjs')], { cwd: temp, env, timeout: 20000, maxBuffer: 1_000_000 });

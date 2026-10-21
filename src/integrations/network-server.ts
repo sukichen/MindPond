@@ -109,6 +109,9 @@ export function createNetworkMcpApp(
         res.status(401).json({ error: 'Invalid account credential' });
         return;
       }
+      if(!networkHostId(grant)){
+        res.status(403).json({error:'This account credential is not a registered Office host. Generate a host connection in the workbench; account-domain MCP access has been removed.',code:'identity_required',humanFallback:false});return;
+      }
       // Rotating a credential must free its obsolete connections immediately,
       // otherwise the valid replacement could be blocked by the account cap.
       await Promise.all(
@@ -211,7 +214,7 @@ export function createNetworkMcpApp(
         if(pinnedMemoryRole&&!memory&&!pinnedBinding)throw new MindPondError('scope_denied','Activate an office chat for this role before connecting');
         const waitSignals = new Map<string | number, AbortController>();
         const serviceOptions = {
-          toolProfile: agentId?'office' as const:grant.toolProfile,enableTasks:!!pinnedMemoryRole,pinnedRoleId:pinnedMemoryRole?.role_id,
+          toolProfile: 'office' as const,enableTasks:!!pinnedMemoryRole,pinnedRoleId:pinnedMemoryRole?.role_id,
           waitSignal: (requestId:string|number) => waitSignals.get(requestId)?.signal,
           trusted: {
             v: 1 as const,

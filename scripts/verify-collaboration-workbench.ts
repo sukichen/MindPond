@@ -15,7 +15,7 @@ const root=fileURLToPath(new URL('../',import.meta.url)),dbPath=path.join(dir,'m
 const env={...process.env,EMBEDDING_ZH_ENABLED:'false',MEMORY_DB_PATH:dbPath,MEMORY_HOST:'127.0.0.1',MEMORY_API_KEY:'',MEMORY_CONTEXT_SECRET:'fixture',MEMORY_OPERATOR_KEY:'',MEMORY_ALLOW_ANONYMOUS:'0'};
 let child:ReturnType<typeof spawn>|undefined,graph:GraphMemory|undefined;
 try{
-  for(const principal of ['reporter-account','developer-account'])await exec(process.execPath,[path.join(root,'dist/mcp-http.js'),'grant','--config',config,'--principal',principal,'--personal',principal,'--token-file',path.join(dir,principal+'.token')],{env});
+  for(const principal of ['reporter-account','developer-account'])await exec(process.execPath,[path.join(root,'dist/mcp-http.js'),'grant','--config',config,'--principal',principal,'--agent',principal+'-host','--db',dbPath,'--token-file',path.join(dir,principal+'.token')],{env});
   const workspace={id:'workbench-project',teamId:'developers',title:'Workbench fixture',expectedRevision:0,members:[{principal:'reporter-account',roles:['reporter','reviewer']},{principal:'developer-account',roles:['worker']}]};
   const workspaceFile=path.join(dir,'workspace.json');await fs.writeFile(workspaceFile,JSON.stringify(workspace));
   const created=await exec(process.execPath,[path.join(root,'dist/mcp-http.js'),'workspace','--config',config,'--db',dbPath,'--workspace-file',workspaceFile],{env});assert.equal(JSON.parse(created.stdout).revision,1);

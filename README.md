@@ -22,7 +22,7 @@ Office MCP 与 Memory MCP 分开配置。OpenCode 多聊天通过宿主会话插
 npm ci
 npm run build
 npm start                  # 工作台与 HTTP API，默认 http://127.0.0.1:7903
-npm run mcp                # 人类 Memory MCP stdio；角色使用独立 HTTP Memory 连接
+npm run mcp                # 角色 Memory MCP stdio；无身份拒绝，人类使用工作台
 npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP 回归
 ```
 
@@ -32,9 +32,9 @@ npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP
 
 ## 中心账户与局域网
 
-可由中心账户运行 `mindpond-mcp-http`，其它系统/工作账户使用各自凭据通过局域网接入。账户与机器/IP 解耦；支持多个账户共用个人域、独立 session 和项目空间。`mindpond-connect prepare --remote-url ... --token-file ...` 可为 Codex、Claude Code、OpenCode 生成 stdio 桥接配置，客户端无需共享数据库或模型。部署、逻辑 session 和权限边界见 [网络 MCP](docs/network-mcp.md)。
+可由中心账户运行 `mindpond-mcp-http`，其它系统/工作账户使用各自凭据通过局域网接入。凭据与机器/IP 解耦；同一真实聊天的 Office 与 Memory 共享角色身份，私有知识按角色隔离。`mindpond-connect prepare --remote-url ... --token-file ...` 可为 Codex、Claude Code、OpenCode 生成 stdio 桥接配置，客户端无需共享数据库或模型。部署、逻辑 session 和权限边界见 [网络 MCP](docs/network-mcp.md)。
 
-不同账户可通过显式授权的协作工作区交接问题、完整现场证据与补充讨论。持久收件箱区分发布、已读、接收、领取、提交和验收；已运行的 Agent 可通过 `work_wait` 挂起等待指定代码轮次的验证结果，前端实时展示迭代过程；协作不授予其它账户的私人记忆访问权限。配置及宿主接入见 [跨账户协作](docs/cross-account-collaboration.md)，前端入口为 `/collaboration`。
+角色通过办公室交接问题、完整现场证据与补充讨论；不同账户之间的联系需要显式授权。消息区分待处理、处理中和处理完成，已运行的 Agent 通过 `office_wait` 等待消息；前端展示协作进度。办公室成员资格不授予其它角色的私人记忆访问权限。配置及宿主接入见 [跨账户协作](docs/cross-account-collaboration.md)，前端入口为 `/collaboration`。
 
 Codex CLI / OpenCode CLI 还可通过原生 HTTP MCP 在聊天中申请角色，由用户在页面批准、修改名字/介绍及安排办公室。`mindpond-connect office-prepare` 生成独立会话配置和取信快捷入口；OpenCode 使用 `/mindpond_office_get_message`，Codex 使用 `$mindpond-inbox`。凭据由宿主从环境变量读取，公开 session 编号随配置保存；角色消息不会被提升为用户指令。配置、实际支持范围及多聊天绑定边界见 [CLI 角色与取信](docs/role-cli.md)。
 
@@ -123,7 +123,7 @@ sourceRefs 与 memory_source_observe 记录实际来源版本和内容指纹。�
 
 ## 接口速查
 
-| 用途 | MCP | HTTP |
+| 用途 | 受信 SDK/宿主操作名（不代表公开角色 MCP 目录） | HTTP |
 | --- | --- | --- |
 | 写入规范 | memory_save_policy | GET /api/memory/save-policy |
 | 搜索 / 写入 | memory_search / memory_save | POST /api/memory/search、/save |
@@ -139,7 +139,7 @@ sourceRefs 与 memory_source_observe 记录实际来源版本和内容指纹。�
 | 宿主能力 | memory_capabilities | GET /api/host/capabilities |
 | 画像与历史 | memory_profile_get / memory_profile_history | POST /api/memory/profile/get、/history |
 | 来源观察 | memory_source_get / memory_source_observe | POST /api/memory/source/get、/observe |
-| 检查点与恢复 | memory_checkpoint / memory_work_* | POST /api/host/checkpoint、/work/* |
+| 检查点与恢复 | SDK 内部 memory_checkpoint / memory_work_* | POST /api/host/checkpoint、/work/* |
 
 历史 L1 抽取与 L2/L3 聚合接口仍可用；旧 scene/persona 自动聚合默认关闭，但不等同于替换式整理。旧 score-only 边复评现已暂缓，避免没有情境的 LLM 盲目降权。旧 weave 入口也要求理由与场景，不再把表面矛盾自动当作旧事实失效。
 
@@ -175,7 +175,7 @@ npm run check 覆盖规范化写入、上下文依据、复核停用/恢复、�
 
 用户可在工作台「维度与提示词」定义分类数量、含义、默认值、节点颜色和 agent 规则。原四维只是默认模板；详见 [自定义维度](docs/custom-dimensions.md)。
 
-日常 MCP 工作连接与多 agent 能力边界见 [OpenCode 工作接入](docs/opencode-work-integration.md) 和 [架构说明](docs/architecture.md)。新连接默认精简 work 目录，完整保存规则按需读取。
+日常 MCP 工作连接与多 agent 能力边界见 [OpenCode 工作接入](docs/opencode-work-integration.md) 和 [架构说明](docs/architecture.md)。公开接入固定为角色 Memory 与 Office 两个目录，不暴露 full/work 管理目录；完整保存规则按需读取。
 
 最新机制与实际基线：[任务记忆循环](docs/task-memory-loop.md)。OpenCode 原生 session 接入见 [工作环境接入](docs/opencode-work-integration.md)。
 

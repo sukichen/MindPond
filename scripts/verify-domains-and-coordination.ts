@@ -24,6 +24,7 @@ try {
   assert.equal((await g.getNodeById(personal.id, { trackAccess: false }))!.domain.kind, 'personal');
   assert.deepEqual((await g.getNodeById(session.id, { trackAccess: false }))!.domain, { kind: 'session', id: 'session-a' });
 
+  assert.equal((await g.search({query:'TOKEN',domains:[],...scope,minScore:0})).length,0, 'an explicit empty read scope must remain empty in text-only retrieval');
   const normal = await g.search({ query: 'TOKEN', sessionId: 'session-a', ...scope, limit: 20, minScore: 0 });
   assert(normal.some(hit => hit.node.content.includes('PERSONAL_TOKEN')));
   assert(normal.some(hit => hit.node.content.includes('SESSION_TOKEN')));
