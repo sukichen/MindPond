@@ -81,3 +81,33 @@ Transformers.js 用本地模型将文本转换成向量，以便“措辞不同�
 上游依据：[Transformers.js Apache-2.0](https://github.com/huggingface/transformers.js/blob/main/LICENSE)、[ONNX Runtime MIT](https://github.com/microsoft/onnxruntime/blob/main/LICENSE)、[Sharp 预编译依赖](https://github.com/lovell/sharp-libvips)、[MiniLM 模型说明](https://huggingface.co/Xenova/all-MiniLM-L6-v2)。libvips 基础源码许可证与包含额外 codec 的平台组合包可能不同，以实际交付版本的全部组件为准。
 
 验证入口：`npm run verify:lightweight` 检查纯文本模式保留正文/向量与只读认证排障；`npm run verify:standalone-package` 检查干净基础安装；`npm run verify:local-inference-package` 对明确选装目录执行锁定离线安装和实际 CPU 后端加载（要求构建机已缓存对应平台依赖，不下载模型）；`npm run verify:licenses` 检查清单与基础门槛。
+
+## 5. 生产复核后的运行约束
+
+对 `ae23d61` 的复核发现并修正了以下边界；针对性验收入口为 `npm run verify:production-boundaries`，已纳入 `npm run check`。
+
+| 问题 | 修正后的行为 |
+| --- | --- |
+| 数据库默认权限受 umask 影响 | POSIX 新建目录0700，数据库及既有 WAL/SHM 为0600；创建备份时先独占预留私有文件 |
+| 迁移重试会删除已有恢复快照 | 拒绝覆盖；维护者保留快照，在新的候选副本路径继续演练 |
+| 本地 REST 接受任意 Host，跨站请求可触发维护 | 无凭据本地模式校验字面 loopback Host；拒绝未授权 Origin，再解析正文。显式 CORS 与认证代理仍可用 |
+| 首次增加宿主会转换账户配置，账户标记被误判为宿主 | 认证、调用期间复核、连接身份和只读诊断统一解释账户标记；保持账户原作用域，不产生 Office 角色权限 |
+| 缺少推理库/显式文本模式仍重试自定义向量构建 | 不安排后台构建，拒绝显式构建/激活；自动文本路径附带原因，不反复制造失败日志。页面明确显示文本模式，并禁用本地重排；已安装运行库的临时构建失败仍可重试 |
+| 8路账户连接上限限制了双 MCP 接入 | 连接池上限可配置；容量与办公室等待队列分别管理 |
+| 角色首次使用可能认领同名域中未分配的知识 | 遇到冲突停止，交由人类处理；已登记的角色域保留原映射 |
+| 删除办公室后，人类按办公室筛选 MCP 记忆失败 | 人类可以读取保留域；已失去成员资格的角色仍被拒绝 |
+| 非法 JSON / 超长请求返回 HTML 错误 | 返回400/413与结构化 JSON，不回显正文或 HTML 堆栈 |
+| MCP CLI 使用随机端口时 Host 许可未更新 | 默认 Host 许可随实际端口更新；用户显式指定的 Host 许可仍由用户控制 |
+
+HTTP MCP 进程环境变量：
+
+```dotenv
+MINDPOND_MCP_MAX_CONNECTIONS=128
+MINDPOND_MCP_MAX_PER_ACCOUNT=64
+```
+
+两项接受1–4096的整数，分别约束进程总连接数与同一人类账户的连接数，最终同时受两者限制。Office 与 Memory 分别建立 transport session；多个角色及尚未老化的连接一起计数。默认无活动连接闲置30分钟后回收；正在运行的请求会保留连接。增大该池不会增大 `office_wait` 的数据库级并发等待名额。
+
+账户级凭据仍保有其明确授予的原作用域，应按该权限保管。agent 使用“宿主连接”生成的 Office/Memory 配置和批准后的角色身份；账户级凭据、宿主凭据、角色专用凭据与管理密钥不能混用。
+
+生产反向代理部署应配置 Web/API 和管理凭据，让 Web、HTTP MCP、stdio 使用同一专用系统账户。新建目录的私有模式不自动改写已有父目录，也不扫描历史备份；维护者应检查这些位置与 Windows ACL。需要原有向量质量时仍须准备实际模型并在目标平台验收；接口回归及模块加载通过不等于完成真实语义质量或远程生产验收。

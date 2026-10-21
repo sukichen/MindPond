@@ -60,10 +60,19 @@ export class MemoryOwners {
             await this.db.run('INSERT INTO memory_office_namespaces VALUES(?,?,?) ON CONFLICT(office_id) DO UPDATE SET title=excluded.title',[o.id,'office:'+o.id,o.title]);
             return {kind:'personal' as const,id:'office:'+o.id};
         }
-        await this.role(owner.id);await this.db.run('INSERT OR IGNORE INTO memory_role_namespaces VALUES(?,?)',[owner.id,'agent:'+owner.id]);return {kind:'personal' as const,id:'agent:'+owner.id};
+        await this.role(owner.id);
+        const existing=await this.db.get('SELECT domain_id FROM memory_role_namespaces WHERE role_id=?',[owner.id]);
+        if(existing)return {kind:'personal' as const,id:existing.domain_id};
+        const id='agent:'+owner.id;
+        if(await this.db.get("SELECT 1 FROM nodes WHERE domain_kind='personal' AND domain_id=?",[id]))throw new MindPondError('invalid_input','The role namespace conflicts with existing unassigned knowledge; human review is required.');
+        await this.db.run('INSERT OR IGNORE INTO memory_role_namespaces VALUES(?,?)',[owner.id,id]);return {kind:'personal' as const,id};
     }
     async context(owner:MemoryOwner,officeId?:string) {
-        if(owner.kind==='user')return officeId?{domains:[await this.domain({kind:'office',id:officeId})]}:undefined;
+        if(owner.kind==='user'){
+            if(!officeId)return undefined;
+            const retained=await this.db.get('SELECT domain_id FROM memory_office_namespaces WHERE office_id=?',[officeId]);
+            return {domains:[retained?{kind:'personal' as const,id:retained.domain_id}:await this.domain({kind:'office',id:officeId})]};
+        }
         if(owner.kind!=='agent')throw new MindPondError('scope_denied','Memory actor must be a human or authenticated role');
         const rooms=await this.offices(owner.id);
         if(officeId&&!rooms.some(o=>o.id===officeId))throw new MindPondError('scope_denied','Your role is not a permitted member of this office');

@@ -11,6 +11,7 @@ import { roleRuntimeId } from '../core/roles.js';
 import { createMemoryMcpServer } from '../mcp-service.js';
 import {
   authenticateNetworkAccount,
+  networkHostId,
   type NetworkConfiguration,
   type NetworkGrant
 } from './network-config.js';
@@ -50,9 +51,10 @@ export function createNetworkMcpApp(
     return work;
   };
   const pendingOwners = new Map<string, number>();
-  const max = options.maxConnections ?? 128,
-    perAccount = options.maxPerAccount ?? 8,
+  const max = options.maxConnections ?? Number(process.env.MINDPOND_MCP_MAX_CONNECTIONS??128),
+    perAccount = options.maxPerAccount ?? Number(process.env.MINDPOND_MCP_MAX_PER_ACCOUNT??64),
     idleMs = options.idleMs ?? 1800000;
+  if(![max,perAccount].every(value=>Number.isInteger(value)&&value>=1&&value<=4096))throw new Error('MCP connection limits must be integers from 1 to 4096');
   const remove = async (id: string) => {
     const c = connections.get(id);
     if (!c) return;
@@ -98,7 +100,7 @@ export function createNetworkMcpApp(
         !(await graph.offices.agentAuthority({
           v: 1,
           principal: grant.principal,
-          agentId: grant.agentId,
+          agentId: networkHostId(grant),
           issuedAt: 0,
           expiresAt: Number.MAX_SAFE_INTEGER
         }))
@@ -194,7 +196,7 @@ export function createNetworkMcpApp(
         newConnection = true;
         id = randomUUID();
         // Migrated v1 credentials retain their account tools and exact session namespace.
-        const agentId = grant.agentId?.startsWith('legacy:') ? undefined : grant.agentId;
+        const agentId = networkHostId(grant);
         const sessionId =
           'net:' +
           createHash('sha256')
@@ -239,7 +241,7 @@ export function createNetworkMcpApp(
               !(await graph.offices.agentAuthority({
                 v: 1,
                 principal: grant.principal,
-                agentId: grant.agentId,
+                agentId: networkHostId(grant),
                 issuedAt: 0,
                 expiresAt: Number.MAX_SAFE_INTEGER
               }))
@@ -272,11 +274,11 @@ export function createNetworkMcpApp(
         };
         await service.server.connect(transport);
         connections.set(id, c);
-        if (grant.agentId)
+        if (networkHostId(grant))
           await graph.offices.seen({
             v: 1,
             principal: grant.principal,
-            agentId: grant.agentId,
+            agentId: networkHostId(grant),
             issuedAt: 0,
             expiresAt: Number.MAX_SAFE_INTEGER
           });

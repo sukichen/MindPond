@@ -212,6 +212,10 @@ async function readDomain(db: GraphMemory, id: string): Promise<{ kind: string; 
     assert.equal(await userVersion(dbFile), 0, 'no partial success: version not adopted');
     assert.equal(await fs.access(`${dbFile}.pre-domain-v5.bak`).then(() => true, () => false), true,
       'failed upgrade still leaves the restorable backup behind');
+    const savedBackup=await fs.readFile(`${dbFile}.pre-domain-v5.bak`);
+    if(process.platform!=='win32')assert.equal((await fs.stat(`${dbFile}.pre-domain-v5.bak`)).mode&0o777,0o600);
+    await g.close();
+    const retry=newGraph();try{await assert.rejects(retry.init(),/domain schema migration failed/);assert.deepEqual(await fs.readFile(`${dbFile}.pre-domain-v5.bak`),savedBackup,'Retry must not overwrite the original recovery snapshot');}finally{await retry.close();}
     console.log('PASS: failed migration stops init and leaves schema untouched');
   } finally {
     try { await g.close(); } catch { /* db may be unusable after failed init */ }

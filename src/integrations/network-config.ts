@@ -17,6 +17,8 @@ export interface NetworkConfiguration {
   version: 1 | 2;
   grants: NetworkGrant[];
 }
+/** Account-only markers do not become host registrations during grant migration. */
+export function networkHostId(grant:NetworkGrant){return grant.agentId?.startsWith('legacy:')?undefined:grant.agentId;}
 export const tokenDigest = (token: string) => createHash('sha256').update(token).digest('hex');
 export async function readNetworkConfiguration(file: string): Promise<NetworkConfiguration> {
   const stat = await fs.stat(file);

@@ -87,6 +87,9 @@ try{
  await denied(local,'memory_get',{nodeId:shared.id},'colleague');
  assert.equal((await call(local,'memory_get',{nodeId:shared.id})).owner.kind,'office','human retains office knowledge after office deletion');
  assert((await graph.memoryOwners.offices()).some(o=>o.id==='room'&&o.state==='deleted'));
+ assert((await call(local,'memory_directory',{officeId:'room'})).memories.some((m:any)=>m.id===shared.id),'Human can filter preserved knowledge by a deleted office');
+ assert((await call(local,'memory_search',{officeId:'room',query:'Human rule'})).results.some((m:any)=>m.id===shared.id));
+ await denied(local,'memory_directory',{officeId:'room'},'colleague');
  await assert.rejects(graph.roles.configureOffice({id:'room',title:'Different audience',state:'active',expectedRevision:0,seats:[seats[0]]},admin),/retained knowledge/,'deleted office IDs cannot expose preserved knowledge to a new audience');
  assert.equal((await (graph as any).db.get('PRAGMA quick_check')).quick_check,'ok');
  console.log('PASS layered office memory: native stdio role attribution, own/office discovery, peer sharing, outsider/private fencing, human locks/CAS, lock and removal during embedding, independent assignment, paused/deleted room behavior and preserved knowledge');

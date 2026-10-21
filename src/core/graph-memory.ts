@@ -1,4 +1,5 @@
 import { ConnectionCoordinator } from './connection-coordinator.js';
+import {preparePrivateDatabase,reservePrivateBackup} from './sqlite-files.js';
 import { admitDegreeNeighbour, degreeNeighbours, degreeRepairPlan, evictDegreeNeighbour, DEFAULT_MAX_ASSOCIATION_DEGREE } from './association-degree.js';
 import { auditDatabase } from './database-maintenance.js';
 import { ProfileRetrieval, type ProfileRetrievalDependencies } from './profile-retrieval.js';
@@ -613,11 +614,8 @@ export class GraphMemory {
       this.closing=false;this.closePromise=undefined;this.embeddingScheduled=false;
     }
     return this.withWriteLock(async () => {
-    const dir = path.dirname(this.dataPath);
     const fs = await import('fs');
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    await preparePrivateDatabase(this.dataPath);
 
     this.db = this.coordinator.connection(await open({
       filename: this.dataPath,
@@ -991,8 +989,11 @@ export class GraphMemory {
           // Restorable snapshot BEFORE any DDL.  Restore procedure: stop all
           // processes sharing the file, copy this backup over the database
           // (removing -wal/-shm siblings), restart.
-          try { fs.unlinkSync(backupPath); } catch { /* no stale backup */ }
-          await this.db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+          // Keep an earlier recovery snapshot if a previous attempt failed.
+          // Replacing it on retry could overwrite the last pre-upgrade copy.
+          await reservePrivateBackup(backupPath);
+          try{await this.db.run('VACUUM INTO ?',[backupPath]);}
+          catch(error){await (await import('node:fs/promises')).rm(backupPath,{force:true});throw error;}
           logger.info(`[GraphMemory] domain migration backup written: ${backupPath}`);
         }
         await this.db.exec('BEGIN IMMEDIATE');
@@ -1195,6 +1196,7 @@ export class GraphMemory {
       const backupDir = fs.mkdtempSync(path.join(path.dirname(this.dataPath), '.pre-degree-cap-'));
       fs.chmodSync(backupDir, 0o700);
       const backup = path.join(backupDir, 'graph.db');
+      await reservePrivateBackup(backup);
       await this.db.run('VACUUM INTO ?', [backup]);
       fs.chmodSync(backup, 0o600);
       await this.db.exec('BEGIN IMMEDIATE');

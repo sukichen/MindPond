@@ -157,6 +157,9 @@ try {
     });
     server.once('listening', () => {
       const address = server.address();
+      if(port===0&&!values['allowed-host']&&address&&typeof address==='object'){
+        allowedHosts.splice(0,allowedHosts.length,`127.0.0.1:${address.port}`,`localhost:${address.port}`,`[::1]:${address.port}`);
+      }
       console.error(
         `[mindpond-mcp-http] listening on ${cert ? 'https' : 'http'}://${host}:${typeof address === 'object' && address ? address.port : port}/mcp`
       );

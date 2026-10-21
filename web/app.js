@@ -1046,21 +1046,25 @@ setInterval(refreshDimensionMetadata,15000);
 
 async function refreshRetrieval(){
   const catalog=await api('./api/memory/retrieval/profiles');
+  const inference=catalog.localInference,localUnavailable=inference?.enabled===false;
+  const unavailableLabel=inference?.reason==='text_mode'?'本地推理已停用，当前使用文本检索':'本地推理库未安装，当前使用文本检索';
+  const profileLabel=p=>p.id==='legacy'?'基础检索':p.label;
+  const configuredLabel=id=>profileLabel(catalog.profiles.find(p=>p.id===id)??{label:id});
   const chosen=$('searchProfile').value;
-  $('searchProfile').replaceChildren(new Option('服务默认',''),...catalog.profiles.map(p=>{const option=new Option(p.label+(p.coverage&&!p.coverage.complete?' · 构建未完成':''),p.id);option.disabled=!!p.error||!!p.coverage&&!p.coverage.complete;return option;}));
+  $('searchProfile').replaceChildren(new Option('服务默认',''),...catalog.profiles.map(p=>{const option=new Option(profileLabel(p)+(p.coverage&&!p.coverage.complete?' · 构建未完成':''),p.id);option.disabled=!!p.error||!!p.coverage&&!p.coverage.complete;return option;}));
   if(catalog.profiles.some(p=>p.id===chosen&&!p.error&&(!p.coverage||p.coverage.complete)))$('searchProfile').value=chosen;
   const selectedRanker=$('searchReranker').value;
-  $('searchReranker').replaceChildren(new Option('关闭',''),...catalog.rerankers.map(p=>new Option(p.label,p.id)));
-  if(catalog.rerankers.some(p=>p.id===selectedRanker))$('searchReranker').value=selectedRanker;
-  $('retrievalStatus').textContent='启用：'+catalog.activeProfile+' · 配置默认：'+catalog.preferredProfile+' · 模型文件不会自动下载';
+  $('searchReranker').replaceChildren(new Option('关闭',''),...catalog.rerankers.map(p=>{const option=new Option(p.label,p.id);option.disabled=localUnavailable;return option;}));
+  if(!localUnavailable&&catalog.rerankers.some(p=>p.id===selectedRanker))$('searchReranker').value=selectedRanker;else $('searchReranker').value='';
+  $('retrievalStatus').textContent=(localUnavailable?unavailableLabel:'已检测到本地推理库，模型状态以实际检索结果为准')+' · 已配置方案：'+configuredLabel(catalog.activeProfile)+' · 默认：'+configuredLabel(catalog.preferredProfile)+' · 模型文件不会自动下载';
   $('retrievalProfiles').replaceChildren(...catalog.profiles.map(p=>{
-    const box=text('article','','card');box.append(text('strong',p.label),text('p',p.model||'基础向量与文本检索','muted'));
+    const box=text('article','','card');box.append(text('strong',profileLabel(p)),text('p',p.model||(localUnavailable?'当前仅文本检索':'基础向量与文本检索'),'muted'));
     if(p.coverage)box.append(text('p',p.dimensions+' 维 · '+p.pooling+' · '+p.dtype+' · '+p.coverage.indexed+'/'+p.coverage.required+' 个正文 / 锚点已构建'+(p.building?' · 正在构建':'')));
     if(p.runtime)box.append(text('p','请求设备 '+p.runtime.requestedDevice+' → 实际 '+p.runtime.actualDevice,'muted'));
-    if(p.error)box.append(text('p','状态：'+p.error,'warning'));
+    if(p.error)box.append(text('p','状态：'+(['text_mode','local_runtime_not_installed'].includes(p.error)?unavailableLabel:p.error),'warning'));
     const actions=text('div','','row');
-    if(p.coverage&&!p.coverage.complete&&p.spaceKey)actions.append(button('构建下一批（64 项）',async()=>{const result=await api('./api/memory/retrieval/build',{profileId:p.id,maxItems:64});notice('已构建 '+result.completed+' 项，剩余 '+result.coverage.remaining+(result.failures.length?'；部分失败，请查看状态':''),!!result.failures.length);await refreshRetrieval();}));
-    const activate=button(p.id==='legacy'?'使用基础索引':'启用模型',async()=>{await api('./api/memory/retrieval/activate',{profileId:p.id});notice('向量索引已切换');await refreshRetrieval();});
+    if(!localUnavailable&&p.coverage&&!p.coverage.complete&&p.spaceKey)actions.append(button('构建下一批（64 项）',async()=>{const result=await api('./api/memory/retrieval/build',{profileId:p.id,maxItems:64});notice('已构建 '+result.completed+' 项，剩余 '+result.coverage.remaining+(result.failures.length?'；部分失败，请查看状态':''),!!result.failures.length);await refreshRetrieval();}));
+    const activate=button(p.id==='legacy'?'使用基础索引':'启用模型',async()=>{await api('./api/memory/retrieval/activate',{profileId:p.id});notice('检索方案已切换');await refreshRetrieval();});
     activate.disabled=catalog.activeProfile===p.id||!!p.error||!!p.coverage&&!p.coverage.complete;actions.append(activate);box.append(actions);return box;
   }));
 }

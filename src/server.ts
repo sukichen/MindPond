@@ -137,15 +137,30 @@ const pipeline = new MemoryPipelineManager(graphMemory, undefined);
 const consolidation = new MemoryConsolidation(graphMemory, undefined);
 
 const app = express();
+app.disable('x-powered-by');
 const trustedProxy=process.env.MEMORY_TRUST_PROXY;
 if(trustedProxy){
   if(trustedProxy==='loopback')app.set('trust proxy','loopback');
   else throw new Error('MEMORY_TRUST_PROXY supports only loopback; keep the web listener on loopback behind a local reverse proxy');
 }
-app.use(express.json({ limit: '2mb' }));
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  next();
+});
+
+// CORS response headers alone do not prevent simple cross-origin POSTs.
+// The credential-free local API also needs a literal loopback Host so a
+// browser cannot reach human memory through DNS rebinding.
+app.use('/api',(req,res,next)=>{
+  const origin=req.header('origin');
+  if(origin&&origin!==`${req.protocol}://${req.header('host')}`&&!CORS_ORIGINS.has(origin)){
+    res.status(403).json({code:'scope_denied',error:'Cross-origin API request rejected'});return;
+  }
+  if(!API_KEY&&!OPERATOR_KEY&&!CONTEXT_SECRET&&process.env.MEMORY_ALLOW_UNAUTHENTICATED_NETWORK!=='1'
+    &&!/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(req.header('host')??'')){
+    res.status(403).json({code:'scope_denied',error:'The local API requires a loopback Host or configured authentication'});return;
+  }
   next();
 });
 
@@ -161,6 +176,7 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   next();
 });
+app.use(express.json({ limit: '2mb' }));
 
 // ---- web UI (self-contained static page, no build step) ----
 app.get('/', (_req, res) => res.sendFile(path.join(WEB_DIR, 'index.html')));
@@ -993,6 +1009,16 @@ app.post('/api/maintenance/run', async (_req, res) => {
   } catch (err) {
     failErr(res, err);
   }
+});
+
+// Body-parser and unexpected router failures must preserve the JSON boundary.
+// Never return Express's HTML stack trace or echo malformed request bodies.
+app.use((error:unknown,_req:express.Request,res:express.Response,next:express.NextFunction)=>{
+  if(res.headersSent){next(error);return;}
+  const type=(error as {type?:string})?.type;
+  if(type==='entity.too.large')res.status(413).json({ok:false,code:'invalid_input',error:'Request body exceeds 2MB',retryable:false,nextAction:'Reduce the request body or split it into smaller batches.'});
+  else if(type==='entity.parse.failed')res.status(400).json({ok:false,code:'invalid_input',error:'Malformed JSON request',retryable:false,nextAction:'Send a valid JSON request.'});
+  else res.status(500).json({ok:false,code:'internal',error:'HTTP request failed',retryable:false});
 });
 
 // ---- bootstrap ----

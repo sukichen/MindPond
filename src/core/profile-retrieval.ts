@@ -77,6 +77,15 @@ export class ProfileRetrieval {
     if(!entry)throw new MindPondError('invalid_input','Unknown or unconfigured retrieval profile',{field:'retrievalProfile',nextAction:'Read memory_retrieval_profiles; ask the operator to configure a model before selecting it'});
     return entry;
   }
+  private inferenceUnavailable(){
+    if(this.dependencies.encoder)return undefined;
+    const state=localInferenceStatus();return state.enabled?undefined:state.reason;
+  }
+  private requireInference(){
+    const reason=this.inferenceUnavailable();
+    if(reason)throw new MindPondError('temporarily_unavailable','Local vector inference is disabled or not installed',{
+      nextAction:'Use text retrieval, or ask the operator to install the optional local runtime, enable auto mode and restart.',details:{reason}});
+  }
   validateSelection(query:{retrievalProfile?:string;vectorAlgorithm?:string;reranker?:string;embedding?:number[]}){
     if(query.retrievalProfile&&query.retrievalProfile!=='legacy'){
       this.entry(query.retrievalProfile);
@@ -115,7 +124,7 @@ export class ProfileRetrieval {
       const coverage=await this.coverage(entry);
       profiles.push({id:entry.profile.id,label:entry.profile.label,model:entry.profile.model,dimensions:entry.profile.dimensions,pooling:entry.profile.pooling,dtype:entry.profile.dtype,
         spaceKey:entry.spaceKey,configured:true,coverage,runtime:entry.encoder?.status()??{requestedDevice:entry.runtime.device,actualDevice:'uninitialized'},algorithm:entry.runtime.algorithm,
-        building:this.builds.has(entry.profile.id),error:entry.error});
+        building:this.builds.has(entry.profile.id),error:this.inferenceUnavailable()??entry.error});
     }
     return {activeProfile:active?.value==='legacy'?'legacy':(profiles.find(p=>p.id===active?.id&&p.spaceKey===active?.value)??profiles.find(p=>p.spaceKey===active?.value))?.id??'legacy',preferredProfile:this.config.defaultProfile,
       profiles:[{id:'legacy',label:'Existing MiniLM + optional BGE mean-pooling',configured:true,compatibility:true},...profiles],
@@ -155,6 +164,7 @@ export class ProfileRetrieval {
     if(this.stopped)throw new MindPondError('temporarily_unavailable','Embedding builder is closing',{retryable:true});
     if(this.builds.has(id))return this.builds.get(id)!;
     const entry=this.entry(id);
+    this.requireInference();
     const work=this.buildTail.then(()=>this.buildBatch(entry,maxItems));this.buildTail=work.catch(()=>{});this.builds.set(id,work);
     try{return await work;}finally{this.builds.delete(id);}
   }
@@ -193,7 +203,7 @@ export class ProfileRetrieval {
     return this.write(async()=>{
       let value='legacy';
       if(id!=='legacy'){
-        const entry=this.entry(id),coverage=await this.coverage(entry);
+        const entry=this.entry(id);this.requireInference();const coverage=await this.coverage(entry);
         if(!entry.spaceKey||!coverage.complete)throw new MindPondError('temporarily_unavailable','Profile is not completely indexed; the previous profile stays active',{retryable:true,nextAction:'Build remaining body/anchor vectors before activation'});
         value=entry.spaceKey;
       }
@@ -207,7 +217,9 @@ export class ProfileRetrieval {
     const active=await this.activeState();
     const id=explicit??(active?.value&&active.value!=='legacy'?([...this.configured.values()].find(e=>e.profile.id===active.id&&e.spaceKey===active.value)??[...this.configured.values()].find(e=>e.spaceKey===active.value))?.profile.id:this.config.defaultProfile);
     if(!id||id==='legacy')return {id:'legacy',fallback:!!active?.value&&active.value!=='legacy',reason:active?.value&&active.value!=='legacy'?'active_profile_not_configured':undefined};
-    const entry=this.entry(id),coverage=await this.coverage(entry);
+    const entry=this.entry(id),unavailable=this.inferenceUnavailable();
+    if(unavailable){if(explicit)this.requireInference();return {id:'legacy',fallback:true,reason:unavailable};}
+    const coverage=await this.coverage(entry);
     if(!entry.spaceKey||!coverage.complete){
       if(explicit)throw new MindPondError('temporarily_unavailable','Selected profile is unavailable or has pending vectors',{retryable:true,field:'retrievalProfile',nextAction:'Select legacy or wait for the operator builder',details:{remaining:coverage.remaining}});
       return {id:'legacy',fallback:true,reason:'profile_build_pending'};
@@ -246,6 +258,7 @@ export class ProfileRetrieval {
     if(!definition)throw new MindPondError('invalid_input','Unknown reranker',{field:'reranker'});
     const count=Math.min(items.length,definition.profile.maxCandidates);
     if(count<2)return {items,status:'available' as const,evaluated:0};
+    const inference=localInferenceStatus();if(!this.dependencies.rerank&&!inference.enabled)return {items,status:'failed' as const,evaluated:0,code:inference.reason};
     if(this.queuedInference>=64)return {items,status:'failed' as const,evaluated:0,code:'reranker_queue_full'};
     this.queuedInference++;
     const work=this.inferenceTail.then(async()=>{
@@ -271,6 +284,7 @@ export class ProfileRetrieval {
     }catch{return {items,status:'failed' as const,evaluated:0,code:'reranker_unavailable'};}finally{this.queuedInference--;}
   }
   async startupProfiles(){
+    if(this.inferenceUnavailable())return [];
     const active=await this.activeState();
     const entries=this.config.buildOnStartup?[...this.configured.values()]:[];
     const selected=active?.value&&active.value!=='legacy'?([...this.configured.values()].find(e=>e.profile.id===active.id&&e.spaceKey===active.value)??[...this.configured.values()].find(e=>e.spaceKey===active.value)):undefined;

@@ -4,6 +4,8 @@
 
 基础与明确选装的本地推理运行库已分开；认证失败的只读检查、依赖与许可证范围见[生产依赖说明](production-dependencies.md)。
 
+生产 Web/MCP/stdio 进程应使用同一个专用系统账户。POSIX 下新建数据目录为0700，数据库与现有 WAL/SHM 收紧为0600；历史备份及 Windows 文件 ACL 仍需维护者核对。通过反向代理开放 Web 时配置管理/API 凭据，且仅在本机可信代理后设置 `MEMORY_TRUST_PROXY=loopback`；未配置凭据的本地 REST 接口只接受字面 loopback Host。跨站访问需显式配置 `MEMORY_CORS_ORIGINS`，Office 管理写入仍要求页面同源。
+
 使用 Node.js 22 或更新版本。先运行 `npm ci`、`npm run check`，再运行 `npm start` 或 `npm run mcp`。没有本地模型时可使用明确报告降级的文本检索；模型文件由管理员按其自身许可准备。
 
 默认新安装的数据与缓存位于用户目录。明确设置 `MEMORY_DB_PATH` 可让 HTTP、MCP 和 SDK 共用一个数据库。数据库、WAL/SHM、连接配置、模型缓存、运行日志、捕获 outbox 和备份均放在公开仓库外；这些材料可能含私人正文和凭据。

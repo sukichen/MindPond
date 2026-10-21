@@ -4,7 +4,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {open} from 'sqlite';
 import sqlite3 from 'sqlite3';
-import {readNetworkConfiguration,authenticateNetworkAccount} from './network-config.js';
+import {readNetworkConfiguration,authenticateNetworkAccount,networkHostId} from './network-config.js';
 export async function checkNetworkCredential(options:{configFile:string;tokenFile:string;dbPath:string}){
   const configFile=path.resolve(options.configFile),databasePath=path.resolve(options.dbPath);
   const config=await readNetworkConfiguration(configFile),stat=await fs.stat(options.tokenFile);
@@ -19,7 +19,7 @@ export async function checkNetworkCredential(options:{configFile:string;tokenFil
   try{
     await db.exec('PRAGMA busy_timeout=5000');
     const tables=new Set((await db.all('SELECT name FROM sqlite_master WHERE type=\'table\'')).map(r=>r.name));
-    let agentId=grant?.agentId,principal=grant?.principal;
+    let agentId=grant?networkHostId(grant):undefined,principal=grant?.principal;
     if(token.startsWith('mpr_')){
       if(!['memory_role_credentials','character_roles','role_bindings'].every(t=>tables.has(t)))return result(false,'role_schema_missing');
       const r=await db.get("SELECT c.role_id,r.state,r.principal,b.connector_id FROM memory_role_credentials c JOIN character_roles r ON r.id=c.role_id LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active' WHERE c.token_hash=? AND c.state='active'",[createHash('sha256').update(token).digest('hex')]);
