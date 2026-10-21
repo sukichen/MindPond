@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import {memoryMcpEndpoint} from './integrations/office-connection.js';
+import {memoryMcpEndpoint,roleConnectionDownload} from './integrations/office-connection.js';
 import {officeWorkbench} from './integrations/office-workbench.js';
 import { assemblePresentedRecall, recallEntry } from './core/context-assembly.js';
 import { authorizeOrganizationAccess } from './core/organization-access.js';
@@ -253,11 +253,15 @@ async function publicMemoryEndpoint(){
 }
 app.get('/api/memory/owners',async(req,res)=>{
   if(!requireOperator(req,res))return;
-  try{ok(res,{roles:await graphMemory.memoryOwners.roles(),user:{kind:'user',id:'default'},memoryMcpUrl:await publicMemoryEndpoint()});}catch(e){failErr(res,e);}
+  try{ok(res,{roles:await graphMemory.memoryOwners.roles(),offices:await graphMemory.memoryOwners.offices(),user:{kind:'user',id:'default'},memoryMcpUrl:await publicMemoryEndpoint()});}catch(e){failErr(res,e);}
 });
 app.post('/api/memory/assign',async(req,res)=>{
   if(!requireMemoryManager(req,res))return;
   try{const a=z.object({memoryIds:z.string().min(1).max(160).array().min(1).max(50),roleId:z.string().uuid()}).strict().parse(req.body);ok(res,await graphMemory.memoryOwners.allocate(a.memoryIds,a.roleId));}catch(e){failErr(res,e);}
+});
+app.post('/api/memory/office-policy',async(req,res)=>{
+  if(!requireMemoryManager(req,res))return;
+  try{const a=z.object({memoryId:z.string().min(1).max(160),locked:z.boolean(),expectedRevision:z.number().int().min(0)}).strict().parse(req.body);ok(res,await graphMemory.memoryOwners.setPolicy(a.memoryId,a.locked,a.expectedRevision));}catch(e){failErr(res,e);}
 });
 app.post('/api/memory/role-credential',async(req,res)=>{
   if(!requireMemoryManager(req,res))return;
@@ -265,7 +269,9 @@ app.post('/api/memory/role-credential',async(req,res)=>{
     const a=z.object({roleId:z.string().uuid(),replaceExisting:z.boolean().optional()}).strict().parse(req.body);
     const memoryMcpUrl=await publicMemoryEndpoint();
     if(!memoryMcpUrl)throw new MindPondError('invalid_input','请先在协作办公室的“连接设置”保存可达的 Office MCP 地址，再生成角色配置。');
-    ok(res,{...await graphMemory.memoryOwners.issue(a.roleId,a.replaceExisting===true),memoryMcpUrl});
+    const credential=await graphMemory.memoryOwners.issue(a.roleId,a.replaceExisting===true);
+    const configuration=roleConnectionDownload({host:credential.connection.host,connectorId:credential.connection.connectorId,roleId:a.roleId,url:memoryMcpUrl.replace(/\/memory\/mcp\/?$/,'/mcp'),token:credential.token});
+    ok(res,{...credential,memoryMcpUrl,configuration});
   }catch(e){failErr(res,e);}
 });
 app.get('/api/memory/retrieval/profiles',async(_req,res)=>{try{ok(res,await graphMemory.retrievalProfiles());}catch(error){failErr(res,error);}});
@@ -359,10 +365,10 @@ app.post('/api/memory/search', async (req, res) => {
     }
     const recall = await graphMemory.recall({
       query, retrievalProfile, vectorAlgorithm, reranker,
-      ...(!CONTEXT_SECRET||req.trusted?.operator?{operatorAll:!req.body.ownerRoleId}:{}),
+      ...(!CONTEXT_SECRET||req.trusted?.operator?{operatorAll:!req.body.ownerRoleId&&!req.body.ownerOfficeId}:{}),
       limit: typeof limit === 'number' ? limit : 10,
       sessionId: readCtx.sessionId,
-      domains: (!CONTEXT_SECRET||req.trusted?.operator)&&req.body.ownerRoleId?[{kind:'personal',id:'agent:'+z.string().uuid().parse(req.body.ownerRoleId)}]:readCtx.domains,
+      domains: (!CONTEXT_SECRET||req.trusted?.operator)&&(req.body.ownerRoleId||req.body.ownerOfficeId)?[{kind:'personal',id:req.body.ownerOfficeId?'office:'+z.string().min(1).max(160).parse(req.body.ownerOfficeId):'agent:'+z.string().uuid().parse(req.body.ownerRoleId)}]:readCtx.domains,
       dimension,
       layer,
       spaceId,
@@ -396,7 +402,12 @@ app.get('/api/memory/recall-feedback/summary', async (_req, res) => {
 
 app.post('/api/memory/save', async (req, res) => {
   try {
-    const { content, ...options } = req.body ?? {};
+    const {content,owner,...options}=req.body??{};
+    if(owner){
+      if(!requireMemoryManager(req,res))return;
+      const target=z.discriminatedUnion('kind',[z.object({kind:z.literal('user'),id:z.literal('default')}).strict(),z.object({kind:z.literal('agent'),id:z.string().uuid()}).strict(),z.object({kind:z.literal('office'),id:z.string().min(1).max(160)}).strict()]).parse(owner);
+      options.domain=await graphMemory.memoryOwners.domain(target);
+    }
     // R03: write ownership may only narrow to the trusted session/domain.
     if (req.trusted && CONTEXT_SECRET) {
       Object.assign(options, narrowTrustedSaveContext(req.trusted, options));
@@ -616,7 +627,7 @@ app.get('/api/memory/list', async (req, res) => {
         id: n.id, dimension: n.dimension, dimensions:n.dimensions, layer: n.layer, content: n.content,
         importance: n.importance, tags: n.tags, domain:n.domain, sessionId: n.sessionId,owner:await graphMemory.memoryOwners.owner(n),
         createdAt: n.createdAt, updatedAt: n.updatedAt, accessCount: n.accessCount,
-        sourceRefs:n.sourceRefs, profiles:n.profiles,
+        sourceRefs:n.sourceRefs, profiles:n.profiles,...((await graphMemory.memoryOwners.owner(n)).kind==='office'?{officePolicy:await graphMemory.memoryOwners.policy(n.id)}:{}),
         memberships: await graphMemory.getMemberships(n.id),
       }))),
     });

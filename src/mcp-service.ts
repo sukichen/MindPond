@@ -110,6 +110,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
     let release!:()=>void;const active=new Promise<void>(r=>release=r);activeCalls.add(active);
     let auditContext:TrustedCallContext=baseTrusted;
     try {
+      await options.authorizeWait?.();
       let current:TrustedCallContext={...baseTrusted};
       const native = hostChatIdentity(extra._meta);
       // The authenticated harness supplies this on every call. Installation
@@ -148,6 +149,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       }
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
+      await options.authorizeWait?.();
       if(activation){const entry=result.content?.find((c:any)=>c.type==='text');if(entry){try{const data=JSON.parse(entry.text);data.activation={...activation,notice:'Ask the user to activate an existing role for this chat in the office, or submit a new role application. Transport reconnection never chooses a role by recency.'};entry.text=JSON.stringify(data);}catch{}}}
       if(roleIdentity) {
         const revision=String(roleIdentity.profileRevision)+':'+String(roleIdentity.bindingEpoch);

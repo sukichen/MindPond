@@ -9,7 +9,7 @@ export const OFFICE_CAPABILITIES = {
   wait: { defaultMs: OFFICE_WAIT_MS, maxMs: OFFICE_WAIT_MS, toolTimeoutMs: OFFICE_TOOL_TIMEOUT_MS, wakesStoppedHost: false, capacity:officeWaitCapacity() },
   messages: { defaultPageSize: 10, maxPageSize: 20, defaultContextBytes: 16384, maxContextBytes: 65536 },
   correlation: 'Codex per-call threadId, OpenCode native chat metadata or signed session plugin; fallback requires user activation or a role credential.',
-  memory: 'Separate Memory MCP binds to this chat’s approved role. Humans see all knowledge; roles only their own or human-assigned independent copies.'
+  memory: 'Separate Memory MCP binds to this chat’s approved role. Humans see all knowledge; roles read their own knowledge, human-assigned independent copies and member-office knowledge. Office entries may be human-locked against role changes.'
 } as const;
 
 /** Both endpoints share a public prefix. Reject ambiguous paths instead of
@@ -51,4 +51,22 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
     warnings: [...warnings, ...(o.host === 'opencode' ? ['OpenCode 不同版本对 timeout 的执行范围有差异；配置后请用实际长等待验证，工具发现成功不代表长调用已验证。'] : [])] };
   return { ...base, place: '宿主原生 HTTP MCP 设置（语法需按客户端验证）', docs: null,
     text: `Office Streamable HTTP MCP URL: ${o.url}\nMemory Streamable HTTP MCP URL: ${memoryUrl}\nAuthentication: Bearer supplied by host secret setting\nSecret reference: ${env}\nTool timeout: at least ${OFFICE_TOOL_TIMEOUT_SECONDS} seconds\n` };
+}
+
+/** One-time secret download for the role's actual current host. Server names
+ * match the host template, including its installed OpenCode session plugin. */
+export function roleConnectionDownload(o:{host:string;connectorId:string;roleId:string;url:string;token:string}){
+  const template=officeConnection({host:o.host,id:o.connectorId,url:o.url,tokenEnv:'MINDPOND_ROLE_TOKEN'});
+  let text:string,extension:string,mime:string;
+  if(o.host==='codex'){
+    text=template.text.replaceAll('bearer_token_env_var = "MINDPOND_ROLE_TOKEN"','http_headers = { Authorization = '+JSON.stringify('Bearer '+o.token)+' }');
+    extension='toml';mime='application/toml';
+  }else if(template.config){
+    const config=JSON.parse(JSON.stringify(template.config));
+    for(const server of Object.values(config.mcp??config.mcpServers) as any[])server.headers.Authorization='Bearer '+o.token;
+    text=JSON.stringify(config,null,2)+'\n';extension='json';mime='application/json';
+  }else{
+    text=template.text+'Credential: '+o.token+'\n';extension='txt';mime='text/plain';
+  }
+  return {text,mime,filename:'mindpond-role-'+o.roleId.slice(0,8)+'-'+o.host+'.'+extension,host:o.host};
 }

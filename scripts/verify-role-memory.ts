@@ -144,10 +144,13 @@ try {
     assert.equal(newChat.data.state,'unregistered');assert(newChat.data.activation?.id,'pinned connection must expose a user activation request before accessing a new chat');
     const currentRole=(await graph.roles.registry(admin)).roles.find((r:any)=>r.id===a.roleId);
     await graph.roles.activate({requestId:newChat.data.activation.id,roleId:a.roleId,expectedRevision:currentRole.revision},admin);
-    assert.equal((await call(pinned,'memory_identity',{},'pinned-new-chat')).data.owner.id,a.roleId);
-    await assert.rejects(()=>call(pinned,'memory_identity',{},'chat-a'),(e:any)=>e.code===403,'the old chat loses role access after activation');
+    await assert.rejects(()=>call(pinned,'memory_identity',{},'pinned-new-chat'),(e:any)=>e.code===401,'a switch revokes downloaded role credentials too');
+    const movedCredential=await graph.memoryOwners.issue(a.roleId);
+    const movedMemory=await connect('/memory/mcp',movedCredential.token);
+    assert.equal((await call(movedMemory,'memory_identity',{},'pinned-new-chat')).data.owner.id,a.roleId);
+    await assert.rejects(()=>call(movedMemory,'memory_identity',{},'chat-a'),(e:any)=>e.code===403,'the original chat loses role access after switching');
     await graph.memoryOwners.issue(a.roleId,true);
-    await assert.rejects(() => call(pinned, 'memory_identity'), (e: any) => e.code === 401, 'rotated credential is rejected on an already-open session');
+    await assert.rejects(() => call(movedMemory, 'memory_identity'), (e: any) => e.code === 401, 'rotated credential is rejected on an already-open session');
     console.log('PASS separate office/memory catalogs; native multi-chat identity beats static header; role-only read/write, independent source-linked copies, human global recall, reconnect recovery and credential revocation');
 }
 finally {

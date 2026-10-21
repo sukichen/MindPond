@@ -220,7 +220,7 @@ export class OfficeStore {
       if(deleted){if(deleted.revision!==i.expectedRevision)fail('Connection changed or was deleted; refresh','stale_version');return {deleted:true,id:i.id};}
       const old=await this.db.get<Row>('SELECT * FROM office_agents WHERE id=?',[i.id]);
       if(!old||old.revision!==i.expectedRevision)fail('Connection changed or was deleted; refresh','stale_version');
-      if(await this.db.get('SELECT 1 FROM character_roles WHERE connector_id=?',[i.id]))fail('此连接仍关联角色，请先在“角色与申请”中删除不再使用的角色，再删除连接。','invalid_input');
+      if(await this.db.get("SELECT 1 FROM role_bindings WHERE connector_id=? AND state='active'",[i.id]))fail('此连接仍绑定角色，请先在角色目录切换角色的连接，再删除此连接。','invalid_input');
       if(await this.db.get('SELECT 1 FROM office_seats WHERE agent_id=? AND enabled=1',[i.id]))fail('此连接仍被办公室使用，请先编辑相关办公室，移除此连接的参与工位。','invalid_input');
       await this.db.run('INSERT INTO office_agent_tombstones VALUES(?,?,?)',[i.id,i.expectedRevision,this.clock()]);
       // Disabled historical seats retain a minimal FK target, never a usable

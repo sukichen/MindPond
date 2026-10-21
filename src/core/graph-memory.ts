@@ -1143,7 +1143,7 @@ export class GraphMemory {
     await this.building.init();
     this.officeCollaboration=this.coordinator.service(new OfficeCollaboration(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock),['init','publish','records','handoffContext','relations','controls','requestControl','responsePage','boundResponse','layout','captureLayout','observations','permissions','impact','exportPage','operations']);
     await this.officeCollaboration.init();
-    this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential']);
+    this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential','nativeBinding','office','offices','context','policy','setPolicy','assertWritable','roleBinding','present']);
     await this.memoryOwners.init();
     await this.roles.migrateModel();
     // Additive, transactional migration: never reclassify historical events or

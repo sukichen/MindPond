@@ -9,7 +9,7 @@ export async function migrateOfficeRoleModel(db:Database,now:number){
   for(const seat of seats){
     const name=(seat.label?.trim()||seat.agent_name).slice(0,120);
     const role={id:randomUUID(),name};
-    await db.run('INSERT INTO character_roles VALUES(?,?,?,?,?,?,1,?,?)',[role.id,seat.principal,seat.agent_id,name,seat.role||'办公室参与者',seat.agent_state==='active'?'active':'disabled',seat.id,now]);
+    await db.run('INSERT INTO character_roles(id,principal,name,introduction,state,revision,primary_seat,created_at) VALUES(?,?,?,?,?,1,?,?)',[role.id,seat.principal,name,seat.role||'办公室参与者',seat.agent_state==='active'?'active':'disabled',seat.id,now]);
     const sessions='SELECT id FROM office_sessions WHERE seat_id=?';
     await db.run(`UPDATE office_items SET status='open',revision=revision+1,epoch=epoch+1,lease_hash=NULL,lease_until=NULL,session_id=NULL WHERE status='claimed' AND session_id IN (${sessions})`,[seat.id]);
     await db.run(`UPDATE office_sessions SET state='closed' WHERE id IN (${sessions})`,[seat.id]);

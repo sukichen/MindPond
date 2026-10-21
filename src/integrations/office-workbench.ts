@@ -205,7 +205,7 @@ export function officeWorkbench(
     graph.offices.configureProject(projectConfigurationSchema.parse(req.body), operator)
   );
   route('/office', async (req) => {
-    const input=officeConfigurationSchema.extend({seats:officeConfigurationSchema.shape.seats.unwrap().element.extend({roleId:z.string().uuid()}).strict().array().max(50).optional()}).strict().parse(req.body);
+    const input=officeConfigurationSchema.extend({seats:officeConfigurationSchema.shape.seats.unwrap().element.extend({roleId:z.string().uuid(),agentId:officeConfigurationSchema.shape.seats.unwrap().element.shape.agentId.optional()}).strict().array().max(50).optional()}).strict().parse(req.body);
     const result=await graph.roles.configureOffice(input,operator);
     await graph.officeCollaboration.layout(input.id,operator);
     return result;

@@ -1,4 +1,4 @@
-/** Optional collaboration records. Room membership never grants memory or host control. */
+/** Optional collaboration records. Room membership grants shared office knowledge, never private role knowledge or host control. */
 import type { Database } from 'sqlite';
 import type { GraphMemory } from './graph-memory.js';
 import type { TrustedCallContext } from './trust.js';
@@ -48,8 +48,9 @@ export class OfficeCollaboration {
         const row = await this.db.get<Row>('SELECT domain_kind,domain_id FROM nodes WHERE id=?', [id]);
         if (!row)
             return null;
-        if (!a.operator) {const binding=await this.identity(a);const domain=await this.graph.memoryOwners.domain({kind:'agent',id:binding.role_id});if(row.domain_kind!==domain.kind||row.domain_id!==domain.id)return null;}
-        return this.graph.getNodeById(id, { trackAccess: false, context: a.operator ? undefined : {domains:[await this.graph.memoryOwners.domain({kind:'agent',id:(await this.identity(a)).role_id})]} });
+        const context=a.operator?undefined:await this.graph.memoryOwners.context({kind:'agent',id:(await this.identity(a)).role_id});
+        if(context&&!context.domains.some(d=>d.kind===row.domain_kind&&d.id===row.domain_id))return null;
+        return this.graph.getNodeById(id,{trackAccess:false,context});
     }
     async room(officeId: string, a?: TrustedCallContext, writing = false) {
         const room = await this.db.get<Row>('SELECT * FROM offices WHERE id=?', [officeId]);
@@ -307,15 +308,15 @@ export class OfficeCollaboration {
         const role = await this.db.get<Row>('SELECT * FROM character_roles WHERE id=?', [i.roleId]);
         if (!role)
             fail('Role unavailable','not_found');
-        return { role, offices: await this.db.all('SELECT s.office_id,o.title officeTitle,s.label,s.role,s.enabled FROM office_seats s JOIN offices o ON o.id=s.office_id JOIN role_seats rs ON rs.seat_id=s.id WHERE rs.role_id=?', [i.roleId]), contacts: await this.db.all('SELECT sender,recipient FROM role_links WHERE sender=? OR recipient=?', [i.roleId, i.roleId]), host: await this.db.get('SELECT * FROM office_host_reports WHERE role_id=?', [i.roleId]), controls: await this.controls(i.roleId, a), notice: 'Same-account active roles may communicate. Cross-account links are directional. Memory grants come from the connection; team writes require their own signed grant. File access is supplied by the host.' };
+        return { role, offices: await this.db.all('SELECT s.office_id,o.title officeTitle,s.label,s.role,s.enabled FROM office_seats s JOIN offices o ON o.id=s.office_id JOIN role_seats rs ON rs.seat_id=s.id WHERE rs.role_id=?', [i.roleId]), contacts: await this.db.all('SELECT sender,recipient FROM role_links WHERE sender=? OR recipient=?', [i.roleId, i.roleId]), host: await this.db.get("SELECT h.* FROM office_host_reports h JOIN role_bindings b ON b.id=h.binding_id AND b.state='active' WHERE h.role_id=?", [i.roleId]), controls: await this.controls(i.roleId, a), notice: 'Same-account active roles may communicate. Cross-account links are directional. Memory grants come from the connection; team writes require their own signed grant. File access is supplied by the host.' };
     }
     async impact(i: Row, a?: TrustedCallContext) {
         this.admin(a);
         const params = [i.id], counts: Row = {};
-        const queries = i.kind === 'office' ? { messages: 'SELECT COUNT(*) n FROM role_messages WHERE office_id=?', materials: 'SELECT COUNT(*) n FROM office_materials WHERE office_id=?', containers: 'SELECT COUNT(*) n FROM office_containers WHERE office_id=?', events: 'SELECT COUNT(*) n FROM office_events WHERE office_id=?', seats: 'SELECT COUNT(*) n FROM office_seats WHERE office_id=?', records: 'SELECT COUNT(*) n FROM office_collaboration_records WHERE office_id=?' } : i.kind === 'role' ? { messages: 'SELECT COUNT(*) n FROM role_messages WHERE sender=? OR recipient=?', seats: 'SELECT COUNT(*) n FROM role_seats WHERE role_id=?', bindings: 'SELECT COUNT(*) n FROM role_bindings WHERE role_id=?' } : { roles: 'SELECT COUNT(*) n FROM character_roles WHERE connector_id=?', seats: 'SELECT COUNT(*) n FROM office_seats WHERE agent_id=? AND enabled=1' };
+        const queries = i.kind === 'office' ? { messages: 'SELECT COUNT(*) n FROM role_messages WHERE office_id=?', materials: 'SELECT COUNT(*) n FROM office_materials WHERE office_id=?', containers: 'SELECT COUNT(*) n FROM office_containers WHERE office_id=?', events: 'SELECT COUNT(*) n FROM office_events WHERE office_id=?', seats: 'SELECT COUNT(*) n FROM office_seats WHERE office_id=?', records: 'SELECT COUNT(*) n FROM office_collaboration_records WHERE office_id=?' } : i.kind === 'role' ? { messages: 'SELECT COUNT(*) n FROM role_messages WHERE sender=? OR recipient=?', seats: 'SELECT COUNT(*) n FROM role_seats WHERE role_id=?', bindings: 'SELECT COUNT(*) n FROM role_bindings WHERE role_id=?' } : { roles: "SELECT COUNT(*) n FROM role_bindings WHERE connector_id=? AND state='active'", seats: 'SELECT COUNT(*) n FROM office_seats WHERE agent_id=? AND enabled=1' };
         for (const [key, sql] of Object.entries(queries))
             counts[key] = (await this.db.get<Row>(sql, sql.includes('OR recipient=') ? [i.id, i.id] : params))!.n;
-        return { kind: i.kind, id: i.id, counts, independentMemoriesDeleted: 0, notice: 'Snapshot only. Deletion rechecks revision and dependencies in its own transaction.' };
+        return { kind: i.kind, id: i.id, counts, retainedOfficeMemories:i.kind==='office'?(await this.db.get("SELECT COUNT(*) n FROM nodes WHERE domain_kind='personal' AND domain_id=?",['office:'+i.id])).n:0, independentMemoriesDeleted: 0, notice: 'Snapshot only. Deletion rechecks revision and dependencies in its own transaction.' };
     }
     async exportPage(i: Row, a?: TrustedCallContext) {
         this.admin(a);

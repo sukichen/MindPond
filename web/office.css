@@ -635,3 +635,8 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-fields .office-replay-key-filter{display:flex;flex-direction:row;align-items:center;gap:8px;grid-column:1/-1}.office-fields .office-replay-key-filter input{width:auto;min-height:auto;margin:0}
 
 .office-activation-card{padding:18px;border:1px solid var(--office-border,#d7e0d5);border-radius:12px;background:#fff}.office-activation-card p{font-size:13px;line-height:1.7}.office-activation-card select{max-width:100%;margin-right:10px}.office-activation-card details{margin-top:12px}.office-activation-card details p{overflow-wrap:anywhere}
+
+.office-character-card .office-role-connection{display:block;font-size:12px;line-height:1.6;color:#315c4c;overflow-wrap:anywhere;}
+.office-role-current{padding:16px;margin-bottom:20px;background:#eef4ed;border:1px solid #dce6d8;border-radius:12px;}
+.office-role-current h3{margin:0 0 8px;font-size:14px;}.office-role-current p{font-size:12px;line-height:1.7;color:#67766c;}
+.office-role-dialog select{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #dce3da;border-radius:9px;background:white;color:#263a36;font:14px/1.8 system-ui,sans-serif;}

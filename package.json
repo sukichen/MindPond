@@ -80,22 +80,23 @@
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
     "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection && npm run verify:office-collaboration",
     "verify:office-deletion": "tsx scripts/verify-office-deletion.ts",
-    "verify:roles": "npm run verify:office-model-migration && tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts",
+    "verify:roles": "npm run verify:office-model-migration && tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts && tsx scripts/verify-role-connection-switch.ts",
     "verify:office-building": "tsx scripts/verify-office-building.ts",
     "verify:office-replay": "tsx scripts/verify-office-replay.ts && node scripts/verify-office-replay-ui.mjs",
     "verify:office-markdown": "node scripts/verify-office-markdown.mjs",
     "verify:office-message-cycle": "tsx scripts/verify-office-message-cycle.ts",
     "verify:office-connection": "tsx scripts/verify-office-connection.ts",
     "eval:office-collaboration": "tsx scripts/eval-office-collaboration.ts",
-    "verify:office-collaboration": "tsx scripts/verify-office-collaboration.ts && tsx scripts/verify-office-evaluation.ts && tsx scripts/verify-role-memory.ts",
+    "verify:office-collaboration": "tsx scripts/verify-office-collaboration.ts && tsx scripts/verify-office-evaluation.ts && npm run verify:role-memory",
     "eval:office-judge": "tsx scripts/judge-office-collaboration.ts",
     "verify:office-native-host": "tsx scripts/verify-office-native-host.ts",
-    "verify:role-memory": "tsx scripts/verify-role-memory.ts",
+    "verify:role-memory": "tsx scripts/verify-role-memory.ts && npm run verify:office-memory",
     "verify:opencode-role-session": "tsx scripts/verify-opencode-role-session.ts",
     "verify:production-role-memory": "tsx scripts/verify-production-role-memory.ts",
     "verify:memory-ui": "node scripts/verify-memory-ui.mjs",
     "verify:codex-role-session": "tsx scripts/verify-codex-role-session.ts",
-    "verify:office-model-migration": "tsx scripts/verify-office-model-migration.ts"
+    "verify:office-model-migration": "tsx scripts/verify-office-model-migration.ts",
+    "verify:office-memory": "tsx scripts/verify-office-memory.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",
@@ -192,7 +193,11 @@
     "web/guide/19-memory-assign.jpg",
     "web/guide/20-role-activation.jpg",
     "web/guide/21-role-connection.jpg",
-    "docs/role-memory.md"
+    "docs/role-memory.md",
+    "web/guide/22-role-switch.jpg",
+    "web/guide/23-office-memory.jpg",
+    "web/guide/24-office-memory-policy.jpg",
+    "web/guide/25-role-memory-copy.jpg"
   ],
   "license": "MIT",
   "repository": {

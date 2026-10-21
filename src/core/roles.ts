@@ -26,7 +26,7 @@ export class RoleStore {
   constructor(private db: Database, private write: <T>(fn: () => Promise<T>) => Promise<T>, private offices: OfficeStore, private clock: () => number = Date.now) {}
   async init() {
     await this.db.exec(`
-      CREATE TABLE IF NOT EXISTS character_roles(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,name TEXT NOT NULL,introduction TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,primary_seat TEXT,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS character_roles(id TEXT PRIMARY KEY,principal TEXT NOT NULL,name TEXT NOT NULL,introduction TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,primary_seat TEXT,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS role_applications(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL,mode TEXT NOT NULL,name TEXT NOT NULL,introduction TEXT NOT NULL,reason TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,role_id TEXT,created_at INTEGER NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS role_application_pending ON role_applications(principal,connector_id,runtime_id) WHERE state='pending';
       CREATE TABLE IF NOT EXISTS role_bindings(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL,role_id TEXT NOT NULL REFERENCES character_roles(id),epoch INTEGER NOT NULL,state TEXT NOT NULL,last_seen INTEGER NOT NULL,UNIQUE(principal,connector_id,runtime_id));
@@ -41,6 +41,9 @@ export class RoleStore {
       CREATE TABLE IF NOT EXISTS role_connection_requests(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL);
     `);
     await this.write(async()=>{
+      const roleColumns=await this.db.all<Row[]>('PRAGMA table_info(character_roles)');
+      if(roleColumns.some(c=>c.name==='connector_id'))await this.db.exec('ALTER TABLE character_roles DROP COLUMN connector_id');
+      await this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS role_one_active_binding ON role_bindings(role_id) WHERE state='active'");
       const columns=await this.db.all<Row[]>('PRAGMA table_info(role_messages)');
       if(!columns.some(c=>c.name==='reply_to'))await this.db.exec('ALTER TABLE role_messages ADD COLUMN reply_to TEXT');
       if(!columns.some(c=>c.name==='metadata'))await this.db.exec("ALTER TABLE role_messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
@@ -81,11 +84,15 @@ export class RoleStore {
     if (!(await this.offices.agentAuthority(a))) fail('Connector or role binding is no longer authorized', 'scope_denied');
     const b = await this.db.get<Row>('SELECT b.*,r.name,r.introduction,r.state role_state,r.revision profile_revision,r.primary_seat FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.principal=? AND b.connector_id=? AND b.runtime_id=?', [a.principal, a.agentId, a.runtimeId]);
     if (!b) { if (required) fail('No approved character for this session; use role_application','invalid_input'); return null; }
+    if(b.state!=='active'&&!required&&a.roleId===undefined&&a.roleBindingId===undefined&&a.roleBindingEpoch===undefined)return null;
     if (b.state !== 'active' || b.role_state !== 'active') fail('Character or session binding was disabled by the user', 'scope_denied');
     if ((a.roleId !== undefined && a.roleId !== b.role_id) ||
         (a.roleBindingId !== undefined && a.roleBindingId !== b.id) ||
         (a.roleBindingEpoch !== undefined && a.roleBindingEpoch !== b.epoch)) fail('Character binding changed; refresh identity', 'scope_denied');
-    if(this.clock()-b.last_seen>60000)await this.db.run('UPDATE role_bindings SET last_seen=? WHERE id=?',[this.clock(),b.id]);
+    if(this.clock()-b.last_seen>60000)await this.write(async()=>{
+      const changed=await this.db.run("UPDATE role_bindings SET last_seen=? WHERE id=? AND epoch=? AND state='active'",[this.clock(),b.id,b.epoch]);
+      if(changed.changes)await this.event(b.role_id,'connection_observed',{bindingId:b.id});
+    });
     return b;
   }
   private async badge(a: TrustedCallContext, b: Row) {
@@ -108,18 +115,30 @@ export class RoleStore {
     const request=await this.db.get<Row>('SELECT * FROM role_connection_requests WHERE id=? AND last_seen>?',[i.requestId,this.clock()-86400000]);
     if(!request)fail('Connection activation request expired or missing','not_found');
     const role=await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'",[i.roleId]);
-    if(!role||role.principal!==request.principal||role.connector_id!==request.connector_id)fail('Choose an active role belonging to this authenticated host','invalid_input');
+    if(!role||role.principal!==request.principal)fail('Choose an active role belonging to this human account','invalid_input');
     if(role.revision!==i.expectedRevision)fail('Role changed; refresh before activating','stale_version');
-    await this.db.run("UPDATE role_bindings SET state='revoked',epoch=epoch+1 WHERE role_id=?",[role.id]);
+    if(!await this.offices.agentAuthority({v:1,principal:request.principal,agentId:request.connector_id,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}))fail('Target host connection is disabled or unavailable','scope_denied');
+    const blocked=await this.db.get<Row>(`SELECT p.title FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id JOIN offices o ON o.id=s.office_id
+      JOIN office_project_links l ON l.office_id=o.id JOIN office_projects p ON p.id=l.project_id
+      WHERE rs.role_id=? AND s.enabled=1 AND o.state IN ('active','paused') AND p.enabled=1
+      AND NOT EXISTS(SELECT 1 FROM json_each(p.members) WHERE value=?) LIMIT 1`,[role.id,request.connector_id]);
+    if(blocked)fail('目标连接未获项目「'+blocked.title+'」授权，请先在项目设置中允许该连接，再切换角色。','scope_denied');
     const old=await this.db.get<Row>('SELECT * FROM role_bindings WHERE principal=? AND connector_id=? AND runtime_id=?',[request.principal,request.connector_id,request.runtime_id]);
-    if(old&&old.role_id!==role.id)fail('This session already belongs to another role','invalid_input');
-    if(old)await this.db.run("UPDATE role_bindings SET state='active',epoch=epoch+1,last_seen=? WHERE id=?",[this.clock(),old.id]);
+    if(old&&old.state==='active'&&old.role_id!==role.id)fail('This session already belongs to another role','invalid_input');
+    const previous=await this.db.get<Row>("SELECT id,connector_id FROM role_bindings WHERE role_id=? AND state='active'",[role.id]);
+    await this.fenceRole(role.id);
+    await this.db.run("UPDATE role_bindings SET state='revoked',epoch=epoch+1 WHERE role_id=?",[role.id]);
+    // A downloaded bearer without native chat metadata must not retain access
+    // after the user moves the role to a different chat or harness.
+    await this.db.run("UPDATE memory_role_credentials SET state='revoked' WHERE role_id=? AND state='active'",[role.id]);
+    await this.db.run('UPDATE office_seats SET agent_id=?,revision=revision+1 WHERE id IN (SELECT seat_id FROM role_seats WHERE role_id=?)',[request.connector_id,role.id]);
+    if(old)await this.db.run("UPDATE role_bindings SET role_id=?,state='active',epoch=epoch+1,last_seen=? WHERE id=?",[role.id,this.clock(),old.id]);
     else await this.db.run("INSERT INTO role_bindings VALUES(?,?,?,?,?,1,'active',?)",[randomUUID(),request.principal,request.connector_id,request.runtime_id,role.id,this.clock()]);
     await this.db.run('UPDATE character_roles SET revision=revision+1 WHERE id=?',[role.id]);
     await this.db.run("UPDATE role_applications SET state='cancelled',revision=revision+1 WHERE principal=? AND connector_id=? AND runtime_id=? AND state='pending'",[request.principal,request.connector_id,request.runtime_id]);
     await this.db.run('DELETE FROM role_connection_requests WHERE id=?',[request.id]);
     await this.db.run('DELETE FROM office_response_pages');
-    await this.event(role.id,'user_activated_connection',{requestId:i.requestId});return {roleId:role.id,activated:true};
+    await this.event(role.id,'user_activated_connection',{requestId:i.requestId,connectorId:request.connector_id,previousConnectorId:previous?.connector_id??null});return {roleId:role.id,activated:true,connectorId:request.connector_id};
   });}
   async application(i: Row, a?: TrustedCallContext) {
     const actor = this.actor(a);
@@ -152,7 +171,7 @@ export class RoleStore {
     const b = await this.binding(actor, false);
     if (!b) {
       const application = await this.db.get<Row>('SELECT id,name,introduction,state,revision,created_at FROM role_applications WHERE principal=? AND connector_id=? AND runtime_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [actor.principal, actor.agentId, actor.runtimeId]);
-      return { state: application?.state ?? 'unregistered', identity: null, application: application ?? null, instructions: ROLE_INSTRUCTIONS };
+      return { state: application?.state==='approved'?'unregistered':application?.state ?? 'unregistered', identity: null, application: application ?? null, instructions: ROLE_INSTRUCTIONS };
     }
     const officePage = await this.rooms({},actor);
     const contactPage = await this.contacts({}, actor);
@@ -197,16 +216,17 @@ export class RoleStore {
         await this.event(null, 'application_rejected', { applicationId: app.id });
         return { state: 'rejected' };
       }
-      const active = await this.db.get('SELECT 1 FROM role_bindings WHERE principal=? AND connector_id=? AND runtime_id=?', [app.principal, app.connector_id, app.runtime_id]);
+      const active = await this.db.get("SELECT 1 FROM role_bindings WHERE principal=? AND connector_id=? AND runtime_id=? AND state='active'", [app.principal, app.connector_id, app.runtime_id]);
       if (active) fail('Session already has a binding; explicit takeover is not supported by this action','invalid_input');
       if (!(await this.offices.agentAuthority({ v: 1, principal: app.principal, agentId: app.connector_id, issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER }))) fail('Connector disabled; do not approve until restored', 'scope_denied');
       const roleId = randomUUID(), bindingId = randomUUID();
-      await this.db.run("INSERT INTO character_roles VALUES(?,?,?,?,?,'active',1,NULL,?)", [roleId, app.principal, app.connector_id, i.name ?? app.name, i.introduction ?? app.introduction, this.clock()]);
-      await this.db.run("INSERT INTO role_bindings VALUES(?,?,?,?,?,1,'active',?)", [bindingId, app.principal, app.connector_id, app.runtime_id, roleId, this.clock()]);
+      await this.db.run("INSERT INTO character_roles(id,principal,name,introduction,state,revision,primary_seat,created_at) VALUES(?,?,?,?,'active',1,NULL,?)", [roleId, app.principal, i.name ?? app.name, i.introduction ?? app.introduction, this.clock()]);
+      await this.db.run("INSERT INTO role_bindings VALUES(?,?,?,?,?,1,'active',?) ON CONFLICT(principal,connector_id,runtime_id) DO UPDATE SET role_id=excluded.role_id,state='active',epoch=role_bindings.epoch+1,last_seen=excluded.last_seen", [bindingId, app.principal, app.connector_id, app.runtime_id, roleId, this.clock()]);
       await this.db.run('DELETE FROM role_connection_requests WHERE runtime_id=?',[app.runtime_id]);
       await this.db.run("UPDATE role_applications SET state='approved',revision=revision+1,role_id=? WHERE id=?", [roleId, app.id]);
       await this.event(roleId, 'approved', { applicationId: app.id, profileRevision: 1 });
-      return { state: 'approved', roleId, bindingId };
+      const bound=await this.db.get<Row>('SELECT id FROM role_bindings WHERE principal=? AND connector_id=? AND runtime_id=?',[app.principal,app.connector_id,app.runtime_id]);
+      return { state: 'approved', roleId, bindingId:bound!.id };
     });
   }
   async configure(i: Row, a?: TrustedCallContext) {
@@ -255,7 +275,13 @@ export class RoleStore {
     // Capture BEFORE reading rows: another process may commit while we read.
     // A stale snapshot then leaves a newer revision to fetch on the next poll.
     const revision=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM role_events'))!.n;
-    const roles = await this.db.all<Row[]>("SELECT r.*,b.id binding_id,b.epoch,b.last_seen FROM character_roles r LEFT JOIN role_bindings b ON b.id=(SELECT id FROM role_bindings WHERE role_id=r.id ORDER BY (state='active') DESC,last_seen DESC,id LIMIT 1) ORDER BY r.created_at,r.id LIMIT 500");
+    const rows = await this.db.all<Row[]>(`SELECT r.*,b.id binding_id,b.epoch,b.last_seen,b.connector_id,b.runtime_id,a.name connector_name,a.host,a.state host_state,
+      EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
+      FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
+      LEFT JOIN office_agents a ON a.id=b.connector_id ORDER BY r.created_at,r.id LIMIT 500`);
+    const roles=rows.map(({connector_id,connector_name,runtime_id,host,host_state,...role})=>({...role,connection:role.binding_id?{
+      connectorId:connector_id,name:connector_name??connector_id,host,hostState:host_state,chatRef:runtime_id,bindingId:role.binding_id,lastSeen:role.last_seen
+    }:null}));
     const pending = await this.db.all('SELECT id,principal,connector_id,mode,name,introduction,reason,state,revision,created_at FROM role_applications WHERE state=? ORDER BY created_at LIMIT 100', ['pending']);
     const mappings = await this.db.all('SELECT * FROM role_seats');
     const links = await this.db.all('SELECT sender,recipient FROM role_links ORDER BY sender,recipient');
@@ -278,10 +304,16 @@ export class RoleStore {
   async configureOffice(i: Row, a?: TrustedCallContext) {
     this.admin(a);
     return this.write(async () => {
+      if(!await this.db.get('SELECT 1 FROM offices WHERE id=?',[i.id])&&await this.db.get('SELECT 1 FROM memory_office_namespaces WHERE office_id=?',[i.id]))fail('This office ID belongs to retained knowledge from a deleted office. Create a new office ID.','invalid_input');
       for (const s of i.seats ?? []) {
         if(!s.roleId)fail('Choose an approved role for every office participant','invalid_input');
         const r = await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'", [s.roleId]);
-        if (!r || r.connector_id !== s.agentId) fail('Seat must use the approved character connector', 'invalid_input');
+        if(!r)fail('Choose an active approved character','invalid_input');
+        const connection=await this.db.get<Row>(`SELECT connector_id FROM role_bindings WHERE role_id=? AND state='active'`,[r.id]);
+        const assignment=connection??await this.db.get<Row>(`SELECT s.agent_id connector_id FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id WHERE rs.role_id=? ORDER BY s.enabled DESC,s.id LIMIT 1`,[r.id]);
+        if(!assignment)fail('Connect this role to a chat before arranging its office','invalid_input');
+        if(s.agentId!==undefined&&s.agentId!==assignment.connector_id)fail('Participant connection changed; reload the roles before saving','stale_version');
+        s.agentId=assignment.connector_id;
         if (i.seats.filter((x: Row) => x.roleId === s.roleId).length > 1) fail('One character has one duty per office', 'invalid_input');
       }
       const result = await this.offices.configureOffice(i, a);
