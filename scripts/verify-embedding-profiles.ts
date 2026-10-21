@@ -7,6 +7,7 @@ import {getEmbeddingService} from '../src/core/embedding.js';
 import {embeddingProfileSchema,embeddingRuntimeSchema,embeddingSpaceKey,retrievalConfigSchema} from '../src/core/embedding-profiles.js';
 import {ProfileVectorIndex} from '../src/core/profile-vector-index.js';
 import {LocalProfileEncoder,profileArtifactDigest} from '../src/core/profile-embedding.js';
+import {localInferenceStatus} from '../src/core/local-inference.js';
 import type {ProfileEncoder} from '../src/core/profile-embedding.js';
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-profiles-'));
 process.env.EMBEDDING_ZH_ENABLED='false';
@@ -109,11 +110,18 @@ console.log('PASS long-memory chunks cannot starve other owners in exact or HNSW
 const previousDir=process.env.EMBEDDING_MODEL_DIR;process.env.EMBEDDING_MODEL_DIR=path.join(dir,'missing');
 const unavailable=new LocalProfileEncoder(profile,{...runtime,device:'cuda',timeoutMs:15000});
 try{
- await assert.rejects(unavailable.encode('Public fixture','query'),/model_unavailable/);
- const status=unavailable.status();assert(status.attempts.some((attempt:any)=>attempt.device==='cuda'));assert(status.attempts.some((attempt:any)=>attempt.device==='cpu'));
- console.log('PASS worker failure is bounded; explicit CUDA and CPU fallback attempts are observable; no remote model download');
+ const inference=localInferenceStatus();
+ if(inference.enabled){
+  await assert.rejects(unavailable.encode('Public fixture','query'),/model_unavailable/);
+  const status=unavailable.status();assert(status.attempts.some((attempt:any)=>attempt.device==='cuda'));assert(status.attempts.some((attempt:any)=>attempt.device==='cpu'));
+  console.log('PASS worker failure is bounded; explicit CUDA and CPU fallback attempts are observable; no remote model download');
+ }else{
+  await assert.rejects(unavailable.encode('Public fixture','query'),new RegExp(inference.reason!));
+  assert.deepEqual(unavailable.status().attempts,[]);
+  console.log('PASS absent/disabled optional runtime fails before starting inference workers');
+ }
  const fakeModel=path.join(process.env.EMBEDDING_MODEL_DIR!,profile.model);await fs.mkdir(path.join(fakeModel,'onnx'),{recursive:true});await fs.writeFile(path.join(fakeModel,'onnx/model_quantized.onnx'),'public digest fixture, not executable');await fs.writeFile(path.join(fakeModel,'tokenizer.json'),'{}');
  const before=await profileArtifactDigest(profile);await fs.writeFile(path.join(fakeModel,'tokenizer.json'),'{"changed":true}');assert.notEqual(await profileArtifactDigest(profile),before);
- const changed=new LocalProfileEncoder(profile,runtime,'embedding',before);try{await assert.rejects(changed.encode('Public query','query'),/model_artifact_changed/);}finally{await changed.close();}
- console.log('PASS changed tokenizer/model artifact is rejected before loading or writing vectors');
+ if(inference.enabled){const changed=new LocalProfileEncoder(profile,runtime,'embedding',before);try{await assert.rejects(changed.encode('Public query','query'),/model_artifact_changed/);}finally{await changed.close();}}
+ console.log('PASS tokenizer/model digest changes are detected; installed workers reject stale artifacts before writing vectors');
 }finally{await unavailable.close();if(previousDir===undefined)delete process.env.EMBEDDING_MODEL_DIR;else process.env.EMBEDDING_MODEL_DIR=previousDir;await fs.rm(dir,{recursive:true,force:true});}

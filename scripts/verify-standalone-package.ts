@@ -14,7 +14,7 @@ const exec = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-package-'));
 const children: ChildProcess[] = [];
-const env = { ...process.env, MEMORY_DB_PATH: '', NODE_PATH: '', MINDPOND_DATA_DIR: path.join(temp, 'data'),
+const env = { ...process.env, MEMORY_DB_PATH: '', NODE_PATH: '', MINDPOND_LOCAL_INFERENCE_ROOT:'',MINDPOND_EMBEDDING_MODE:'auto', MINDPOND_DATA_DIR: path.join(temp, 'data'),
   npm_config_registry: 'https://registry.npmjs.org',
   ONNXRUNTIME_NODE_INSTALL: process.env.ONNXRUNTIME_NODE_INSTALL ?? 'skip',
   EMBEDDING_MODEL_DIR: path.join(temp, 'missing-models'), EMBEDDING_ZH_ENABLED: 'false',
@@ -42,10 +42,12 @@ try {
   // keeps patched versions in the installed consumer, not just in this repo.
   const installedTree=JSON.parse((await exec('npm',['ls','--all','--json'],{cwd:temp,env,maxBuffer:8_000_000})).stdout);
   const versions:Record<string,string[]>= {};
-  const visit=(node:any)=>{for(const [name,child] of Object.entries(node.dependencies??{}) as Array<[string,any]>){(versions[name]??=[]).push(child.version);visit(child);}};
+  const visit=(node:any)=>{for(const [name,child] of Object.entries(node.dependencies??{}) as Array<[string,any]>){if(child.version)(versions[name]??=[]).push(child.version);visit(child);}};
   visit(installedTree);
+  const policy=JSON.parse(await fs.readFile(path.join(root,'licenses/policy.json'),'utf8'));
+  for(const name of Object.keys(versions))assert(!policy.baseForbiddenPackagePrefixes.some((prefix:string)=>name.startsWith(prefix)),'Default installation pulled heavyweight optional inference: '+name);
   assert(!versions.protobufjs?.some(v=>Number(v.split('.')[0])<7),'Consumer resolved vulnerable protobufjs v6');
-  assert(versions.sharp?.every(v=>Number(v.split('.')[1])>=35),'Consumer resolved legacy sharp');
+  assert(!versions.sharp||versions.sharp.every(v=>Number(v.split('.')[1])>=35),'Consumer resolved legacy sharp');
   assert(versions.tar?.every(v=>Number(v.split('.')[0])>=7),'Consumer resolved vulnerable tar v6');
   let consumerAudit:any;
   for(let attempt=0;attempt<3;attempt++){
@@ -79,7 +81,12 @@ try {
   }finally{await remoteClient.close();}
   console.log('PASS installed account grant, central HTTP executable and separate stdio remote executable');
   const pkg = JSON.parse(await fs.readFile(path.join(installed, 'package.json'), 'utf8'));
-  assert.equal(pkg.dependencies.zod, '4.5.4');
+  assert.equal(pkg.dependencies.zod, '4.5.4');assert(!pkg.dependencies['@huggingface/transformers']);assert(pkg.peerDependenciesMeta['@huggingface/transformers'].optional);
+  const {stdout:deviceOutput}=await exec(path.join(temp,'node_modules/.bin/mindpond-models'),['devices'],{cwd:temp,env,timeout:15000});
+  const devices=JSON.parse(deviceOutput);assert.equal(devices.localInference.installed,false);assert.deepEqual(devices.backends,[]);
+  async function installedBytes(directory:string):Promise<number>{let sum=0;for(const entry of await fs.readdir(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())sum+=await installedBytes(file);else if(entry.isFile())sum+=(await fs.stat(file)).size;}return sum;}
+  console.log(JSON.stringify({baseInstalledPackages:Object.keys(versions).length,nodeModulesBytes:await installedBytes(path.join(temp,'node_modules')),scope:'clean default runtime on this platform; excludes Node.js, model files and development tools'}));
+  console.log('PASS base consumer omits Transformers/ONNX/Sharp/libvips; absent optional backend is explicit, collaboration and text search work');
   for (const format of ['json', 'text']) {
     const modelStatusOutput=(await exec(path.join(temp,'node_modules/.bin/mindpond-models'),['status'],{
       cwd:temp,env:{...env,LOG_FORMAT:format,MINDPOND_LOG_STDERR:'0'},timeout:15000,
@@ -136,7 +143,9 @@ try {
     import assert from 'node:assert/strict';
     import { Client } from '@modelcontextprotocol/sdk/client/index.js';
     import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-    import { MindPond } from 'mindpond';
+    import { MindPond, retrievalStatus } from 'mindpond';
+    assert.equal(retrievalStatus().primary.reason,'local_runtime_not_installed');
+    assert.equal(retrievalStatus().localInference.installed,false);
     const optional = new MindPond({dbPath:${JSON.stringify(path.join(temp,'data','optional-profile.db'))},retrieval:{profiles:[{profile:{id:'fixture',label:'Public fixture',model:'fixture/model',dimensions:3}}]},retrievalDependencies:{artifactDigest:async()=> 'public-fixture-digest',encoder:()=>({encode:async()=>({vectors:[[1,0,0]],device:'cpu'}),close:async()=>{},status:()=>({actualDevice:'cpu'})})}});
     await optional.init();try{await optional.save('Public optional model fallback fixture');await optional.buildRetrievalProfile('fixture');const recalled=await optional.recall('Public fixture',{retrievalProfile:'fixture',vectorAlgorithm:'hnsw'});assert.equal(recalled.retrieval.profile.algorithm.actual,'exact');assert.equal(recalled.retrieval.profile.algorithm.fallbackReason,'hnsw_unavailable');assert(recalled.results.length>0);}finally{await optional.close();}
     console.log('PASS installed model profile works without the optional native HNSW plugin');

@@ -14,7 +14,10 @@ jobs:
           cache: npm
           cache-dependency-path: npm-shrinkwrap.json
       - run: npm ci
+      - run: npm ci --prefix examples/local-inference
       - run: npm run check
+        env:
+          MINDPOND_LOCAL_INFERENCE_ROOT: ${{ github.workspace }}/examples/local-inference
       - run: npm run verify:standalone-package
       - run: npm audit --omit=dev --audit-level=high
   client-contracts:

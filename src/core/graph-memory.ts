@@ -4552,7 +4552,7 @@ export class GraphMemory {
       catch(error){states.push({channel,status:'failed',code:'retrieval_channel_failed'});logger.debug(`Retrieval channel ${channel} failed`,getErrorMessage(error));return [];}
     };
     const [main,text,zh]=await Promise.all([
-      run('body-vector',true,()=>selection.id!=='legacy'||!!query.embedding?.length || getEmbeddingService().status().state==='ready',async()=>{
+      run('body-vector',getEmbeddingService().status().state!=='disabled'||!!query.embedding?.length,()=>selection.id!=='legacy'||!!query.embedding?.length || getEmbeddingService().status().state==='ready',async()=>{
         if(selection.id==='legacy'){
           const hits=await this.annSearch(queryText,query,limit);
           if(query.vectorAlgorithm==='hnsw'){

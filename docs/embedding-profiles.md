@@ -1,5 +1,7 @@
 # 可选向量模型、设备与索引
 
+本地推理运行库是明确选装项，基础安装不再拉取 Transformers/ONNX/Sharp。安装独立锁定目录并设置 `MINDPOND_LOCAL_INFERENCE_ROOT`，步骤见[本地运行库](../examples/local-inference/README.md)。`MINDPOND_EMBEDDING_MODE=text` 明确停用本地向量，数据保留但语义召回能力改变。
+
 MindPond 不拥有 LLM 凭据。本地 ONNX embedding / cross-encoder 只是检索组件；记忆判断、整理与关联仍由宿主执行。不设置新配置时继续使用现有 MiniLM 和可选中文通道，默认 CPU、精确余弦检索。
 
 配置把三个选择分开：

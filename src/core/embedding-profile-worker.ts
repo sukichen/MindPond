@@ -1,4 +1,5 @@
 /** Optional model inference is isolated from HTTP/MCP's event loop. No remote downloads. */
+import {loadLocalTransformers,loadOnnxRuntime} from './local-inference.js';
 import { parentPort,workerData } from 'node:worker_threads';
 import type { EmbeddingProfile,EmbeddingRuntime } from './embedding-profiles.js';
 import {profileArtifactDigest} from './profile-embedding.js';
@@ -8,10 +9,10 @@ const attempts:Array<{device:string;code:string}>=[];
 async function load(){
   if(pipe)return pipe;
   if(workerData.expectedArtifactDigest&&await profileArtifactDigest(profile)!==workerData.expectedArtifactDigest)throw new Error('model_artifact_changed');
-  const {pipeline,env}=await import('@huggingface/transformers');
+  const {pipeline,env}=await loadLocalTransformers();
   env.localModelPath=modelsDir;env.allowLocalModels=true;env.allowRemoteModels=false;
-  const ort=await import('onnxruntime-node');
-  const bundled=ort.listSupportedBackends().filter(b=>b.bundled).map(b=>b.name);
+  const ort=await loadOnnxRuntime();
+  const bundled=ort.listSupportedBackends().filter((b:any)=>b.bundled).map((b:any)=>b.name);
   const devices=runtime.device==='auto'?['cuda','webgpu','cpu'].filter(d=>bundled.includes(d)):[runtime.device];
   if(runtime.fallbackToCpu&&!devices.includes('cpu'))devices.push('cpu');
   for(const device of devices){

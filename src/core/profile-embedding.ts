@@ -1,3 +1,4 @@
+import {localInferenceStatus} from './local-inference.js';
 import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { createReadStream,existsSync } from 'node:fs';
@@ -39,6 +40,7 @@ export class LocalProfileEncoder implements ProfileEncoder {
   }
   async rerank(query:string,documents:string[]):Promise<ProfileEmbeddingResult>{return this.request(query,'rerank',documents);}
   private async request(text:string,role:EmbeddingRole|'rerank',documents?:string[]):Promise<ProfileEmbeddingResult>{
+    const state=localInferenceStatus();if(!state.enabled){this.failure=state.reason;throw new Error(state.reason);}
     if(this.pending.size>=32)throw new Error('embedding_queue_full');
     if(!this.worker){
       let url=new URL('./embedding-profile-worker.js',import.meta.url);

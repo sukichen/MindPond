@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Central network MCP process; does not expose the operator workbench/REST API. */
 import 'dotenv/config';
+import {checkNetworkCredential} from './integrations/network-auth-check.js';
 import { parseArgs } from 'node:util';
 import fs from 'node:fs/promises';
 import { createServer as createHttpsServer } from 'node:https';
@@ -37,7 +38,11 @@ try {
   });
   const config = values.config ?? process.env.MINDPOND_MCP_ACCOUNTS;
   if (!config) throw new Error('--config or MINDPOND_MCP_ACCOUNTS is required');
-  if (command === 'grant') {
+  if(command==='check-auth'){
+    if(!values['token-file']||!values.db)throw Error('check-auth requires --token-file and --db');
+    const report=await checkNetworkCredential({configFile:config,tokenFile:values['token-file'],dbPath:values.db});
+    console.log(JSON.stringify(report,null,2));if(!report.ok)process.exitCode=2;
+  } else if (command === 'grant') {
     if (!values.principal || !values['token-file'])
       throw new Error('grant requires --principal and --token-file');
     if (values.assignments && values['unrestricted-assignments'])
@@ -176,7 +181,7 @@ try {
     process.once('SIGINT', () => {
       void stop();
     });
-  } else throw new Error('Use serve, grant or workspace');
+  } else throw new Error('Use serve, grant, check-auth or workspace');
 } catch {
   await startupGraph?.close().catch(() => {});
   console.error(

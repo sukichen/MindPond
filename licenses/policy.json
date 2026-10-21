@@ -1,0 +1,16 @@
+{
+  "schema": "mindpond.dependency-policy.v1",
+  "baseAllowedLicenseExpressions": [
+    "MIT", "ISC", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "0BSD",
+    "BlueOak-1.0.0", "(MIT OR WTFPL)", "(Apache-2.0 OR MIT)",
+    "(BSD-2-Clause OR MIT OR Apache-2.0)", "(MIT OR CC0-1.0)"
+  ],
+  "baseForbiddenPackagePrefixes": [
+    "@huggingface/", "onnxruntime-", "sharp", "@img/"
+  ],
+  "notes": [
+    "Exact reviewed SPDX expressions for the base runtime, not a general legal opinion or a zero-risk warranty.",
+    "Optional local inference is explicitly installed by the operator and has a separate transitive binary/model license scope.",
+    "The optional runtime has an independent lock under examples/local-inference; neither source nor base consumer installation installs it."
+  ]
+}

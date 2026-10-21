@@ -1,0 +1,12 @@
+{
+  "name": "mindpond-local-inference-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.0"
+  }
+}

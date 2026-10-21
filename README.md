@@ -14,6 +14,8 @@ Office MCP 与 Memory MCP 分开配置。OpenCode 多聊天通过宿主会话插
 
 已有实例升级，尤其是离线生产环境，先阅读[升级历史与离线迁移手册](docs/history.md)。其中记录精确依赖变化、完整运行目录交付、数据库迁移及回退步骤。
 
+生产默认安装不带本地模型运行库。基础/选装能力、许可证范围及认证排障见[生产依赖说明](docs/production-dependencies.md)。
+
 ## 快速开始
 
 ```bash

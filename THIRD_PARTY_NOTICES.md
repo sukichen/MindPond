@@ -2,7 +2,7 @@
 
 MindPond's project license is MIT. It does not replace the licenses of dependencies, copied notices, model weights, tokenizers or other third-party materials.
 
-The locked dependency declarations are in [licenses/inventory.json](licenses/inventory.json). Full license and notice files collected from installed packages are in [licenses/dependencies.txt](licenses/dependencies.txt), also served by the HTTP UI at `/licenses/third-party.txt`. Optional platform entries can be absent from the installed package set; the original package distribution remains authoritative. Regenerate and review these files when dependencies change.
+The locked dependency declarations are in [licenses/inventory.json](licenses/inventory.json). The `optionalLocalInference` section records the separately locked local model runtime; it is not installed by the base package. Full license and notice files collected from installed base packages are in [licenses/dependencies.txt](licenses/dependencies.txt), also served by the HTTP UI at `/licenses/third-party.txt`. Optional platform entries can be absent from the installed package set; the original package distribution remains authoritative. Regenerate and review these files when dependencies change.
 
 ## Browser distribution
 
@@ -12,7 +12,7 @@ The collaboration UI also serves the unchanged Marked npm UMD bundle (MIT); its 
 
 ## Native dependencies and model files
 
-Transformers.js is Apache-2.0; its sharp/libvips dependency includes LGPL-licensed platform binaries. The inventory records the license of each concrete package. This source repository and npm package do not contain node_modules or model weights. A Docker image, offline distribution or executable containing those binaries needs a separate review of the actual components, accompanying notices, corresponding source and library modification/replacement requirements. Merely linking an upstream repository is not a substitute for every distribution obligation.
+The explicitly installed optional Transformers.js runtime is Apache-2.0; its sharp/libvips dependency includes LGPL-licensed platform binaries. The inventory records the license of each concrete package. This source repository and npm package do not contain node_modules or model weights. A Docker image, offline distribution or executable containing those binaries needs a separate review of the actual components, accompanying notices, corresponding source and library modification/replacement requirements. Merely linking an upstream repository is not a substitute for every distribution obligation.
 
 BGE-small-zh-v1.5's original model is MIT. all-MiniLM-L6-v2 and its Xenova ONNX distribution declare Apache-2.0. Xenova's BGE conversion points to the original model but has incomplete separate license metadata; verify the converted artifact's provenance before redistributing it. Custom profiles must respect the selected model's own license. See [BGE](https://huggingface.co/BAAI/bge-small-zh-v1.5), [MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) and [Xenova BGE](https://huggingface.co/Xenova/bge-small-zh-v1.5).
 

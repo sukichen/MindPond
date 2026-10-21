@@ -207,9 +207,10 @@ try {
     assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);
     const guide=await fetch(url+'/collaboration/guide');assert.equal(guide.status,200);
     const text=await guide.text();for(const marker of ['五步','复制给小栗','复制给小麦','永久删除角色','永久删除办公室','常见问题'])assert(text.includes(marker));
-    assert.equal((text.match(/data-zoom /g)??[]).length,22,'screenshot walkthrough includes evidence, controls, replay filters and live counts');
+    assert.equal((text.match(/data-zoom /g)??[]).length,26,'screenshot walkthrough includes current role switching and layered memory instructions');
     assert(text.includes('shotDialog'));
     for(const asset of ['office-guide.css','office-guide.js','guide/01-login.jpg','guide/09-office-delete.jpg','guide/11-replay.jpg','guide/12-message-cycle.jpg','guide/13-connection-delete.jpg','guide/14-experience.jpg','guide/15-controls.jpg','guide/16-replay-filters.jpg','guide/17-live-counts.jpg','guide/18-memory-search.jpg','guide/19-memory-assign.jpg','guide/20-role-activation.jpg','guide/21-role-connection.jpg'])assert.equal((await fetch(url+'/assets/'+asset)).status,200);
+    for(const asset of ['22-role-switch','23-office-memory','24-office-memory-policy','25-role-memory-copy'])assert.equal((await fetch(url+'/assets/guide/'+asset+'.jpg')).status,200);
     console.log('PASS archived offices can be deleted; independent beginner guide and assets are publicly readable');
   }
 } finally {

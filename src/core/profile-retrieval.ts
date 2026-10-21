@@ -1,4 +1,5 @@
 /** Additive, versioned vector spaces. Legacy vectors remain a rollback target. */
+import {localInferenceStatus,loadOnnxRuntime} from './local-inference.js';
 import type { Database } from 'sqlite';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -118,12 +119,13 @@ export class ProfileRetrieval {
     }
     return {activeProfile:active?.value==='legacy'?'legacy':(profiles.find(p=>p.id===active?.id&&p.spaceKey===active?.value)??profiles.find(p=>p.spaceKey===active?.value))?.id??'legacy',preferredProfile:this.config.defaultProfile,
       profiles:[{id:'legacy',label:'Existing MiniLM + optional BGE mean-pooling',configured:true,compatibility:true},...profiles],
-      presets:EMBEDDING_PRESETS,automaticModelDownload:false,
+      presets:EMBEDDING_PRESETS,automaticModelDownload:false,localInference:localInferenceStatus(),
       rerankers:this.config.rerankers.map(r=>({...r.profile,requestedDevice:r.runtime.device,loaded:this.reranker?.id===r.profile.id})),
       guidance:'Choose a configured complete profile for memory_search/memory_brief. An operator builds/activates profiles; model text cannot install models or choose file paths. Profile changes preserve original memories and legacy vectors.'};
   }
   async devices(){
-    const ort=await import('onnxruntime-node');
+    const localInference=localInferenceStatus();if(!localInference.enabled)return {backends:[],nvidia:[],defaultDevice:'cpu',localInference,note:'Local inference is disabled or not installed. Text search and office collaboration remain available.'};
+    const ort=await loadOnnxRuntime();
     let nvidia:Array<{name:string;memoryMiB:number}>=[];
     try{
       const {stdout}=await promisify(execFile)('nvidia-smi',['--query-gpu=name,memory.total','--format=csv,noheader,nounits'],{timeout:3000});

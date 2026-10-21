@@ -1,5 +1,5 @@
 /**
- * Embedding Service (ZH) — 轻量中文向量模型（旁路通道，纯加法设计）
+ * Embedding Service (ZH) — 可选中文向量模型（旁路通道，纯加法设计）
  *
  * 模型: Xenova/bge-small-zh-v1.5（512 维，~24MB 量化 ONNX，BertModel）
  * 与主 embedding.ts（all-MiniLM-L6-v2, 384 维英文模型）完全并行：
@@ -18,6 +18,7 @@
  * env 读取全部懒求值（避免模块级 const + loadDotEnv 懒加载的静默 fallback 陷阱）。
  */
 
+import {loadLocalTransformers,localInferenceStatus} from './local-inference.js';
 import path from 'node:path';
 import { defaultModelDirectory } from './runtime-paths.js';
 import { fileURLToPath } from 'node:url';
@@ -60,7 +61,7 @@ let zhPipelinePromise: Promise<any> | null = null;
 
 async function getZhPipeline(model: string) {
   if (!zhPipelinePromise) {
-    zhPipelinePromise = import('@huggingface/transformers').then(({ pipeline, env }) => {
+    zhPipelinePromise = loadLocalTransformers().then(({ pipeline, env }) => {
       env.localModelPath = MODELS_DIR;
       env.allowLocalModels = true;
       env.allowRemoteModels = false;
@@ -75,7 +76,7 @@ async function getZhPipeline(model: string) {
 
 export class ZhEmbeddingService {
   status() {
-    return { model: this.modelName, state: this.ready ? 'ready' : this.loadFailed ? 'unavailable' : 'uninitialized' };
+    const runtime=localInferenceStatus();return {model:this.modelName,state:runtime.mode==='text'?'disabled':!runtime.installed?'unavailable':this.ready?'ready':this.loadFailed?'unavailable':'uninitialized',...(runtime.reason?{reason:runtime.reason}: {})};
   }
   private modelName: string;
   private ready = false;
@@ -105,6 +106,7 @@ export class ZhEmbeddingService {
   }
 
   private async ensureLoaded(): Promise<boolean> {
+    if(!localInferenceStatus().enabled)return false;
     if (this.ready) return true;
     if (this.loadFailed) return false;
     try {
@@ -122,6 +124,7 @@ export class ZhEmbeddingService {
 
   /** 生成中文向量；模型不可用/推理失败返回 []，不抛异常 */
   async generateEmbedding(text: string): Promise<number[]> {
+    if(!localInferenceStatus().enabled)return [];
     if (!text) return [];
     const cached = this.cacheGet(text);
     if (cached) return cached;

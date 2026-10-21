@@ -1,5 +1,5 @@
 /**
- * Embedding Service — 本地轻量 ONNX 模型（@huggingface/transformers）
+ * Embedding Service — 可选本地 ONNX 模型（@huggingface/transformers）
  *
  * 使用 all-MiniLM-L6-v2 模型（384维，~23MB），进程内运行，无需外部服务。
  * 从配置的本地模型目录加载；不自动下载。缺失时降级为文本检索。
@@ -13,6 +13,7 @@
  * 注意：绝不能返回零向量——它 length>0 会骗过检查入库，污染向量索引。
  */
 
+import {loadLocalTransformers,localInferenceStatus} from './local-inference.js';
 import path from 'node:path';
 import { defaultModelDirectory } from './runtime-paths.js';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +42,7 @@ let pipelinePromise: Promise<any> | null = null;
 
 async function getPipeline(model: string) {
   if (!pipelinePromise) {
-    pipelinePromise = import('@huggingface/transformers').then(({ pipeline, env }) => {
+    pipelinePromise = loadLocalTransformers().then(({ pipeline, env }) => {
       // 网络受限：只从本地 models/ 目录加载，禁止远程下载
       env.localModelPath = MODELS_DIR;
       env.allowLocalModels = true;
@@ -57,7 +58,7 @@ async function getPipeline(model: string) {
 
 export class EmbeddingService {
   status() {
-    return { model: this.modelName, state: this.ready ? 'ready' : this.loadFailed ? 'unavailable' : 'uninitialized' };
+    const runtime=localInferenceStatus();return {model:this.modelName,state:runtime.mode==='text'?'disabled':!runtime.installed?'unavailable':this.ready?'ready':this.loadFailed?'unavailable':'uninitialized',...(runtime.reason?{reason:runtime.reason}: {})};
   }
   private modelName: string;
   private dimensions: number;
@@ -99,6 +100,7 @@ export class EmbeddingService {
    * 确保模型已加载
    */
   private async ensureLoaded(): Promise<boolean> {
+    if(!localInferenceStatus().enabled)return false;
     if (this.ready) return true;
     if (this.loadFailed) return false;
 
@@ -121,6 +123,7 @@ export class EmbeddingService {
    * 模型不可用/推理失败时返回空数组 []，不抛异常。
    */
   async generateEmbedding(text: string): Promise<number[]> {
+    if(!localInferenceStatus().enabled)return [];
     const cached = this.cacheGet(text);
     if (cached) return cached;
 
