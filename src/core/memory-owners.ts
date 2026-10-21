@@ -113,6 +113,8 @@ export class MemoryOwners {
         return {...rest,owner,...(owner.kind==='office'?{officePolicy:await this.policy(node.id)}:{}),...(provenance?{provenance}:{})};
     }
     async roles() { return this.db.all(`SELECT r.id,r.name,r.state,b.connector_id connectorId,a.name connectorName,a.host,a.state hostState,
+      (SELECT COUNT(*) FROM nodes n JOIN memory_role_namespaces ns ON ns.domain_id=n.domain_id
+        WHERE ns.role_id=r.id AND n.domain_kind='personal') memoryCount,
       EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
       FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
       LEFT JOIN office_agents a ON a.id=b.connector_id ORDER BY r.name,r.id`); }

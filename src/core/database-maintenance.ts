@@ -12,7 +12,14 @@ export async function auditDatabase(db:Database) {
     JOIN memory_memberships mb ON mb.id=a.member_b_id JOIN nodes nb ON nb.id=mb.memory_id
     WHERE na.domain_kind!=nb.domain_kind OR na.domain_id!=nb.domain_id`);
   const healthy=integrity.length===1&&Object.values(integrity[0])[0]==='ok'&&foreignKeys.length===0&&foreignAssociations.length===0;
-  return {healthy,integrity,foreignKeys,dangling,foreignAssociations};
+  const duplicateRoleNames=await db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='character_roles'")
+    ?await db.all(`SELECT r.id,r.name,r.principal,r.state,r.primary_seat primarySeat,
+      (SELECT kind FROM role_events e WHERE e.role_id=r.id AND e.kind IN ('approved','role_migrated') ORDER BY seq LIMIT 1) origin,
+      (SELECT COUNT(*) FROM role_bindings b WHERE b.role_id=r.id AND b.state='active') activeBindings,
+      (SELECT group_concat(seat_id) FROM role_seats s WHERE s.role_id=r.id) seats
+      FROM character_roles r WHERE r.name IN (SELECT name FROM character_roles GROUP BY name HAVING COUNT(*)>1) ORDER BY r.name,r.id`):[];
+  // Duplicate display names are diagnostic, not proof of corruption or identity.
+  return {healthy,integrity,foreignKeys,dangling,foreignAssociations,duplicateRoleNames};
 }
 
 /** Caller must make a consistent backup and own an exclusive transaction.

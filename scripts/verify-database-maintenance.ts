@@ -16,6 +16,17 @@ try {
   await graph.init();
   const a=await graph.createNode({dimension:'fact',content:'Archived fixture claim, not known to be true',embedding:[1,...Array(383).fill(0)]});
   const b=await graph.createNode({dimension:'fact',content:'Other owner fixture claim',domain:{kind:'personal',id:'other'},embedding:[1,...Array(383).fill(0)]});
+  const sourceDb=(graph as any).db;
+  for(const id of ['role-a','role-b'])await sourceDb.run("INSERT INTO character_roles VALUES(?,'human','张三','Fictional','active',1,NULL,1)",[id]);
+  await sourceDb.run("INSERT INTO memory_role_namespaces VALUES('role-a','other')");
+  const owners=await graph.memoryOwners.roles();assert.equal(owners.length,2);assert.equal(owners.find((r:any)=>r.id==='role-a').memoryCount,1);assert.equal(owners.find((r:any)=>r.id==='role-b').memoryCount,0);
+  const admin={v:1 as const,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+  assert.equal((await graph.roles.registry(admin)).roles.length,owners.length,'Memory and Office project the same role identities');
+  assert.equal((await auditDatabase(sourceDb)).duplicateRoleNames.length,2,'same-name diagnostic is read-only, never an instruction to merge');
+  await graph.roles.deleteRole({roleId:'role-b',expectedRevision:1},admin);
+  assert.equal((await graph.memoryOwners.roles()).length,1,'deleted role must leave the live owner catalog');
+  assert.equal((await graph.roles.registry(admin)).roles.length,1);
+  assert(await graph.getNodeById(b.id),'role catalog changes never remove knowledge');
   const ma=(await graph.getMemberships(a.id))[0],mb=(await graph.getMemberships(b.id))[0];
   await graph.close();
   db=await open({filename,driver:sqlite3.Database});

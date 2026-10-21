@@ -16,7 +16,7 @@ async function api(url, body) {
   const headers = { 'Content-Type': 'application/json' };
   if ($('apiKey').value) headers['x-api-key'] = $('apiKey').value;
   if ($('operatorKey').value) headers['x-operator-key'] = $('operatorKey').value;
-  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await fetch(url, { method: body === undefined ? 'GET' : 'POST', cache:'no-store', headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await response.json().catch(() => ({ error: '服务返回了非 JSON 响应' }));
   if (!response.ok || data.ok === false) throw new Error(response.status === 401 ? '请在页面上方“管理登录”填写有效的服务密钥。' : data.error || '请求失败');
   return data;
@@ -61,24 +61,47 @@ function scope(prefix) {
   return { spaceId: $(prefix + 'Space').value || undefined, memoryType: $(prefix + 'Type').value || undefined };
 }
 function ownerSelection(value){if(value==='user')return {kind:'user',id:'default'};const at=value.indexOf(':');return {kind:value.slice(0,at),id:value.slice(at+1)};}
-function ownerLabel(owner){return owner?.kind==='office'?'办公室 · '+(memoryOffices.find(o=>o.id===owner.id)?.title||'办公室不可用'):owner?.kind==='agent'?'角色 · '+(memoryRoles.find(r=>r.id===owner.id)?.name||'角色不可用'):'人类记忆';}
+function memoryRoleName(role){
+  if(!role)return '角色不可用';
+  const same=memoryRoles.filter(r=>r.name===role.name);
+  if(same.length<2)return role.name;
+  let size=8;while(size<role.id.length&&same.some(r=>r.id!==role.id&&r.id.slice(0,size)===role.id.slice(0,size)))size++;
+  return role.name+' · '+(role.connectorName||'未连接')+' · '+role.id.slice(0,size)+(Number.isInteger(role.memoryCount)?' · '+role.memoryCount+' 条记忆':'');
+}
+function ownerLabel(owner){return owner?.kind==='office'?'办公室 · '+(memoryOffices.find(o=>o.id===owner.id)?.title||'办公室不可用'):owner?.kind==='agent'?'角色 · '+memoryRoleName(memoryRoles.find(r=>r.id===owner.id)):'人类记忆';}
 function memoryConnectionStatus(connected,message){
   memoryConnected=connected;$('memoryConnectionStatus').textContent=message;$('searchSubmit').disabled=!connected;
   $('roleMemoryConfig').disabled=!connected;
   if(!connected){$('stats').textContent='';$('assignSelected').disabled=true;$('memoryConnectionSettings').open=true;}
 }
-async function refreshMeta() {
-  try{
-  const [stats, scopes, config,owners] = await Promise.all([api('./api/memory/stats'), api('./api/memory/spaces'),api('./api/memory/dimensions'),api('./api/memory/owners')]);
-  memoryRoles=owners.roles;memoryOffices=owners.offices||[];memoryMcpUrl=owners.memoryMcpUrl||null;
+let memoryOwnersRevision=0,memoryOwnersSnapshot=null;
+function applyMemoryOwners(owners){
+  const snapshot=JSON.stringify(owners);if(snapshot===memoryOwnersSnapshot)return;
+  // Identity is the role ID. Repeated rows may never create repeated choices;
+  // genuinely distinct same-name roles remain separate and clearly labelled.
+  memoryRoles=[...new Map(owners.roles.map(r=>[r.id,r])).values()];memoryOffices=owners.offices||[];memoryMcpUrl=owners.memoryMcpUrl||null;
   const previousLibraryOwner=$('libraryOwner').value;
-  $('libraryOwner').replaceChildren(new Option('全部记忆（人类管理）',''),...memoryRoles.map(r=>new Option('角色 · '+r.name+(r.state==='active'?'':'（已停用）'),r.id)),...memoryOffices.map(o=>new Option('办公室 · '+o.title+(o.state==='deleted'?'（已删除）':''),'office:'+o.id)));
+  $('libraryOwner').replaceChildren(new Option('全部记忆（人类管理）',''),...memoryRoles.map(r=>new Option('角色 · '+memoryRoleName(r)+(r.state==='active'?'':'（已停用）'),r.id)),...memoryOffices.map(o=>new Option('办公室 · '+o.title+(o.state==='deleted'?'（已删除）':''),'office:'+o.id)));
   if(memoryRoles.some(r=>r.id===previousLibraryOwner)||memoryOffices.some(o=>'office:'+o.id===previousLibraryOwner))$('libraryOwner').value=previousLibraryOwner;
+  else if(previousLibraryOwner){++libraryRevision;state.page=0;state.selected.clear();selectionChanged();$('libraryResults').replaceChildren(empty('记忆归属已变化','请重新选择归属并刷新记忆库。'));$('librarySummary').textContent='当前筛选已失效，请重新选择';}
   const previousOwner=$('searchOwner').value;
-  $('searchOwner').replaceChildren(new Option('全部记忆（人类管理）',''),...memoryRoles.map(r=>new Option('角色 · '+r.name+(r.state==='active'?'':'（已停用）'),r.id)),...memoryOffices.map(o=>new Option('办公室 · '+o.title+(o.state==='deleted'?'（已删除）':''),'office:'+o.id)));
+  $('searchOwner').replaceChildren(new Option('全部记忆（人类管理）',''),...memoryRoles.map(r=>new Option('角色 · '+memoryRoleName(r)+(r.state==='active'?'':'（已停用）'),r.id)),...memoryOffices.map(o=>new Option('办公室 · '+o.title+(o.state==='deleted'?'（已删除）':''),'office:'+o.id)));
   if(memoryRoles.some(r=>r.id===previousOwner)||memoryOffices.some(o=>'office:'+o.id===previousOwner))$('searchOwner').value=previousOwner;
   else if(previousOwner)$('searchOwner').onchange();
-  for(const id of ['assignmentRole','roleConnectionRole']){const previous=$(id).value;$(id).replaceChildren(new Option('请选择角色',''),...memoryRoles.filter(r=>r.state==='active').map(r=>new Option(r.name,r.id)));if(memoryRoles.some(r=>r.id===previous&&r.state==='active'))$(id).value=previous;}
+  for(const id of ['assignmentRole','roleConnectionRole']){const previous=$(id).value;$(id).replaceChildren(new Option('请选择角色',''),...memoryRoles.filter(r=>r.state==='active').map(r=>new Option(memoryRoleName(r),r.id)));if(memoryRoles.some(r=>r.id===previous&&r.state==='active'))$(id).value=previous;}
+  $('confirmAssignment').disabled=!$('assignmentRole').value;
+  updateRoleConnection();
+  memoryOwnersSnapshot=snapshot;
+}
+async function refreshMemoryOwners(background=false){
+  const revision=++memoryOwnersRevision;
+  const owners=await api('./api/memory/owners');
+  if(revision!==memoryOwnersRevision||background&&document.querySelector('dialog[open]'))return;
+  applyMemoryOwners(owners);
+}
+async function refreshMeta() {
+  try{
+  const [stats, scopes, config] = await Promise.all([api('./api/memory/stats'), api('./api/memory/spaces'),api('./api/memory/dimensions'),refreshMemoryOwners()]);
   try{await refreshRetrieval();}catch{$('retrievalStatus').textContent='模型状态暂不可用，仍可执行搜索；实际检索状态以搜索结果说明为准。';}
   state.dimensions=config.configuration;
   for(const d of state.dimensions.definitions)DIM_COLORS[d.id]=d.color;
@@ -98,7 +121,7 @@ async function show(view) {
   document.querySelectorAll('.view').forEach(n => { n.hidden = n.id !== 'view-' + view; });
   document.querySelectorAll('[data-view]').forEach(n => n.classList.toggle('active', n.dataset.view === view));
   if (view === 'dimensions') await loadDimensions();
-  if (view === 'library') await loadLibrary();
+  if (view === 'library') {await refreshMemoryOwners();await loadLibrary();}
   if (view === 'work') await loadWorkContexts();
   if (view === 'log') await loadLog();
   if (view === 'graph') await loadGraph();
@@ -153,7 +176,7 @@ async function search() {
     $('searchInsights').replaceChildren(...[['直接命中', response.results.filter(h => h.depth === 0).length], ['关联带出', response.results.filter(h => h.depth > 0).length]].map(([label, value]) => { const n = text('div', '', 'insight'); n.append(text('span', label), text('strong', value)); return n; }));
     const hits = response.results, base = new Set(direct?.results.map(h => h.id));
     const names = new Map(hits.map(h => [h.id, h.content.replace(/^#+\s*/,'').split('\n')[0].slice(0,45)]));
-    $('searchSummary').textContent = '“'+request.query+'” · '+(request.ownerOfficeId?(memoryOffices.find(o=>o.id===request.ownerOfficeId)?.title||'所选办公室'):request.ownerRoleId?(memoryRoles.find(r=>r.id===request.ownerRoleId)?.name||'所选角色'):'全部记忆')+' · '+hits.length + ' 条结果 · ' + hits.filter(h => h.depth === 0).length + ' 个直接命中 · ' +
+    $('searchSummary').textContent = '“'+request.query+'” · '+(request.ownerOfficeId?(memoryOffices.find(o=>o.id===request.ownerOfficeId)?.title||'所选办公室'):request.ownerRoleId?memoryRoleName(memoryRoles.find(r=>r.id===request.ownerRoleId)):'全部记忆')+' · '+hits.length + ' 条结果 · ' + hits.filter(h => h.depth === 0).length + ' 个直接命中 · ' +
       hits.filter(h => h.depth > 0).length + ' 条关联带出 · ' + Math.round(performance.now() - started) + ' ms' +
       (direct ? ' ｜直接检索 ' + direct.results.length + ' 条，本次新增 ' + hits.filter(h => !base.has(h.id)).length + ' 条（同上限对照）' : '');
     if(response.retrieval?.degraded) {
@@ -199,7 +222,7 @@ async function loadLibrary() {
   if ($('libraryDimension').value) q.set('dimension', $('libraryDimension').value);
   let data;try{data=await api('./api/memory/list?'+q);}catch(error){if(revision!==libraryRevision)return;$('libraryResults').replaceChildren(empty('读取失败',error.message));throw error;}
   if(revision!==libraryRevision)return;
-  $('librarySummary').textContent=(roleId?(memoryRoles.find(r=>r.id===roleId)?.name||memoryOffices.find(o=>'office:'+o.id===roleId)?.title||'所选归属'):'全部记忆')+' · '+data.total+' 条';
+  $('librarySummary').textContent=(roleId?((memoryRoles.some(r=>r.id===roleId)?memoryRoleName(memoryRoles.find(r=>r.id===roleId)):null)||memoryOffices.find(o=>'office:'+o.id===roleId)?.title||'所选归属'):'全部记忆')+' · '+data.total+' 条';
   $('pageLabel').textContent = '第 ' + (state.page + 1) + ' 页';
   $('prevPage').disabled = state.page === 0; $('nextPage').disabled = (state.page + 1) * 30 >= data.total;
   $('libraryResults').replaceChildren(...data.nodes.map(n => {
@@ -218,9 +241,10 @@ async function loadLibrary() {
 }
 async function openMemory(id) {
   const data = id ? await api('./api/memory/node/' + encodeURIComponent(id) + '?scope=operator') : null;
+  if(!id)await refreshMemoryOwners();
   state.memory = data;
   $('memoryOwnerActions').replaceChildren();$('memoryOwnerField').hidden=!!id;
-  $('memoryNewOwner').replaceChildren(new Option('人类记忆','user'),...memoryRoles.filter(r=>r.state==='active').map(r=>new Option('角色 · '+r.name,'agent:'+r.id)),...memoryOffices.filter(o=>o.state!=='deleted').map(o=>new Option('办公室 · '+o.title,'office:'+o.id)));
+  $('memoryNewOwner').replaceChildren(new Option('人类记忆','user'),...memoryRoles.filter(r=>r.state==='active').map(r=>new Option('角色 · '+memoryRoleName(r),'agent:'+r.id)),...memoryOffices.filter(o=>o.state!=='deleted').map(o=>new Option('办公室 · '+o.title,'office:'+o.id)));
   const selected=state.view==='library'?$('libraryOwner').value:$('searchOwner').value;
   $('memoryNewOwner').value=selected?(selected.startsWith('office:')?selected:'agent:'+selected):'user';
   if(!$('memoryNewOwner').value)$('memoryNewOwner').value='user';
@@ -933,7 +957,7 @@ on('connect', async () => { await refreshMeta(); await show(state.view); notice(
 on('createWorkContext', async () => { const domain=workDomain(),goal=$('workGoal').value.trim(); if(!goal)throw new Error('请填写协作目标'); const context=await api('./api/work/context/create',{domain,goal,teamAuthorization:$('workTeamAuthorization').value||undefined}); $('workGoal').value=''; await loadWorkContexts(); await openWorkContext(context); });
 on('refreshWork', loadWorkContexts);
 on('copySearch', () => copy(JSON.stringify(state.search, null, 2)));
-on('loadLibrary', loadLibrary); on('newMemory', () => openMemory());
+on('loadLibrary', async()=>{await refreshMemoryOwners();await loadLibrary();}); on('newMemory', () => openMemory());
 on('prevPage', async () => { if (state.page) state.page--; await loadLibrary(); });
 on('nextPage', async () => { state.page++; await loadLibrary(); });
 on('clearSelection', async () => { state.selected.clear(); await loadLibrary(); });
@@ -1074,7 +1098,8 @@ on('probeDevices',async()=>{const result=await api('./api/memory/retrieval/devic
 $('assignmentDialog').addEventListener('cancel',e=>{if($('assignmentDialog').dataset.saving==='true')e.preventDefault();});
 function clearAssignmentSelection(){assignmentSelection.clear();for(const box of document.querySelectorAll('.memory-assignment-check'))box.checked=false;$('assignSelected').disabled=true;$('assignmentCount').textContent='勾选记忆后可分配独立副本';}
 $('searchOwner').onchange=()=>{++searchRevision;clearAssignmentSelection();$('searchResults').replaceChildren(empty('已切换记忆归属','点击“搜索记忆”查看所选范围。'));$('searchSummary').textContent='尚未搜索当前范围';$('searchRaw').hidden=true;$('copySearch').disabled=true;state.search=null;};
-function assignMemories(memories){
+async function assignMemories(memories){
+  await refreshMemoryOwners();
   assignmentSelection.clear();for(const n of memories)assignmentSelection.set(n.id,n);
   if(!memoryRoles.some(r=>r.state==='active'))throw Error('请先在协作办公室批准一个角色，再为它添加知识。');
   $('assignmentRole').value='';$('confirmAssignment').disabled=true;$('assignmentError').hidden=true;
@@ -1092,7 +1117,7 @@ on('confirmAssignment',async()=>{
   try{
     const result=await api('./api/memory/assign',{memoryIds:[...assignmentSelection.keys()],roleId:role.id});
     const created=result.copies.filter(c=>!c.existing).length,existing=result.copies.length-created;
-    const summary='已为“'+role.name+'”新增 '+created+' 份副本'+(existing?'；'+existing+' 条已存在，保留原副本':'')+'。原记忆保持不变。';
+    const summary='已为“'+memoryRoleName(role)+'”新增 '+created+' 份副本'+(existing?'；'+existing+' 条已存在，保留原副本':'')+'。原记忆保持不变。';
     $('assignmentLastResult').textContent=summary;$('assignmentLastResult').hidden=false;
     if($('memoryDialog').open)$('memoryOwnerActions').append(text('p',summary),button('查看该角色记忆',async()=>{$('memoryDialog').close();$('libraryOwner').value=role.id;state.page=0;await show('library');}));clearAssignmentSelection();$('assignmentDialog').close();notice(summary);
     try{await refreshMeta();}catch(error){$('assignmentLastResult').textContent=summary+' 连接状态刷新失败：'+error.message;}
@@ -1124,7 +1149,19 @@ on('downloadRoleMemory',async()=>{
     role.hasMemoryCredential=true;
     const config=r.configuration;
     const blob=new Blob([config.text],{type:config.mime}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=config.filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-    $('roleConnectionResult').textContent='已生成“'+role.name+'”当前宿主的专用配置并发起下载。请核对下载文件后合并到该宿主设置，再重新连接。';$('roleConnectionResult').hidden=false;
+    $('roleConnectionResult').textContent='已生成“'+memoryRoleName(role)+'”当前宿主的专用配置并发起下载。请核对下载文件后合并到该宿主设置，再重新连接。';$('roleConnectionResult').hidden=false;
   }catch(error){$('roleConnectionResult').textContent=error.message;$('roleConnectionResult').hidden=false;}
   finally{$('roleConnectionRole').disabled=false;try{await refreshMeta();}catch(error){notice('连接状态刷新失败：'+error.message,true);}$('roleRotationConfirm').checked=false;updateRoleConnection();}
 });
+
+let memoryOwnerSyncPending=false;
+async function syncMemoryOwners(){
+  if(!memoryConnected||document.hidden||memoryOwnerSyncPending||document.querySelector('dialog[open]'))return;
+  memoryOwnerSyncPending=true;
+  try{await refreshMemoryOwners(true);}
+  catch(error){notice('角色与办公室列表同步失败：'+error.message,true);}
+  finally{memoryOwnerSyncPending=false;}
+}
+window.addEventListener('focus',syncMemoryOwners);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void syncMemoryOwners();});
+setInterval(syncMemoryOwners,15000);
