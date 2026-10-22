@@ -19,6 +19,7 @@ import { issueNetworkGrant, readNetworkConfiguration, revokeNetworkAgent } from 
 import { MindPondError, httpStatus, toStructuredError } from '../core/errors.js';
 import { parseContainerInput } from '../core/building-tools.js';
 import { roleReviewSchema, roleConfigureSchema, roleLinkSchema } from '../core/role-tools.js';
+import {continuityReadSchema,continuityCheckpointSchema,continuityTaskWriteSchema,continuityTasksSchema,continuityHistorySchema,continuityArchiveSchema} from '../core/role-continuity.js';
 
 export function officeWorkbench(
   graph: GraphMemory,
@@ -214,6 +215,12 @@ export function officeWorkbench(
   route('/role/state', req => graph.roles.state(operator,req.body.afterSeq));
   route('/role/message',req=>graph.roles.messagePreview(messageReference.parse(req.body),operator));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
+  route('/role/continuity',req=>{const {roleId,...input}=continuityReadSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.resume({roleId,human:true},input);});
+  route('/role/continuity/checkpoint',req=>{const {roleId,...input}=continuityCheckpointSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.checkpoint({roleId,human:true},input);});
+  route('/role/continuity/task',req=>{const {roleId,...input}=continuityTaskWriteSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.updateTask({roleId,human:true},input);});
+  route('/role/continuity/tasks',req=>{const {roleId,...input}=continuityTasksSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.tasks({roleId,human:true},input);});
+  route('/role/continuity/history',req=>{const {roleId,...input}=continuityHistorySchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.history({roleId,human:true},input);});
+  route('/role/continuity/archive',req=>{const {roleId,...input}=continuityArchiveSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.archive({roleId,human:true},input);});
   const deletionSchema = z.object({id:officeConfigurationSchema.shape.id,expectedRevision:z.number().int().min(1)}).strict();
   route('/agent/delete',async req=>{
     const i=deletionSchema.parse(req.body),result=await graph.offices.deleteAgent(i,operator);

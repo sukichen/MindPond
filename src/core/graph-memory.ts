@@ -52,6 +52,7 @@ import {OfficeBuilding} from './office-building.js';
 import {OfficeCollaboration} from './office-collaboration.js';
 import {OfficeTaskStore} from './office-tasks.js';
 import {MemoryOwners} from './memory-owners.js';
+import {RoleContinuityStore} from './role-continuity.js';
 
 /** Trusted service callbacks run while the SQLite writer lock is held.
  * Kept outside model arguments and receipt hashes. */
@@ -423,6 +424,7 @@ export class GraphMemory {
   building!: OfficeBuilding;
   officeCollaboration!: OfficeCollaboration;
   memoryOwners!:MemoryOwners;
+  roleContinuity!:RoleContinuityStore;
   officeTaskStore(actor:import('./trust.js').TrustedCallContext){return new OfficeTaskStore(this.db!,this,work=>this.growthWrite(work),actor);}
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
@@ -1148,6 +1150,8 @@ export class GraphMemory {
     this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential','nativeBinding','office','offices','context','ownerContext','policy','setPolicy','assertWritable','roleBinding','present']);
     await this.memoryOwners.init();
     await this.roles.migrateModel();
+    this.roleContinuity=this.coordinator.service(new RoleContinuityStore(this.db,this,work=>this.growthWrite(work),this.clock),['init','resume','checkpoint','updateTask','tasks','history','archive']);
+    await this.roleContinuity.init();
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');

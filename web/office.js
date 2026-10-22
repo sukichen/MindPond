@@ -103,7 +103,7 @@
     const data = await r.json();
     if (!r.ok) { const error=Error(data.code === 'stale_version'
       ? route.endsWith('/delete') ? '资料已被其他操作更新或删除。请重新打开角色或办公室，核对最新内容后再决定是否删除。' : '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。'
-      : data.error ?? '操作失败'); error.status=r.status; throw error; }
+      : data.error ?? '操作失败'); error.status=r.status;error.code=data.code; throw error; }
     return data;
   }
   function confirmAction(message, {destructive=false,title='确认操作'} = {}) {
@@ -546,7 +546,7 @@
   async function deleteCharacter(record) {
     const draft=state.roleDraft, epoch=state.authEpoch;
     if (!draft || draft.saving) return;
-    if (!(await confirmAction(`永久删除角色「${record.name}」？这会删除角色资料、会话绑定和角色收发的私信，撤销所有工位权限，并取消该角色参与的未完成任务。办公室历史材料与操作审计保留。删除后无法恢复。`,{destructive:true,title:'永久删除角色'}))) return;
+    if (!(await confirmAction(`永久删除角色「${record.name}」？这会删除角色资料、会话绑定、接续摘要、工作任务及其历史、角色收发的私信，撤销所有工位权限，并取消该角色参与的未完成任务。办公室历史材料与操作审计保留。删除后无法恢复。`,{destructive:true,title:'永久删除角色'}))) return;
     if (epoch!==state.authEpoch || !state.logged || state.roleDraft!==draft) return;
     draft.saving=true;
     const fields=[...el('officeRoleInspectorBody').querySelectorAll('input,textarea,button')];
@@ -597,7 +597,7 @@
     intro.value = record.introduction;
     form.append(label('名字', name), label('能力与介绍', intro));
     const meta = make('p', `账户 ${record.principal} · ${application ? '待审核' : record.state === 'active' ? '已批准 · 运行状态未知' : '已停用'}`);meta.className = 'office-hint';
-    body.append(meta, form);
+    const profile=make('section');profile.append(meta,form);body.append(profile);let initialFocus=name;
     if(!application){
       const connection=make('section');connection.className='office-role-current';connection.append(make('h3','当前连接'),make('strong',roleConnectionLabel(record)));
       if(record.connection)connection.append(chatLocator(record.connection),make('p','最近通信：'+new Date(record.connection.lastSeen).toLocaleString()+' · 不代表宿主当前在线'));
@@ -613,7 +613,14 @@
       const count = state.data.characters.mappings.filter(m => m.role_id === record.id).length;
       info.append(make('p', `已安排 ${count} 个工位`), button('前往办公室', async () => {if (await closeRoleInspector()) {setExpanded(null);showAppView('officeRooms');}}));
     }
-    body.append(info);
+    profile.append(info);
+    if(!application){
+      const tabs=make('div'),working=make('section');tabs.className='office-continuity-controls';tabs.setAttribute('aria-label','角色详情视图');
+      const workTab=button('接续工作',()=>selectView(true)),profileTab=button('角色资料',()=>selectView(false));
+      function selectView(work){profile.hidden=work;working.hidden=!work;workTab.setAttribute('aria-pressed',String(work));profileTab.setAttribute('aria-pressed',String(!work));}
+      tabs.append(workTab,profileTab);body.insertBefore(tabs,profile);body.insertBefore(working,profile);selectView(true);initialFocus=workTab;
+      const continuityEpoch=state.authEpoch;window.MindPondRoleContinuity?.mount({container:working,role:record,offices:state.data.offices,api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===continuityEpoch,notice,confirmAction});
+    }
     form.addEventListener('input', () => {draft.dirty = true;state.roleEditing = true;save.textContent = application ? '批准这个角色' : '保存修改';});
     const actions = make('div');actions.className = 'office-dialog-actions';
     let saving = false;
@@ -647,7 +654,7 @@
       const remove=button('永久删除角色',()=>deleteCharacter(record));remove.className='office-danger';
       actions.append(remove);
     }
-    dialog.showModal();name.focus();
+    dialog.showModal();initialFocus.focus();
   }
   el('officeRoleConnectionClose').onclick=()=>{if(el('officeRoleConnection').dataset.saving!=='true')el('officeRoleConnection').close();};
   el('officeRoleConnection').addEventListener('close',()=>{roleConnectionGeneration++;});

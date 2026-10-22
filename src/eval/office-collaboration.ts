@@ -43,8 +43,8 @@ const resources: Record<string, string> = {
     'docs/test-runner.md': 'The generated sources are resolved from build/sources. Before tests use FIXTURE_PROFILE=fixture-cpu and the command node scripts/check.mjs --generated-root build/sources. UTF-16 JavaScript character offsets are not UTF-8 byte offsets. These rules apply only to fixture revision fixture-v1.',
 };
 const scenarios = ['onboarding', 'reuse', 'restart', 'conflict', 'misleading'] as const;
-const readMemoryActions=['memory_identity','memory_capabilities','memory_brief','memory_search','memory_get','memory_expand','memory_directory','memory_connections','memory_association_get','memory_profile_get','memory_profile_history','memory_history','memory_trace','memory_retrieval_status','memory_retrieval_profiles','memory_dimension_policy','memory_save_policy'];
-const writeMemoryActions=['memory_save','memory_update','memory_finish','memory_use_report','memory_save_validate'];
+const readMemoryActions=['memory_resume','memory_continuity_tasks','memory_continuity_history','memory_identity','memory_capabilities','memory_brief','memory_search','memory_get','memory_expand','memory_directory','memory_connections','memory_association_get','memory_profile_get','memory_profile_history','memory_history','memory_trace','memory_retrieval_status','memory_retrieval_profiles','memory_dimension_policy','memory_save_policy'];
+const writeMemoryActions=['memory_continuity_checkpoint','memory_continuity_task','memory_continuity_archive','memory_save','memory_update','memory_finish','memory_use_report','memory_save_validate'];
 export function evaluationMemoryActions(condition:string){return new Set(condition==='none'?[]:[...readMemoryActions,...(condition==='recall_save'?writeMemoryActions:[])]);}
 const admin: TrustedCallContext = { v: 1, principal: 'eval-human', operator: true, issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
 export async function runOfficeEvaluation(adapter: OfficeEvalAdapter, options: {
@@ -59,7 +59,7 @@ export async function runOfficeEvaluation(adapter: OfficeEvalAdapter, options: {
         throw Error('Explicit host model adapter required');
     const extension=import.meta.url.endsWith('.ts')?'.ts':'.js';
     const implementation:Record<string,string>={};
-    for(const file of ['role-memory-service','owner-memory-actions','core/memory-capability-contract','core/memory-recall-schema','core/memory-use-schema','core/graph-memory','core/growth','core/memory-owners','core/office-building','core/building-tools','core/roles','core/office-collaboration','core/trust','mcp-service','eval/office-collaboration']){const data=await fs.readFile(new URL('../'+file+extension,import.meta.url));implementation[file]=createHash('sha256').update(data).digest('hex');}
+    for(const file of ['role-memory-service','owner-memory-actions','continuity-memory-tools','core/role-continuity','core/memory-capability-contract','core/memory-recall-schema','core/memory-use-schema','core/graph-memory','core/growth','core/memory-owners','core/office-building','core/building-tools','core/roles','core/office-collaboration','core/trust','mcp-service','eval/office-collaboration']){const data=await fs.readFile(new URL('../'+file+extension,import.meta.url));implementation[file]=createHash('sha256').update(data).digest('hex');}
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-office-eval-')), runs: any[] = [];
     const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
     async function exercise(caseId: string, condition: string, repetition: number, seed: string[] = [], producer = false) {

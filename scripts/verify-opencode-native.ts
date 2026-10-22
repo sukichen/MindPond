@@ -26,6 +26,8 @@ try{
  assert.equal((await call('memory_identity')).owner.id,roles[0].roleId);
  assert.equal((await call('memory_identity',{},'b')).owner.id,roles[1].roleId);
  assert.equal((await call('memory_identity',{},'unbound')).owner.kind,'user');
+ assert.equal((await call('memory_resume')).role.id,roles[0].roleId);
+ await call('memory_action',{tool:'memory_continuity_checkpoint',arguments:{expectedRevision:0,summary:{goal:'Native role task',progress:'Verified the native fixture',nextSteps:['Resume from the new worker']},key:'native-continuity',reason:'Native checkpoint fixture'}});
  await assert.rejects(call('memory_get',{nodeId:human.id}),/not_found|scope_denied/);
  const schema=await call('memory_action',{tool:'memory_save',describe:true});assert(!schema.inputSchema.properties.domain&&!schema.inputSchema.properties.roleId);
  assert(schema.inputSchema.properties.related&&schema.inputSchema.properties.anchors,'Native schema preserves scored graph saving');
@@ -53,6 +55,7 @@ try{
  await plugin.dispose();
  const resumed=await createOpenCodeMemoryPlugin(host,options);plugins.push(resumed);
  assert.equal(JSON.parse(await resumed.tool.memory_get.execute({nodeId:saved.id},{sessionID:'a'})).content,'Native A role knowledge');
+ assert.equal(JSON.parse(await resumed.tool.memory_resume.execute({},{sessionID:'a'})).checkpoints[0].goal,'Native role task');
  await graph.offices.configureAgent({id:'host',principal:'human',name:'OpenCode fixture',host:'opencode',state:'disabled',expectedRevision:1},admin);
  await assert.rejects(resumed.tool.memory_get.execute({nodeId:saved.id},{sessionID:'a'}),/scope_denied|identity_required/);
  assert.equal((await graph.getNodeById(human.id))!.content,'Human-only fixture');

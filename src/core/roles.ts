@@ -225,7 +225,7 @@ export class RoleStore {
     const waits=await this.db.all<Row[]>("SELECT id,state,conditions,expires_at FROM role_message_waits WHERE role_id=? ORDER BY started_at DESC LIMIT 10",[b.role_id]);
     const waitRecovery=waits.map(w=>{const conditions=JSON.parse(w.conditions);return {...w,conditions,resume:{afterSeq:conditions.afterSeq??0,...(conditions.replyTo?{replyTo:conditions.replyTo}:{}),waitMs:conditions.waitMs??300000}};});
     return { state: 'active', identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
-      processing:processing.slice(0,20),processingHasMore:processing.length>20,instructions: ROLE_INSTRUCTIONS };
+      processing:processing.slice(0,20),processingHasMore:processing.length>20,resume:{mcp:'memory',tool:'memory_resume',next:'Read current role working state on the separate Memory MCP before continuing. Follow its pages, check new messages and verify linked versions; do not infer unrecorded progress.'},instructions: ROLE_INSTRUCTIONS };
   }
   async contacts(i:Row,a?:TrustedCallContext){
     const actor=this.actor(a),b=await this.binding(actor);

@@ -57,6 +57,7 @@ export async function createOpenCodeMemoryPlugin(host:OpenCodeHost,options:OpenC
   const scope={officeId:z.string().min(1).max(160).optional()};
   return {
     tool:{
+      memory_resume:tool('memory_resume','Restore this approved role’s current working summary and unfinished tasks after reconnect/context loss; follow pages and check role_sync controls.',{cursor:z.string().max(2048).optional(),contextBudgetBytes:z.number().int().min(2048).max(65536).optional()}),
       memory_identity:tool('memory_identity','Verify the chat identity: unbound human or approved Office role. Missing chat metadata is an error.',{}),
       memory_capabilities:tool('memory_capabilities','Discover available Memory tools and advanced actions before requesting a schema.',{}),
       memory_brief:tool('memory_brief','Recall knowledge allowed to the current human or role; verify sources.',{...scope,...layeredRecallShape,task:z.string().min(1).max(10000)}),
@@ -72,7 +73,7 @@ export async function createOpenCodeMemoryPlugin(host:OpenCodeHost,options:OpenC
       try{await call(input.sessionID,'memory_identity');}
       catch{await host.client.app?.log({body:{service:'mindpond',level:'warn',message:'MindPond chat identity unavailable. Reconnect the native session integration and verify memory_identity.'}});}
     },
-    'experimental.chat.system.transform':async(_input:unknown,output:{system:string[]})=>{output.system.push('MindPond Memory follows this chat: an unbound chat is human and can access all knowledge; a bound chat accesses only its role and current offices. Verify memory_identity after role_sync or reconnect. Missing chat metadata is an error. Save verified reusable lessons through memory_action(memory_save); never select an identity in arguments.');},
+    'experimental.chat.system.transform':async(_input:unknown,output:{system:string[]})=>{output.system.push('MindPond Memory follows this chat: an unbound chat is human and can access all knowledge; a bound chat accesses only its role and current offices. Verify memory_identity after role_sync or reconnect. When bound, call memory_resume after activation/reconnect/context loss; check controls and new mail. At milestones and before handoff update memory_continuity_checkpoint/task through memory_action; archive only explicitly ended tasks. Missing chat metadata is an error. Save verified reusable lessons through memory_action(memory_save); never select an identity in arguments.');},
     dispose:async()=>{transport.close();}
   };
 }

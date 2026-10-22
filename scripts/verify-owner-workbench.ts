@@ -62,6 +62,15 @@ try{
  const saved=await json('/api/memory/save',{owner:{kind:'office',id:'fixture-office'},content:'Fixture new office fact',dimensions:['fact'],memberships:[{spaceId:'memory',memoryType:'fact'}]});
  assert.equal((await graph.getNodeById(saved.id))!.domain.id,officeDomain.id);assert((await graph.getMemberships(saved.id)).some(m=>m.spaceId==='memory'&&m.memoryType==='fact'));
  const catalog=await json('/api/memory/capabilities');assert(catalog.operations.some((o:any)=>o.name==='memory_finish'&&!o.direct));assert(catalog.instructions.includes('memory_capabilities'));
+ const login=await request('/api/office-admin/login',{apiKey:'fixture-api',operatorKey:'fixture-operator'});assert.equal(login.status,200);const cookie=login.headers.get('set-cookie')!.split(';')[0];
+ const manage=async(route:string,input:unknown,origin?:string)=>fetch(base+'/api/office-admin/role/continuity'+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,...(origin?{Origin:origin}:{})},body:JSON.stringify(input)});
+ assert.equal((await fetch(base+'/api/office-admin/role/continuity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({roleId:role.roleId})})).status,401);
+ const checkpoint={roleId:role.roleId,expectedRevision:0,summary:{goal:'Fictional recovery',progress:'Human verified the fixture',nextSteps:['Continue the fixture review']},reason:'Human records a handoff',key:'human-checkpoint'};
+ assert.equal((await manage('/checkpoint',checkpoint,'https://untrusted.example')).status,403);
+ const saveCheckpoint=await manage('/checkpoint',checkpoint);assert.equal(saveCheckpoint.status,200,await saveCheckpoint.clone().text());
+ const recovery=await (await manage('',{roleId:role.roleId})).json();assert.equal(recovery.checkpoints[0].goal,'Fictional recovery');assert.equal(recovery.checkpoints[0].recordedBy.kind,'human');
+ assert.equal((await manage('/checkpoint',{...checkpoint,key:'stale-human'})).status,409);
+ const recoveredHistory=await (await manage('/history',{roleId:role.roleId})).json();assert.equal(recoveredHistory.records[0].recordedBy.kind,'human');
  const html=await (await fetch(base)).text();assert(html.includes('id="orgOwner"'));for(const id of ['newDomainKind','newDomainId','newScope','requestDomainId'])assert(!html.includes('id="'+id+'"'));
  assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');
  console.log('PASS real workbench HTTP: stored namespace filtering, disabled-owner visibility, search locks/provenance, organization attribution, new-memory dimensions and operator-only owner selection');
