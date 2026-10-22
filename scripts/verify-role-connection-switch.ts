@@ -66,7 +66,7 @@ try{
  await graph.roles.activate({requestId:target.id,roleId:role.roleId,expectedRevision:current.revision},admin);
  console.log('PASS atomic host switch');
  const waited:any=await wait;assert(waited.isError,'in-flight original chat wait must be fenced');
- assert((await raw(am,'memory_identity')).isError);assert((await raw(a,'office_directory')).isError);
+ assert.equal((await call(am,'memory_identity')).owner.kind,'user','the source chat becomes human after its role is moved');assert((await raw(a,'office_directory')).isError);
  await assert.rejects(()=>raw(pinned,'memory_identity'),(e:any)=>e.code===401,'dedicated credentials from the previous binding are revoked');
  assert.equal((await call(bm,'memory_identity',{},'b','opencode')).owner.id,role.roleId);
  assert.equal((await call(bm,'memory_get',{nodeId:learned.id},'b','opencode')).content,'Verified fictional knowledge follows the role');
@@ -80,7 +80,7 @@ try{
  current=(await graph.roles.registry(admin)).roles.find((r:any)=>r.id===role.roleId)!;assert.equal(current.connection.connectorId,'opencode');
  // Return to the exact original native chat and fence OpenCode in turn.
  const back=(await call(a,'role_sync')).activation;await graph.roles.activate({requestId:back.id,roleId:role.roleId,expectedRevision:current.revision},admin);
- assert.equal((await call(am,'memory_identity')).owner.id,role.roleId);assert((await raw(bm,'memory_identity',{},'b','opencode')).isError);
+ assert.equal((await call(am,'memory_identity')).owner.id,role.roleId);assert.equal((await call(bm,'memory_identity',{},'b','opencode')).owner.kind,'user');
  // Switching away and back must never resurrect a write already preparing embeddings.
  let began!:()=>void,release!:()=>void;const started=new Promise<void>(r=>began=r),gate=new Promise<void>(r=>release=r);
  embedding.generateEmbedding=async text=>{if(text.includes('Round trip fenced knowledge')){began();await gate;}return [1,...Array(383).fill(0)];};

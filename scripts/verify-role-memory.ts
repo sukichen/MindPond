@@ -68,7 +68,7 @@ try {
     assert.equal(own.data.owner.id, a.roleId);
     assert((await call(memory, 'memory_get', { nodeId: saved.data.id }, 'chat-b')).r.isError);
     assert((await call(memory, 'memory_get', { nodeId: human.id }, 'chat-a')).r.isError);
-    assert((await call(memory, 'memory_identity', {}, 'unapproved-chat')).r.isError, 'unbound agent must never become human');
+    assert.equal((await call(memory, 'memory_identity', {}, 'unapproved-chat')).data.owner.kind,'user','identified unbound chats are human');
     const assignment = await graph.memoryOwners.allocate([human.id], a.roleId);
     const copyId = assignment.copies[0].copyId;
     assert.equal((await graph.memoryOwners.allocate([human.id], a.roleId)).copies[0].copyId, copyId);

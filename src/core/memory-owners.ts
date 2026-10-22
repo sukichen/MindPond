@@ -32,12 +32,15 @@ export class MemoryOwners {
     /** Native chat identity is supplied by the host, never by tool arguments.
      * Ambiguous matches require the authenticated host-specific Memory endpoint. */
     async nativeBinding(source:string,chatId:string) {
-        const hosts=await this.db.all("SELECT id,principal FROM office_agents WHERE state='active'");
+        const hosts=await this.db.all("SELECT id,principal,state FROM office_agents");
         const expected=new Map(hosts.map(h=>[roleRuntimeId(h.principal,h.id,source,chatId),h]));
-        const rows=await this.db.all("SELECT b.* FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.state='active' AND r.state='active' AND b.runtime_id IN (SELECT value FROM json_each(?))",[JSON.stringify([...expected.keys()])]);
+        const rows=await this.db.all("SELECT b.*,r.state role_state FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.state='active' AND b.runtime_id IN (SELECT value FROM json_each(?))",[JSON.stringify([...expected.keys()])]);
         const matches=rows.filter(r=>{const h=expected.get(r.runtime_id);return h&&h.id===r.connector_id&&h.principal===r.principal;});
-        if(matches.length!==1)throw new MindPondError(matches.length?'scope_denied':'identity_required',matches.length?'This chat matches multiple host connections. Use the Memory endpoint generated for the intended host.':'This chat has no active role. Approve or activate it in Office, then retry Memory. It will not write human memory.');
-        return matches[0];
+        const active=matches.filter(r=>expected.get(r.runtime_id)!.state==='active');
+        if(active.length>1)throw new MindPondError('scope_denied','This chat matches multiple host connections. Use the Memory endpoint generated for the intended host.');
+        if(!active.length){if(matches.length)throw new MindPondError('scope_denied','The bound host is disabled; it cannot become a human connection.');return null;}
+        if(active[0].role_state!=='active')throw new MindPondError('scope_denied','The bound role is disabled; it cannot become a human connection.');
+        return active[0];
     }
     async office(officeId:string) {
         const r=await this.db.get('SELECT id,title,state,revision FROM offices WHERE id=?',[officeId]);

@@ -27,7 +27,7 @@ try{
  const human=await graph.saveMemory('Human identity boundary marker'),humanBefore=(await graph.getNodeById(human.id))!.content;
  const local=await connect({trusted:{...admin,domains:[{kind:'personal',id:'default'}],sessionId:'a'}});
  assert.equal((await call(local,'memory_identity',{}, {threadId:'a'})).data.owner.id,a.roleId);
- const missing=await call(local,'memory_save',{content:'Must not be human',idempotencyKey:'missing'});assert(missing.r.isError);assert.equal(missing.data.error.code,'identity_required');assert.equal(missing.data.error.details.humanFallback,false);
+ const missing=await call(local,'memory_save',{content:'Must not be human',idempotencyKey:'missing'});assert(missing.r.isError);assert.equal(missing.data.error.code,'identity_required');assert.equal(missing.data.error.details.unidentifiedCallsDenied,true);
  const conflict=await call(local,'memory_identity',{}, {threadId:'a','ai.opencode/sessionID':'a'});assert(conflict.r.isError);assert.equal(conflict.data.error.code,'invalid_input');
  const pin=await connect({roleId:a.roleId});assert.equal((await call(pin,'memory_identity')).data.error.code,'identity_required','a configured role ID alone is not authentication');
  assert.equal((await call(pin,'memory_identity',{}, {threadId:'a'})).data.owner.id,a.roleId);

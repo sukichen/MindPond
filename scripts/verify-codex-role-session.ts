@@ -55,11 +55,11 @@ try{
   for(const label of ['A','B']){
     const t=await rpc('thread/start',{cwd:dir,approvalPolicy:'never',sandbox:'read-only',ephemeral:true});const id=t.thread.id;threads.push(id);
     assert.equal((await tool(id,'mindpond_office','role_sync')).state,'unregistered');
-    const before=await rpc('mcpServer/tool/call',{threadId:id,server:'mindpond_local',tool:'memory_identity',arguments:{}});assert(before.isError,'unbound local stdio chat must not become human');
+    const before=await rpc('mcpServer/tool/call',{threadId:id,server:'mindpond_local',tool:'memory_identity',arguments:{}});assert(!before.isError);assert.equal(JSON.parse(before.content[0].text).owner.kind,'user','ordinary native Codex chats use human memory before role approval');
     const app=await tool(id,'mindpond_office','role_application',{action:'submit',name:'Fictional Codex '+label,introduction:'Installed harness isolation regression',reason:'No model inference',key:'apply'});
     const role=await graph.roles.review({action:'approve',applicationId:app.applicationId,expectedRevision:1},admin);roles.push(role.roleId);
     const sync=await tool(id,'mindpond_office','role_sync');assert.equal(sync.identity.roleId,role.roleId);assert.equal(sync.identity.bindingMode,'codex_metadata');
-    for(const endpoint of ['mindpond_memory','mindpond_local']){const identity=await tool(id,endpoint,'memory_identity');assert.equal(identity.owner.id,role.roleId);assert.equal(identity.identity.bindingId,sync.identity.bindingId);assert.equal(identity.identity.protocol,'mindpond.role-memory.v1');assert.equal(identity.identity.humanFallback,false);}
+    for(const endpoint of ['mindpond_memory','mindpond_local']){const identity=await tool(id,endpoint,'memory_identity');assert.equal(identity.owner.id,role.roleId);assert.equal(identity.identity.bindingId,sync.identity.bindingId);assert.equal(identity.identity.protocol,'mindpond.layered-memory.v2');assert.equal(identity.identity.unidentifiedCallsDenied,true);}
   }
   assert.notEqual(threads[0],threads[1]);assert.notEqual(roles[0],roles[1]);
   const saved=await tool(threads[0],'mindpond_local','memory_save',{content:'Fictional Codex A private knowledge',idempotencyKey:'save'});

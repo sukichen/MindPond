@@ -120,6 +120,8 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       if (native && current.transport === 'http-mcp' && current.agentId) {
         current.runtimeId=roleRuntimeId(current.principal,current.agentId,native.source,native.id);
         current.runtimeMode=native.mode;
+        current.nativeChatId=native.id;
+        await graphMemory.roles.observeChat(current);
       }
       // Bind per-call session context to the authenticated chat.
       if(current.runtimeMode==='opencode_metadata'||current.runtimeMode==='codex_metadata') current.sessionId='net-native:'+current.runtimeId;
@@ -152,7 +154,10 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
       await options.authorizeWait?.();
-      if(activation){const entry=result.content?.find((c:any)=>c.type==='text');if(entry){try{const data=JSON.parse(entry.text);data.activation={...activation,notice:'Ask the user to activate an existing role for this chat in the office, or submit a new role application. Transport reconnection never chooses a role by recency.'};entry.text=JSON.stringify(data);}catch{}}}
+      if(name==='role_sync'&&!result.isError){
+        const entry=result.content?.find((c:any)=>c.type==='text');
+        if(entry){const data=JSON.parse(entry.text);data.pondId=await graphMemory.pondIdentity();if(activation)data.activation={...activation,notice:activation.notice??'If the user wants a role, ask them to activate an existing role or submit a role application. An unbound chat uses human memory. Reconnection never chooses a role by recency.'};entry.text=JSON.stringify(data);}
+      }
       if(roleIdentity) {
         const revision=String(roleIdentity.profileRevision)+':'+String(roleIdentity.bindingEpoch);
         const changed=seenRoleProfiles.get(roleIdentity.bindingId)!==revision;

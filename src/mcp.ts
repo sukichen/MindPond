@@ -17,8 +17,8 @@ if (!process.env.MEMORY_DB_PATH) {
 
 const graphMemory = new GraphMemory();
 
-// Public stdio exposes only role-bound Memory. Startup personal/domain/profile
-// settings cannot switch an agent to a human or administrative tool catalog.
+// Public stdio resolves each native chat as unbound human or bound role.
+// Startup selectors cannot override that identity or expose another catalog.
 const service=createOwnerMemoryServer(graphMemory);
 let closing=false;
 async function shutdown() {

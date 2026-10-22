@@ -272,7 +272,7 @@ try {
   // The native adapter is role-only. Dedicated regression uses real worker
   // processes and two databases, including reconnect and host revocation.
   const native=await createOpenCodeMemoryPlugin({directory:temp,client:{}},{dbPath:path.join(temp,'unbound-native.db'),nodePath:process.execPath,workerPath:path.resolve('dist/integrations/host-worker.js'),timeoutMs:20000});
-  try{await assert.rejects(native.tool.memory_identity.execute({},{sessionID:'same-session'}),/identity|scope_denied/);record('F04',{unboundNativeDenied:true,humanFallback:false});}finally{await native.dispose();}
+  try{const identity=JSON.parse(await native.tool.memory_identity.execute({},{sessionID:'same-session'}));assert.equal(identity.owner.kind,'user');assert.equal(identity.identity.mode,'unbound_chat');record('F04',{identifiedUnboundNativeHuman:true,unidentifiedCallsDenied:true});}finally{await native.dispose();}
 
   const report = { verification:'production-safety',baselineCommit:'472e30e662941191e4266ce470b4b8c82c0c0d28', findings: results };
   if (process.env.MINDPOND_REVIEW_REPORT_PATH) await fs.writeFile(process.env.MINDPOND_REVIEW_REPORT_PATH, JSON.stringify(report, null, 2) + '\n');

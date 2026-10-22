@@ -1,6 +1,6 @@
 # 客户端接入与身份核对
 
-Agent 使用两个独立 MCP，但身份一致：Office 管角色和通信，Memory 管角色私有与办公室共享记忆。人类通过记忆工作台管理全部知识。公开 MCP 不提供人类默认身份或 full/work 管理目录。
+Agent 使用两个独立 MCP，但身份一致：Office 管角色和通信，Memory 管角色私有与办公室共享记忆。未绑定角色的已识别聊天按人类身份访问全部知识，已绑定角色只访问自身和当前办公室知识。公开 MCP 不暴露 full/work 管理目录。
 
 ## 推荐：生成 Office 与 Memory 配套配置
 
@@ -11,7 +11,7 @@ mindpond-connect office-prepare --client codex --directory /absolute/connections
 mindpond-connect office-run --directory /absolute/connections/office
 ```
 
-凭据放在宿主环境，不发给模型。OpenCode 需安装生成的会话插件。Codex 使用原生 `threadId`。申请或激活角色后，分别调用 Office 的 `role_sync` 和 Memory 的 `memory_identity`，两者的角色 ID 与 binding ID 必须一致。Memory 身份响应包含 `identity.protocol = mindpond.role-memory.v1`、`humanFallback = false`。
+凭据放在宿主环境，不发给模型。OpenCode 需安装生成的会话插件。Codex 使用原生 `threadId`。申请或激活角色后，分别调用 Office 的 `role_sync` 和 Memory 的 `memory_identity`，两者的角色 ID 与 binding ID 必须一致。Memory 身份响应包含 `identity.protocol = mindpond.layered-memory.v2`、`identity.mode = role`；未绑定聊天返回 `owner.kind = user`、`identity.mode = unbound_chat`。
 
 没有真实聊天标识时，使用工作台生成的角色专用凭据。不能通过个人域、固定标签或模型参数指定角色。详见[角色记忆](role-memory.md)。
 
@@ -26,7 +26,7 @@ mindpond-connect run --directory /absolute/connections/memory --dry-run
 mindpond-connect run --directory /absolute/connections/memory
 ```
 
-生成器也支持 `claude`、`opencode`。它不覆盖全局配置，不包含模型凭据。OpenCode 本机适配器使用实际 sessionID，通过 Node worker 调用同一套角色 Memory；不会自动采集对话或把知识写入个人默认域。
+生成器也支持 `claude`、`opencode`。它不覆盖全局配置，不包含模型凭据。OpenCode 本机适配器使用实际 sessionID，通过 Node worker 调用同一套角色 Memory；不会自动采集对话；保存归属由当前聊天是否绑定角色决定。
 
 本机数据库必须与 Office 指向同一文件。跨机器不能用本机 stdio 猜测中心角色，需使用中心的 `/memory/mcp`。客户端缺少原生聊天 ID 时，调用返回 `identity_required`；Claude 等客户端应使用明确的角色专用 HTTP 配置。
 

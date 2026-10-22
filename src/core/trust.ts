@@ -26,6 +26,8 @@ export interface TrustedCallContext {
   /** Correlation supplied by authenticated host headers/native call metadata.
    * Never read from model tool arguments, never treated as a secret. */
   runtimeId?: string;
+  /** Native harness ID from host metadata, never model tool arguments. */
+  nativeChatId?: string;
   runtimeMode?: 'host_header' | 'codex_metadata' | 'opencode_metadata' | 'connection';
   roleId?: string;
   roleBindingId?: string;

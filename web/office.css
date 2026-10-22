@@ -392,9 +392,6 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.8 ui-monospace,monos
 .office-character-grid[data-compact=true] .office-character-heading strong { font-size:13px; }
 .office-character-grid[data-compact=true] .office-avatar { width:28px; height:28px; border-radius:9px; font-size:14px; }
 .office-character-grid[data-compact=true] .office-character-card p { -webkit-line-clamp:1; }
-.office-main button.office-application-card { display:grid; gap:8px; text-align:left; padding:16px; background:#fffcf3; border-color:#e9dfc5; border-radius:12px; }
-.office-application-card span,.office-application-card small { font-size:11px; color:#8e7547; }
-.office-application-card p { margin:0; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; font-size:12px; line-height:1.7; }
 .office-role-dialog { box-sizing:border-box; color:#263a36; background:#fcfdf8; border:1px solid #dce3da; border-radius:20px; width:min(600px,calc(100vw - 24px)); max-height:calc(100dvh - 32px); padding:24px; overflow:auto; box-shadow:0 24px 120px #122f2b33; }
 .office-role-dialog::backdrop { background:#142e2a55; backdrop-filter:blur(3px); }
 .office-role-dialog header { display:flex; align-items:center; justify-content:space-between; gap:16px; }
@@ -640,3 +637,5 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-role-current{padding:16px;margin-bottom:20px;background:#eef4ed;border:1px solid #dce6d8;border-radius:12px;}
 .office-role-current h3{margin:0 0 8px;font-size:14px;}.office-role-current p{font-size:12px;line-height:1.7;color:#67766c;}
 .office-role-dialog select{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #dce3da;border-radius:9px;background:white;color:#263a36;font:14px/1.8 system-ui,sans-serif;}
+
+.office-chat-locator{padding:12px;background:var(--office-soft,#f4f7f2);border-radius:8px;margin:12px 0}.office-chat-locator strong{display:block}.office-chat-locator label{display:block;margin:10px 0}.office-chat-id{width:100%;min-width:0;font-family:ui-monospace,monospace}.office-chat-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.office-chat-actions select{flex:1;min-width:180px}.office-chat-locator p{overflow-wrap:anywhere;color:var(--office-muted,#627068)}

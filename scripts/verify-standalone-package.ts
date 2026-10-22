@@ -78,7 +78,7 @@ try {
   try {
     await remoteClient.connect(new StdioClientTransport({command:path.join(temp,'node_modules/.bin/mindpond-mcp-remote'),args:['--url',`http://127.0.0.1:${networkPort}/memory/mcp`,'--token-file',networkToken],env,stderr:'pipe'}));
     const denied=await remoteClient.callTool({name:'memory_identity',arguments:{}});assert(denied.isError);
-    const identity:any=await remoteClient.callTool({name:'memory_identity',arguments:{},_meta:{threadId:'package-thread'}});assert(!identity.isError);assert.equal(JSON.parse(identity.content[0].text).identity.protocol,'mindpond.role-memory.v1');
+    const identity:any=await remoteClient.callTool({name:'memory_identity',arguments:{},_meta:{threadId:'package-thread'}});assert(!identity.isError);assert.equal(JSON.parse(identity.content[0].text).identity.protocol,'mindpond.layered-memory.v2');
     const remoteSave=await remoteClient.callTool({name:'memory_save',arguments:{content:'Installed network entry writes to the approved role.',idempotencyKey:'package-network'},_meta:{threadId:'package-thread'}});
     assert(!remoteSave.isError);assert((await fs.stat(path.join(temp,'network.db'))).isFile());
   }finally{await remoteClient.close();}
@@ -153,7 +153,7 @@ try {
     await optional.init();try{await optional.save('Public optional model fallback fixture');await optional.buildRetrievalProfile('fixture');const recalled=await optional.recall('Public fixture',{retrievalProfile:'fixture',vectorAlgorithm:'hnsw'});assert.equal(recalled.retrieval.profile.algorithm.actual,'exact');assert.equal(recalled.retrieval.profile.algorithm.fallbackReason,'hnsw_unavailable');assert(recalled.results.length>0);}finally{await optional.close();}
     console.log('PASS installed model profile works without the optional native HNSW plugin');
     const seed = new MindPond({dbPath: ${JSON.stringify(path.join(temp, 'data', 'mindpond.db'))}});
-    await seed.init();const human=await seed.save('Human knowledge never available to unbound agent MCP');await seed.close();
+    await seed.init();const human=await seed.save('Human knowledge unavailable without native chat identity');await seed.close();
     const client=new Client({name:'installed-role-memory',version:'1'});
     await client.connect(new StdioClientTransport({command:${JSON.stringify(path.join(temp,'node_modules/.bin/mindpond-mcp'))},args:[],env:{...process.env,MINDPOND_TOOL_PROFILE:'full',MEMORY_TRUST_OPERATOR:'1'}}));
     try{
@@ -162,7 +162,7 @@ try {
       const denied=await client.callTool({name:'memory_save',arguments:{content:'Must not fall back to human',idempotencyKey:'deny'}});assert(denied.isError);
       assert((await client.callTool({name:'memory_get',arguments:{nodeId:human.id}})).isError);
     }finally{await client.close();}
-    console.log('PASS installed stdio denies missing identity, human access and full-profile bypass');
+    console.log('PASS installed stdio denies missing chat identity and full-profile bypass');
   `;
   await fs.writeFile(path.join(temp, 'mcp-smoke.mjs'), mcpScript);
   const mcp = await exec(process.execPath, [path.join(temp, 'mcp-smoke.mjs')], { cwd: temp, env, timeout: 20000, maxBuffer: 1_000_000 });

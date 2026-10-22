@@ -22,7 +22,7 @@ Office MCP 与 Memory MCP 分开配置。OpenCode 多聊天通过宿主会话插
 npm ci
 npm run build
 npm start                  # 工作台与 HTTP API，默认 http://127.0.0.1:7903
-npm run mcp                # 角色 Memory MCP stdio；无身份拒绝，人类使用工作台
+npm run mcp                # 分层 Memory MCP stdio；未绑定聊天为人类，已绑定则按角色隔离
 npm run check              # 构建、契约、传播、整理与真实 HTTP/MCP 回归
 ```
 
@@ -175,7 +175,7 @@ npm run check 覆盖规范化写入、上下文依据、复核停用/恢复、�
 
 用户可在工作台「维度与提示词」定义分类数量、含义、默认值、节点颜色和 agent 规则。原四维只是默认模板；详见 [自定义维度](docs/custom-dimensions.md)。
 
-日常 MCP 工作连接与多 agent 能力边界见 [OpenCode 工作接入](docs/opencode-work-integration.md) 和 [架构说明](docs/architecture.md)。公开接入固定为角色 Memory 与 Office 两个目录，不暴露 full/work 管理目录；完整保存规则按需读取。
+日常 MCP 工作连接与多 agent 能力边界见 [OpenCode 工作接入](docs/opencode-work-integration.md) 和 [架构说明](docs/architecture.md)。公开接入固定为分层 Memory 与 Office 两个目录，不暴露 full/work 管理目录；完整保存规则按需读取。
 
 最新机制与实际基线：[任务记忆循环](docs/task-memory-loop.md)。OpenCode 原生 session 接入见 [工作环境接入](docs/opencode-work-integration.md)。
 

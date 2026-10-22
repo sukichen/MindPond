@@ -9,7 +9,7 @@ import { MindPondError, toStructuredError } from '../core/errors.js';
 process.env.MINDPOND_LOG_STDERR='1';
 const graph=new GraphMemory();
 await graph.init();
-// Native adapters use the exact role-only MCP implementation. No parallel
+// Native adapters use the same layered-identity MCP implementation. No parallel
 // personal-domain or lifecycle path may choose an identity for an agent.
 const service=createOwnerMemoryServer(graph),client=new Client({name:'mindpond-native-adapter',version:'1'});
 const [serverTransport,clientTransport]=InMemoryTransport.createLinkedPair();
@@ -29,12 +29,12 @@ async function execute(request:any,signal:AbortSignal){
     if(request.tool==='__mindpond_native_schema'){
       const tools=(await client.listTools()).tools;
       const tool=tools.find(t=>t.name===request.args?.tool);
-      if(!tool)throw new MindPondError('invalid_input','Unknown role Memory tool');
+      if(!tool)throw new MindPondError('invalid_input','Unknown Memory tool');
       result={name:tool.name,description:tool.description,inputSchema:tool.inputSchema};
     }else{
       const response=await client.callTool({name:request.tool,arguments:request.args??{},_meta:{'ai.opencode/sessionID':request.sessionId}},undefined,{signal});
       const text=(response.content as Array<{type:string;text:string}>).find(c=>c.type==='text')!.text;
-      let payload;try{payload=JSON.parse(text);}catch{throw new MindPondError(response.isError?'invalid_input':'internal',response.isError?text:'Invalid role Memory response');}
+      let payload;try{payload=JSON.parse(text);}catch{throw new MindPondError(response.isError?'invalid_input':'internal',response.isError?text:'Invalid Memory response');}
       if(response.isError){process.stdout.write(JSON.stringify({id:request.id,error:payload.error??payload})+'\n');return;}
       result=payload;
     }

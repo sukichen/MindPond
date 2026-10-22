@@ -86,6 +86,7 @@ try {
         const response: any = await office.callTool({ name: 'role_sync', arguments: record.office });
         assert(!response.isError, JSON.stringify(response));
         const state = JSON.parse(response.content[0].text);
+        const unbound:any=await memory.callTool({name:'memory_identity',arguments:record.memory});assert(!unbound.isError);assert.equal(JSON.parse(unbound.content[0].text).owner.kind,'user','a real native OpenCode chat is human until role binding');
         const actor = { v: 1 as const, principal: 'human', agentId: 'fixture', runtimeId: 'seed-' + name, transport: 'http-mcp' as const, issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
         const app = await graph.roles.application({ action: 'submit', name, introduction: 'Fictional native test', reason: 'No model inference', key: name }, actor);
         const role = await graph.roles.review({ action: 'approve', applicationId: app.applicationId, expectedRevision: 1 }, admin);

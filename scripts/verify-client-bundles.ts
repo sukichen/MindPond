@@ -46,7 +46,7 @@ try{
   await client.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp.js')],env:{...process.env,...env,MINDPOND_TOOL_PROFILE:'full',MEMORY_TRUST_OPERATOR:'1',MEMORY_TRUST_DOMAINS:'[{"kind":"personal","id":"default"}]'} as Record<string,string>,stderr:'pipe'}));
   assert(!(await client.listTools()).tools.some(t=>t.name==='memory_message_save'||t.name==='memory_dedupe_scan'||t.name==='work_task_create'));
   assert.equal((await call(client,'memory_identity')).data.error.code,'identity_required','startup operator/domain settings cannot choose human identity');
-  const identity=(await call(client,'memory_identity',{},['codex','claude','opencode'][i])).data;assert.equal(identity.owner.id,roles[i].roleId);assert.equal(identity.identity.humanFallback,false);
+  const identity=(await call(client,'memory_identity',{},['codex','claude','opencode'][i])).data;assert.equal(identity.owner.id,roles[i].roleId);assert.equal(identity.identity.unidentifiedCallsDenied,true);
  }
  const saved=await call(clients[0],'memory_save',{content:'Role A private technique',idempotencyKey:'save'},'codex');assert(!saved.r.isError);
  assert((await call(clients[1],'memory_get',{nodeId:saved.data.id},'claude')).r.isError);

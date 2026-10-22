@@ -33,7 +33,7 @@ try{
  const denied=async(c:Client,name:string,args:any={},chat?:string)=>{const r:any=await raw(c,name,args,chat);assert(r.isError,'Expected denial: '+name);return JSON.parse(r.content[0].text);};
  assert.equal((await call(local,'memory_identity',{},'worker')).owner.id,roles[0].roleId,'stdio native metadata resolves role, never human fallback');
  assert.equal((await denied(local,'memory_identity')).error.code,'identity_required','unidentified local calls must never become human');
- await denied(local,'memory_save',{content:'unapproved must not become human',idempotencyKey:'bad'},'unapproved');
+ assert.equal((await call(local,'memory_save',{content:'Unbound human lesson',idempotencyKey:'human'},'unapproved')).owner.kind,'user');
  const privateMemory=await call(local,'memory_save',{content:'## Private task technique',idempotencyKey:'private'},'worker');
  assert.equal((await graph.memoryOwners.owner((await graph.getNodeById(privateMemory.id))!)).id,roles[0].roleId);
  await denied(local,'memory_get',{nodeId:privateMemory.id},'colleague');

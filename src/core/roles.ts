@@ -38,9 +38,13 @@ export class RoleStore {
       CREATE TABLE IF NOT EXISTS role_message_states(message_id TEXT PRIMARY KEY REFERENCES role_messages(id),state TEXT NOT NULL,updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS role_links(sender TEXT NOT NULL REFERENCES character_roles(id),recipient TEXT NOT NULL REFERENCES character_roles(id),PRIMARY KEY(sender,recipient));
       CREATE TABLE IF NOT EXISTS role_seats(seat_id TEXT PRIMARY KEY REFERENCES office_seats(id),role_id TEXT NOT NULL REFERENCES character_roles(id));
+      CREATE TABLE IF NOT EXISTS role_activation_dismissals(runtime_id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,state TEXT NOT NULL,updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS role_chat_sessions(runtime_id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,source TEXT NOT NULL,native_chat_id TEXT NOT NULL,last_seen INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS role_connection_requests(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL);
     `);
     await this.write(async()=>{
+      const requestColumns=await this.db.all<Row[]>('PRAGMA table_info(role_connection_requests)');
+      if(!requestColumns.some(c=>c.name==='revision'))await this.db.exec('ALTER TABLE role_connection_requests ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
       const roleColumns=await this.db.all<Row[]>('PRAGMA table_info(character_roles)');
       if(roleColumns.some(c=>c.name==='connector_id'))await this.db.exec('ALTER TABLE character_roles DROP COLUMN connector_id');
       await this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS role_one_active_binding ON role_bindings(role_id) WHERE state='active'");
@@ -96,23 +100,63 @@ export class RoleStore {
     return b;
   }
   private async badge(a: TrustedCallContext, b: Row) {
-    return { roleId: b.role_id, bindingId: b.id, bindingEpoch: b.epoch, name: b.name, introduction: b.introduction, profileRevision: b.profile_revision, bindingMode: a.runtimeMode ?? 'connection', isolation: 'Authenticated connector plus session correlation; shared credentials/configuration do not isolate mutually untrusted chats.', primaryAssignmentId: b.primary_seat ?? null };
+    return { chat:a.nativeChatId&&['codex_metadata','opencode_metadata'].includes(a.runtimeMode??'')?{source:a.runtimeMode==='codex_metadata'?'codex':'opencode',id:a.nativeChatId}:null,roleId: b.role_id, bindingId: b.id, bindingEpoch: b.epoch, name: b.name, introduction: b.introduction, profileRevision: b.profile_revision, bindingMode: a.runtimeMode ?? 'connection', isolation: 'Authenticated connector plus session correlation; shared credentials/configuration do not isolate mutually untrusted chats.', primaryAssignmentId: b.primary_seat ?? null };
   }
   async identity(a?: TrustedCallContext) {
     const b = await this.binding(a, false);
     return b ? this.badge(a!, b) : null;
+  }
+  async observeChat(a:TrustedCallContext){
+    const actor=this.actor(a),source=actor.runtimeMode==='codex_metadata'?'codex':actor.runtimeMode==='opencode_metadata'?'opencode':null;
+    if(!source||!actor.nativeChatId)return;
+    if(roleRuntimeId(actor.principal,actor.agentId,source,actor.nativeChatId)!==actor.runtimeId)fail('Native chat correlation does not match the authenticated runtime','invalid_input');
+    return this.write(async()=>{
+      if(!await this.offices.agentAuthority(actor))fail('Host credential disabled','scope_denied');
+      const old=await this.db.get<Row>('SELECT * FROM role_chat_sessions WHERE runtime_id=?',[actor.runtimeId]);
+      if(old&&this.clock()-old.last_seen<60000)return;
+      await this.db.run('INSERT INTO role_chat_sessions VALUES(?,?,?,?,?,?) ON CONFLICT(runtime_id) DO UPDATE SET last_seen=excluded.last_seen',[actor.runtimeId,actor.principal,actor.agentId,source,actor.nativeChatId,this.clock()]);
+      await this.event(null,'chat_observed',{connectorId:actor.agentId});
+    });
   }
   async connectionRequest(a:TrustedCallContext){return this.write(async()=>{
     const actor=this.actor(a);if(!await this.offices.agentAuthority(actor))fail('Host credential disabled','scope_denied');if(await this.db.get("SELECT 1 FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.runtime_id=? AND b.principal=? AND b.connector_id=? AND b.state='active' AND r.state='active'",[actor.runtimeId,actor.principal,actor.agentId]))return null;
     if(await this.db.get("SELECT 1 FROM role_applications WHERE principal=? AND connector_id=? AND runtime_id=? AND state='pending'",[actor.principal,actor.agentId,actor.runtimeId]))return null;
     await this.db.run('DELETE FROM role_connection_requests WHERE last_seen<?',[this.clock()-86400000]);
     const old=await this.db.get<Row>('SELECT * FROM role_connection_requests WHERE runtime_id=? AND principal=? AND connector_id=?',[actor.runtimeId,actor.principal,actor.agentId]);
-    if(old){await this.db.run('UPDATE role_connection_requests SET last_seen=? WHERE id=?',[this.clock(),old.id]);return {id:old.id,expiresAt:this.clock()+86400000};}
-    if((await this.db.get('SELECT COUNT(*) n FROM role_connection_requests')).n>=1024||(await this.db.get('SELECT COUNT(*) n FROM role_connection_requests WHERE connector_id=?',[actor.agentId])).n>=100)throw new MindPondError('temporarily_unavailable','Pending activation capacity reached; resolve or wait for old requests to expire');
-    const id=randomUUID();await this.db.run('INSERT INTO role_connection_requests VALUES(?,?,?,?,?,?)',[id,actor.principal,actor.agentId,actor.runtimeId,this.clock(),this.clock()]);await this.event(null,'connection_activation_requested',{requestId:id});return {id,expiresAt:this.clock()+86400000};
+    const chat=await this.db.get<Row>('SELECT source,native_chat_id id FROM role_chat_sessions WHERE runtime_id=?',[actor.runtimeId]);
+    const dismissed=await this.db.get<Row>('SELECT state FROM role_activation_dismissals WHERE runtime_id=?',[actor.runtimeId]);
+    if(dismissed)return {state:dismissed.state,chat:chat??null,notice:'The human dismissed this activation request. Automatic sync will not create another request. Continue without a role unless the user explicitly requests a new role application.'};
+    if(old){await this.db.run('UPDATE role_connection_requests SET last_seen=? WHERE id=?',[this.clock(),old.id]);return {id:old.id,state:'pending',revision:old.revision,chat:chat??null,expiresAt:this.clock()+86400000};}
+    if((await this.db.get("SELECT COUNT(*) n FROM role_connection_requests")).n>=1024||(await this.db.get("SELECT COUNT(*) n FROM role_connection_requests WHERE connector_id=?",[actor.agentId])).n>=100)throw new MindPondError('temporarily_unavailable','Pending activation capacity reached; resolve or dismiss requests in the workbench');
+    const id=randomUUID();await this.db.run("INSERT INTO role_connection_requests(id,principal,connector_id,runtime_id,created_at,last_seen,revision) VALUES(?,?,?,?,?,?,1)",[id,actor.principal,actor.agentId,actor.runtimeId,this.clock(),this.clock()]);await this.event(null,'connection_activation_requested',{requestId:id});return {id,state:'pending',revision:1,chat:chat??null,expiresAt:this.clock()+86400000};
+  });}
+  async resolveConnection(i:Row,a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
+    const request=await this.db.get<Row>('SELECT * FROM role_connection_requests WHERE id=?',[i.requestId]);
+    if(!request)fail('Activation request no longer exists','not_found');
+    if(request.revision!==i.expectedRevision)fail('Activation request changed; refresh before deciding','stale_version');
+    if(i.action!=='reject'&&i.action!=='delete')fail('Choose reject or delete','invalid_input');
+    const state=i.action==='reject'?'rejected':'deleted';
+    await this.dismissChat(request,state);
+    await this.event(null,'connection_activation_'+state,{requestId:request.id,connectorId:request.connector_id});
+    return {id:request.id,state,removedFromPending:true};
+  });}
+  private async dismissChat(app:Row,state:string){
+    // Delete the actual request. Keep only a runtime suppression marker so
+    // background sync cannot recreate a request the human just removed.
+    await this.db.run('DELETE FROM role_connection_requests WHERE runtime_id=?',[app.runtime_id]);
+    await this.db.run('INSERT INTO role_activation_dismissals VALUES(?,?,?,?,?) ON CONFLICT(runtime_id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at',[app.runtime_id,app.principal,app.connector_id,state,this.clock()]);
+  }
+  async deleteApplication(i:Row,a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
+    const app=await this.db.get<Row>('SELECT * FROM role_applications WHERE id=?',[i.applicationId]);
+    if(!app)fail('Application no longer exists','not_found');
+    if(app.revision!==i.expectedRevision||!['pending','rejected','cancelled'].includes(app.state))fail('Application changed; refresh before deleting','stale_version');
+    await this.db.run('DELETE FROM role_applications WHERE id=?',[app.id]);
+    await this.db.run("UPDATE role_receipts SET result=? WHERE principal=? AND connector_id=? AND runtime_id=? AND operation='application' AND json_extract(result,'$.applicationId')=?",[JSON.stringify({applicationId:app.id,state:'deleted'}),app.principal,app.connector_id,app.runtime_id,app.id]);
+    await this.dismissChat(app,'deleted');
+    await this.event(null,'application_deleted',{applicationId:app.id});return {applicationId:app.id,state:'deleted',removedFromPending:true};
   });}
   async activate(i:Row,a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
-    const request=await this.db.get<Row>('SELECT * FROM role_connection_requests WHERE id=? AND last_seen>?',[i.requestId,this.clock()-86400000]);
+    const request=await this.db.get<Row>("SELECT * FROM role_connection_requests WHERE id=? AND last_seen>?",[i.requestId,this.clock()-86400000]);
     if(!request)fail('Connection activation request expired or missing','not_found');
     const role=await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'",[i.roleId]);
     if(!role||role.principal!==request.principal)fail('Choose an active role belonging to this human account','invalid_input');
@@ -158,6 +202,7 @@ export class RoleStore {
         if (await this.db.get('SELECT 1 FROM role_applications WHERE principal=? AND connector_id=? AND runtime_id=? AND state=?', [actor.principal, actor.agentId, actor.runtimeId, 'pending'])) fail('An application is already pending; call role_sync','invalid_input');
         const count = await this.db.get<Row>("SELECT COUNT(*) n FROM role_applications WHERE principal=? AND state='pending'", [actor.principal]);
         if (count!.n >= 100) fail('Pending application limit reached', 'invalid_input');
+        await this.db.run('DELETE FROM role_activation_dismissals WHERE runtime_id=?',[actor.runtimeId]);
         const id = randomUUID();
         await this.db.run('INSERT INTO role_applications VALUES(?,?,?,?,?,?,?,?,?,1,NULL,?)', [id, actor.principal, actor.agentId, actor.runtimeId, actor.runtimeMode ?? 'connection', i.name, i.introduction, i.reason, 'pending', this.clock()]);
         await this.db.run('DELETE FROM role_connection_requests WHERE principal=? AND connector_id=? AND runtime_id=?',[actor.principal,actor.agentId,actor.runtimeId]);
@@ -213,6 +258,7 @@ export class RoleStore {
       if (app.state !== 'pending') fail('Application has already been reviewed', 'stale_version');
       if (i.action === 'reject') {
         await this.db.run("UPDATE role_applications SET state='rejected',revision=revision+1 WHERE id=?", [app.id]);
+        await this.dismissChat(app,'rejected');
         await this.event(null, 'application_rejected', { applicationId: app.id });
         return { state: 'rejected' };
       }
@@ -275,19 +321,19 @@ export class RoleStore {
     // Capture BEFORE reading rows: another process may commit while we read.
     // A stale snapshot then leaves a newer revision to fetch on the next poll.
     const revision=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM role_events'))!.n;
-    const rows = await this.db.all<Row[]>(`SELECT r.*,b.id binding_id,b.epoch,b.last_seen,b.connector_id,b.runtime_id,a.name connector_name,a.host,a.state host_state,
+    const rows = await this.db.all<Row[]>(`SELECT r.*,b.id binding_id,b.epoch,b.last_seen,b.connector_id,b.runtime_id,a.name connector_name,a.host,a.state host_state,c.source chat_source,c.native_chat_id,
       EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
       FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
-      LEFT JOIN office_agents a ON a.id=b.connector_id ORDER BY r.created_at,r.id LIMIT 500`);
-    const roles=rows.map(({connector_id,connector_name,runtime_id,host,host_state,...role})=>({...role,connection:role.binding_id?{
-      connectorId:connector_id,name:connector_name??connector_id,host,hostState:host_state,chatRef:runtime_id,bindingId:role.binding_id,lastSeen:role.last_seen
+      LEFT JOIN office_agents a ON a.id=b.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=b.runtime_id AND c.connector_id=b.connector_id AND c.principal=b.principal ORDER BY r.created_at,r.id LIMIT 500`);
+    const roles=rows.map(({connector_id,connector_name,runtime_id,host,host_state,chat_source,native_chat_id,...role})=>({...role,connection:role.binding_id?{
+      connectorId:connector_id,name:connector_name??connector_id,host,hostState:host_state,chat: native_chat_id?{source:chat_source,id:native_chat_id}:null,chatRef:runtime_id,bindingId:role.binding_id,lastSeen:role.last_seen
     }:null}));
-    const pending = await this.db.all('SELECT id,principal,connector_id,mode,name,introduction,reason,state,revision,created_at FROM role_applications WHERE state=? ORDER BY created_at LIMIT 100', ['pending']);
+    const pending = await this.db.all("SELECT p.*,c.source chat_source,c.native_chat_id FROM role_applications p LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal WHERE p.state='pending' ORDER BY p.created_at LIMIT 100");
     const mappings = await this.db.all('SELECT * FROM role_seats');
     const links = await this.db.all('SELECT sender,recipient FROM role_links ORDER BY sender,recipient');
     const messages = (await this.db.all<Row[]>(`SELECT m.*,s.state,s.taken_at,s.completed_at,s.completion FROM role_messages m JOIN role_message_states s ON s.message_id=m.id ORDER BY m.seq DESC LIMIT 100`)).map(m=>({...m,state:messageState(m.state),body:previewText(m.body,700),bodyTruncated:Buffer.byteLength(m.body)>700}));
     const events = await this.db.all('SELECT seq,role_id,kind,body,ts FROM role_events ORDER BY seq DESC LIMIT 100');
-    return { revision, roles, pending, connections:await this.db.all('SELECT * FROM role_connection_requests WHERE last_seen>? ORDER BY last_seen DESC LIMIT 100',[this.clock()-86400000]), mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
+    return { revision, roles, pending, connections:await this.db.all("SELECT p.*,c.source chat_source,c.native_chat_id FROM role_connection_requests p LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal WHERE p.last_seen>? ORDER BY p.last_seen DESC LIMIT 100",[this.clock()-86400000]), mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
   }
   async messagePreview(id:string|{messageId?:string;seq?:number},a?:TrustedCallContext){
     this.admin(a);

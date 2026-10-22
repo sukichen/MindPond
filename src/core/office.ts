@@ -230,6 +230,8 @@ export class OfficeStore {
       else await this.db.run('DELETE FROM office_agents WHERE id=?',[i.id]);
       await this.db.run('DELETE FROM office_agent_discovery WHERE agent_id=?',[i.id]);
       await this.db.run('DELETE FROM role_connection_requests WHERE connector_id=?',[i.id]);
+      await this.db.run('DELETE FROM role_chat_sessions WHERE connector_id=?',[i.id]);
+      await this.db.run('DELETE FROM role_activation_dismissals WHERE connector_id=?',[i.id]);
       await this.db.run("UPDATE role_applications SET state='cancelled',revision=revision+1 WHERE connector_id=? AND state='pending'",[i.id]);
       await this.db.run("INSERT INTO role_events(role_id,kind,body,ts) VALUES(NULL,'connector_deleted',?,?)",[JSON.stringify({connectorId:i.id}),this.clock()]);
       const projects=await this.db.all<Row[]>('SELECT * FROM office_projects WHERE EXISTS(SELECT 1 FROM json_each(members) WHERE value=?)',[i.id]);

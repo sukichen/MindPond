@@ -56,22 +56,22 @@ export async function createOpenCodeMemoryPlugin(host:OpenCodeHost,options:OpenC
   const scope={officeId:z.string().min(1).max(160).optional()},limit=z.number().int().min(1).max(30).optional(),budget=z.number().int().min(2048).max(65536).optional();
   return {
     tool:{
-      memory_identity:tool('memory_identity','Verify the approved Office role used by Memory. Missing identity denies access; never human fallback.',{}),
-      memory_brief:tool('memory_brief','Recall relevant private and permitted office knowledge; verify sources.',{...scope,task:z.string().min(1).max(100000),limit,contextBudgetBytes:budget}),
-      memory_search:tool('memory_search','Search private and permitted office knowledge.',{...scope,query:z.string().min(1).max(100000),limit,contextBudgetBytes:budget}),
+      memory_identity:tool('memory_identity','Verify the chat identity: unbound human or approved Office role. Missing chat metadata is an error.',{}),
+      memory_brief:tool('memory_brief','Recall knowledge allowed to the current human or role; verify sources.',{...scope,task:z.string().min(1).max(100000),limit,contextBudgetBytes:budget}),
+      memory_search:tool('memory_search','Search knowledge allowed to the current human or role.',{...scope,query:z.string().min(1).max(100000),limit,contextBudgetBytes:budget}),
       memory_get:tool('memory_get','Read an authorized memory.',{nodeId:z.string().min(1).max(160)}),
-      memory_directory:tool('memory_directory','List private and permitted office knowledge.',{...scope,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional()}),
+      memory_directory:tool('memory_directory','List knowledge allowed to the current human or role.',{...scope,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional()}),
       memory_save_policy:tool('memory_save_policy','Read current saving guidance and dimensions.',{}),
-      memory_action:{description:'Use a role Memory tool. describe:true returns its schema; identity cannot be supplied through arguments.',args:{tool:z.string().min(1).max(100),describe:z.boolean().optional(),arguments:z.record(z.string(),z.unknown()).optional()},execute:async(a:{tool:string;describe?:boolean;arguments?:unknown},c:{sessionID:string})=>{
+      memory_action:{description:'Use a layered Memory tool. describe:true returns its schema; identity cannot be supplied through arguments.',args:{tool:z.string().min(1).max(100),describe:z.boolean().optional(),arguments:z.record(z.string(),z.unknown()).optional()},execute:async(a:{tool:string;describe?:boolean;arguments?:unknown},c:{sessionID:string})=>{
         const schema=await call(c.sessionID,'__mindpond_native_schema',{tool:a.tool});
         return JSON.stringify(a.describe?schema:await call(c.sessionID,a.tool,a.arguments??{}));
       }}
     },
     'chat.message':async(input:{sessionID:string},_output:unknown)=>{
       try{await call(input.sessionID,'memory_identity');}
-      catch{await host.client.app?.log({body:{service:'mindpond',level:'warn',message:'MindPond role identity unavailable. Call Office role_sync and activate this chat before using Memory.'}});}
+      catch{await host.client.app?.log({body:{service:'mindpond',level:'warn',message:'MindPond chat identity unavailable. Reconnect the native session integration and verify memory_identity.'}});}
     },
-    'experimental.chat.system.transform':async(_input:unknown,output:{system:string[]})=>{output.system.push('MindPond Memory uses the same approved Office role as this chat. Verify memory_identity after role_sync; unknown identity denies access. Human management uses the web workbench. Save verified reusable lessons through memory_action(memory_save); never select a user, role, domain or workspace in arguments.');},
+    'experimental.chat.system.transform':async(_input:unknown,output:{system:string[]})=>{output.system.push('MindPond Memory follows this chat: an unbound chat is human and can access all knowledge; a bound chat accesses only its role and current offices. Verify memory_identity after role_sync or reconnect. Missing chat metadata is an error. Save verified reusable lessons through memory_action(memory_save); never select an identity in arguments.');},
     dispose:async()=>{transport.close();}
   };
 }

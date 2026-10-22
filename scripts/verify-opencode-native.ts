@@ -25,16 +25,17 @@ try{
  const call=async(name:string,args:any={},sessionID='a')=>JSON.parse(await plugin.tool[name].execute(args,{sessionID}));
  assert.equal((await call('memory_identity')).owner.id,roles[0].roleId);
  assert.equal((await call('memory_identity',{},'b')).owner.id,roles[1].roleId);
- await assert.rejects(call('memory_identity',{},'unbound'),/identity|scope_denied/);
+ assert.equal((await call('memory_identity',{},'unbound')).owner.kind,'user');
  await assert.rejects(call('memory_get',{nodeId:human.id}),/not_found|scope_denied/);
  const schema=await call('memory_action',{tool:'memory_save',describe:true});assert(!schema.inputSchema.properties.domain&&!schema.inputSchema.properties.roleId);
  const saved=await call('memory_action',{tool:'memory_save',arguments:{content:'Native A role knowledge',idempotencyKey:'save'}});
  assert.equal(saved.owner.id,roles[0].roleId);assert.equal((await graph.getNodeById(saved.id))!.domain.id,'agent:'+roles[0].roleId);
  await assert.rejects(call('memory_get',{nodeId:saved.id},'b'),/not_found|scope_denied/);
  await assert.rejects(call('memory_action',{tool:'memory_save',arguments:{content:'Must deny',domain:{kind:'personal',id:'default'},idempotencyKey:'override'}}),/unrecognized|Unrecognized|invalid_input|invalid/i);
- await assert.rejects(call('memory_action',{tool:'memory_native_schema',describe:true}),/Unknown role Memory tool/);
+ await assert.rejects(call('memory_action',{tool:'memory_native_schema',describe:true}),/Unknown Memory tool/);
  const wrong=await createOpenCodeMemoryPlugin(host,{...options,dbPath:path.join(dir,'wrong.db')});plugins.push(wrong);
- await assert.rejects(wrong.tool.memory_identity.execute({},{sessionID:'a'}),/identity|scope_denied/,'a different database cannot grant human access');
+ assert.equal(JSON.parse(await wrong.tool.memory_identity.execute({},{sessionID:'a'})).owner.kind,'user','identity is resolved against the configured server database; deployments must pair Office and Memory');
+ assert.equal(JSON.parse(await wrong.tool.memory_directory.execute({},{sessionID:'a'})).total,0);
  await plugin['chat.message']({sessionID:'a'},{parts:[]});
  assert.equal((await (graph as any).db.get("SELECT COUNT(*) n FROM nodes WHERE layer='L0'")).n,0,'No silent transcript ingestion to a personal/session domain');
  await plugin.dispose();
@@ -43,5 +44,5 @@ try{
  await graph.offices.configureAgent({id:'host',principal:'human',name:'OpenCode fixture',host:'opencode',state:'disabled',expectedRevision:1},admin);
  await assert.rejects(resumed.tool.memory_get.execute({nodeId:saved.id},{sessionID:'a'}),/scope_denied|identity_required/);
  assert.equal((await graph.getNodeById(human.id))!.content,'Human-only fixture');
- console.log('PASS native OpenCode real worker: same Office role, two chat identities, wrong DB/unbound rejection, private isolation, no personal selectors/capture, reconnect and host revocation');
+ console.log('PASS native OpenCode real worker: same Office role, two chat identities, configured-database identity and unbound human access, private isolation, no personal selectors/capture, reconnect and host revocation');
 }finally{for(const p of plugins)await p.dispose();await graph.close();await fs.rm(dir,{recursive:true,force:true});}
