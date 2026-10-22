@@ -67,7 +67,8 @@ export async function evictDegreeNeighbour(db: Database, nodeId: string, neighbo
 
 /** Caller owns BEGIN IMMEDIATE. Preflight BOTH endpoints before deleting any
  * relation, so a refusal at the second endpoint cannot damage the first. */
-export async function admitDegreeNeighbour(db: Database, a: string, b: string, weight: number, limit: number, oneWay = false) {
+export async function admitDegreeNeighbour(db: Database, a: string, b: string, weight: number, limit: number, oneWay = false,
+  authorizeEviction?: (nodeId:string, neighbourId:string) => Promise<void>) {
   const evictions: Array<[string, string]> = [];
   for (const [node, neighbour] of oneWay ? [[a,b]] : [[a,b],[b,a]]) {
     const neighbours = await degreeNeighbours(db, node);
@@ -78,6 +79,9 @@ export async function admitDegreeNeighbour(db: Database, a: string, b: string, w
     if (weakest.some(row => row.weight >= weight)) return false;
     for (const row of weakest) evictions.push([node, row.neighbour]);
   }
+  // Replacing a neighbour changes both memories' topology. Authorize every
+  // affected pair before deleting anything, including human-locked knowledge.
+  for (const [node, neighbour] of evictions) await authorizeEviction?.(node, neighbour);
   for (const [node, neighbour] of evictions)
     await evictDegreeNeighbour(db, node, neighbour, limit, `replaced by weight ${weight}`);
   return true;

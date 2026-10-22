@@ -28,8 +28,14 @@ try{
  assert.equal((await call('memory_identity',{},'unbound')).owner.kind,'user');
  await assert.rejects(call('memory_get',{nodeId:human.id}),/not_found|scope_denied/);
  const schema=await call('memory_action',{tool:'memory_save',describe:true});assert(!schema.inputSchema.properties.domain&&!schema.inputSchema.properties.roleId);
+ assert(schema.inputSchema.properties.related&&schema.inputSchema.properties.anchors,'Native schema preserves scored graph saving');
  const saved=await call('memory_action',{tool:'memory_save',arguments:{content:'Native A role knowledge',idempotencyKey:'save'}});
  assert.equal(saved.owner.id,roles[0].roleId);assert.equal((await graph.getNodeById(saved.id))!.domain.id,'agent:'+roles[0].roleId);
+ const companion=await call('memory_action',{tool:'memory_save',arguments:{content:'Native A complementary skill',idempotencyKey:'companion',related:[{memoryId:saved.id,score:0.8,reason:'Verified complementary procedure',context:'Use together in the tested native runtime'}]}});
+ assert.equal(companion.edgesCreated,1);
+ const connections=await call('memory_action',{tool:'memory_connections',arguments:{nodeId:saved.id}});
+ assert.equal(connections.connections[0].weight,0.8);assert.equal(connections.connections[0].neighbor.id,companion.id);
+ await assert.rejects(call('memory_action',{tool:'memory_association_get',arguments:{id:connections.connections[0].id}},'b'),/not_found|scope_denied/);
  await assert.rejects(call('memory_get',{nodeId:saved.id},'b'),/not_found|scope_denied/);
  await assert.rejects(call('memory_action',{tool:'memory_save',arguments:{content:'Must deny',domain:{kind:'personal',id:'default'},idempotencyKey:'override'}}),/unrecognized|Unrecognized|invalid_input|invalid/i);
  await assert.rejects(call('memory_action',{tool:'memory_native_schema',describe:true}),/Unknown Memory tool/);

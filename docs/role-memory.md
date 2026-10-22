@@ -81,6 +81,46 @@ Codex 每次工具调用的 `_meta.threadId` 是角色的聊天标识；不是�
 
 生产代理、管理密钥、升级与实际验收见[部署指南](deployment.md)。记忆页把“添加知识”和“专用连接”分开：日常只需搜索、选择角色、确认副本。高级连接不会在添加知识时签发或轮换凭据。
 
+## 图关联与相关性分数
+
+分层身份只限制记忆访问范围，不取消图记忆能力。公开 Memory MCP 提供以下接口；Office MCP 继续不提供记忆读写。
+
+| 操作 | 接口 | 用法 |
+| --- | --- | --- |
+| 查询相关知识 | `memory_brief` / `memory_search` | 结果含 `score`、深度与路径，返回检索通道和降级状态 `retrieval` |
+| 读取图操作标识 | `memory_get` | 完整记忆、来源、锚点和活动 `memberships` |
+| 保存并建立关联 | `memory_save.related[]` | 实际读过的目标、`score`（0–1）、理由 `reason`、适用条件 `context`；多分类时用精确 `membershipId` |
+| 查看邻居 | `memory_connections` | 双向关联、`weight`、邻居预览、证据状态；支持 `offset` / `limit` 分页 |
+| 阅读关联证据 | `memory_association_get` | 按关联 `id` 读取完整证据及复核记录 |
+| 建立或调整关联 | `memory_association_upsert` | 两个实际读过的 `memberAId` / `memberBId`、`weight`、理由和条件；空间与分类由服务端校验 |
+| 复核证据 | `memory_association_review` | 关联 `id`、`evidenceId`、`expectedUpdatedAt`、`confirm` / `retire` 与具体理由 |
+| 删除关联 | `memory_association_delete` | 关联 `id` 与审计理由 `reason`；永久删除 |
+
+`score` 是相对当前查询的检索排序分；保存时的 `related[].score` 和关联的 `weight` 是带证据的共同回忆强度。两者都不是事实正确率，不能把检索分直接当成写入权重。
+
+HTTP MCP 直接提供这些工具。本机 OpenCode Memory 插件通过 `memory_action` 使用同一套工具，例如 `{"tool":"memory_connections","arguments":{"nodeId":"实际记忆 ID"}}`；传 `describe:true` 可读取当前工具的准确 schema。
+
+例如，先查阅记忆 A，确认新的排错经验与它在特定环境中配合使用，再保存 B：
+
+```json
+{
+  "content": "## 排错经验 B\n适用版本、已验证步骤、失败尝试及来源。",
+  "idempotencyKey": "verified-environment-lesson-b-v1",
+  "related": [{
+    "memoryId": "实际读过的记忆 A 的 ID",
+    "score": 0.8,
+    "reason": "两条经验分别解决同一故障的定位和修复步骤",
+    "context": "仅在已验证的该运行环境与版本下配合使用，其他版本尚未确认"
+  }]
+}
+```
+
+两条记忆必须属于同一归属、同一语义空间和分类；角色能同时阅读私有知识和办公室知识，并不表示可以跨归属建边。新增记忆固定放在内部 `memory` 空间，无需选择 workspace。已有其它语义空间的知识不会自动搬迁；通过 `memory_get` 的活动 membership ID，可在其既有空间维护关联。新记忆分类使用 `memory_save_policy` 返回的配置。
+
+每个记忆默认最多六个不同相关邻居。所有证据被撤销的关联保留复核记录，但不再传播；在连接列表中通过 `evidenceStatus = retired` 识别。角色可以读取锁定办公室记忆的关联，不能建边、改权重、撤销证据或删边来改变其拓扑；满额替换也不能删除涉及锁定记忆的关联。写入时重查当前角色、办公室和锁定状态，拒绝则整笔回滚。给角色分配独立副本不复制来源的私人关联。
+
+`npm run verify:layered-memory-graph` 验证真实 MCP 调用、图传播与分数、锚点、关联复核、六邻居限制、锁定与调换办公室时的并发保护。测试使用隔离数据库与固定嵌入，不调用外部模型。
+
 ## 角色切换宿主
 
 角色不属于申请时的 Codex 或 OpenCode。角色表只保存人类账户和人物资料，当前连接由唯一有效的聊天绑定决定；角色目录和详情显示宿主类型、连接名称、聊天关联及最近通信时间，通信记录不代表宿主当前在线。

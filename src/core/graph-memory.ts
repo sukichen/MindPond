@@ -57,6 +57,7 @@ import {MemoryOwners} from './memory-owners.js';
  * Kept outside model arguments and receipt hashes. */
 export interface MemoryWriteHooks {
   authorize?: () => Promise<void>;
+  authorizeAssociation?: (memoryAId:string, memoryBId:string) => Promise<void>;
   saved?: (id:string) => Promise<void>;
 }
 export interface MemoryEditPatch {
@@ -1747,7 +1748,7 @@ export class GraphMemory {
         const createdAssociations = new Set<string>();
         for (const { target, rel } of resolved) {
           const own = memberships.find(m => m.spaceId === target.spaceId && m.memoryType === target.memoryType)!;
-          const association = await this.upsertAssociationLocked(own.id, target.id, target.spaceId, target.memoryType, rel.score, rel);
+          const association = await this.upsertAssociationLocked(own.id, target.id, target.spaceId, target.memoryType, rel.score, rel, hooks.authorizeAssociation);
           createdAssociations.add(association.id);
         }
         if (sourceRefs.length) await this.db!.run('INSERT INTO memory_sources(memory_id,payload) VALUES (?,?)', [id,stableJSON(sourceRefs)]);
@@ -2201,20 +2202,28 @@ export class GraphMemory {
     return rows.map((row: any) => this.rowToMembership(row));
   }
 
+  async getMembershipById(id:string, context?:DomainReadContext):Promise<MemoryMembership> {
+    const row=await this.db!.get<any>('SELECT * FROM memory_memberships WHERE id=? AND active=1',[id]);
+    if(!row || !await this.getNodeById(row.memory_id,{trackAccess:false,context}))
+      throw new MindPondError('not_found','Active membership not found in your knowledge');
+    return this.rowToMembership(row);
+  }
+
   /** Create/reweight an undirected association.  Both membership ids must be
    * active members of exactly the supplied space and type. */
   async upsertAssociation(
     memberAId: string, memberBId: string, spaceId: string, memoryType: string, weight = 0.5,
-    basis?: AssociationBasis, teamAuthorization?: string, context?: DomainReadContext,
+    basis?: AssociationBasis, teamAuthorization?: string, context?: DomainReadContext, hooks:MemoryWriteHooks = {},
   ): Promise<MemoryAssociation> {
     return this.withWriteLock(async () => {
       await this.db!.exec('BEGIN IMMEDIATE');
       try {
+        await hooks.authorize?.();
         if (context) { await this.assertMembershipReadable(memberAId, context); await this.assertMembershipReadable(memberBId, context); }
         const domains = await this.db!.all<any>('SELECT n.domain_kind,n.domain_id FROM memory_memberships m JOIN nodes n ON n.id=m.memory_id WHERE m.id IN (?,?)',[memberAId,memberBId]);
         if (domains.length !== 2 || domains[0].domain_kind !== domains[1].domain_kind || domains[0].domain_id !== domains[1].domain_id) throw new Error('Associations cannot cross memory domains');
         await this.assertTeamWrite({kind:domains[0].domain_kind, id:domains[0].domain_id}, teamAuthorization, 'association');
-        const result = await this.upsertAssociationLocked(memberAId, memberBId, spaceId, memoryType, weight, basis);
+        const result = await this.upsertAssociationLocked(memberAId, memberBId, spaceId, memoryType, weight, basis, hooks.authorizeAssociation);
         await this.db!.exec('COMMIT'); return result;
       } catch (e) { await this.db!.exec('ROLLBACK'); throw e; }
     });
@@ -2243,7 +2252,7 @@ export class GraphMemory {
   }
 
   /** Explicit host/human review; original observations remain immutable. */
-  async reviewAssociationEvidence(id: string, evidenceId: string, decision: 'confirm' | 'retire', reason: string, expectedUpdatedAt?: number, teamAuthorization?: string, context?: DomainReadContext) {
+  async reviewAssociationEvidence(id: string, evidenceId: string, decision: 'confirm' | 'retire', reason: string, expectedUpdatedAt?: number, teamAuthorization?: string, context?: DomainReadContext, hooks:MemoryWriteHooks = {}) {
     if (!['confirm', 'retire'].includes(decision) || typeof reason !== 'string' || !reason.trim() || reason.length > 2000)
       throw new Error('Review requires confirm/retire and a concrete reason (1–2000 characters)');
     return this.withWriteLock(async () => {
@@ -2251,12 +2260,13 @@ export class GraphMemory {
       try {
         const edge = await this.db!.get<any>('SELECT * FROM memory_associations WHERE id = ?', [id]);
         const row = await this.db!.get<any>('SELECT payload FROM association_evidence WHERE association_id = ? AND id = ?', [id, evidenceId]);
-        if (!edge || !row) throw new Error('Association evidence not found');
+        if (!edge || !row) throw new MindPondError('not_found', 'Association evidence not found');
+        await hooks.authorize?.();
         if (context) { await this.assertMembershipReadable(edge.member_a_id, context); await this.assertMembershipReadable(edge.member_b_id, context); }
         const endpoint = await this.db!.get<any>('SELECT n.domain_kind,n.domain_id FROM memory_memberships m JOIN nodes n ON n.id=m.memory_id WHERE m.id=?',[edge.member_a_id]);
         if (!endpoint) throw new Error('Association endpoint is missing');
         await this.assertTeamWrite({kind:endpoint.domain_kind,id:endpoint.domain_id}, teamAuthorization, 'association');
-        if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== edge.updated_at) throw new Error('stale_snapshot: association changed');
+        if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== edge.updated_at) throw new MindPondError('stale_version', 'Association changed; read its current version before reviewing');
         const members = await this.db!.all<any>('SELECT id, version FROM memory_memberships WHERE id IN (?, ?) AND active = 1', [edge.member_a_id, edge.member_b_id]);
         if (members.length !== 2) throw new Error('Association endpoints are inactive');
         const versions = new Map(members.map((m: any) => [m.id, m.version]));
@@ -2276,7 +2286,7 @@ export class GraphMemory {
 
   private async upsertAssociationLocked(
     memberAId: string, memberBId: string, spaceId: string, memoryType: string, weight = 0.5,
-    basis?: AssociationBasis,
+    basis?: AssociationBasis, authorizePair?: (memoryAId:string, memoryBId:string) => Promise<void>,
   ): Promise<MemoryAssociation> {
     if (!this.db) throw new Error('Database not initialized');
     if (basis) this.validateAssociationBasis(basis);
@@ -2293,7 +2303,8 @@ export class GraphMemory {
     const domains = await this.db.all<any>('SELECT n.domain_kind,n.domain_id FROM memory_memberships m JOIN nodes n ON n.id=m.memory_id WHERE m.id IN (?,?)',[memberAId,memberBId]);
     if (domains.length !== 2 || domains[0].domain_kind !== domains[1].domain_kind || domains[0].domain_id !== domains[1].domain_id)
       throw new Error('Associations cannot cross memory domains');
-    await this.requireAssociationCapacity(a.memory_id, b.memory_id, weight);
+    await authorizePair?.(a.memory_id, b.memory_id);
+    await this.requireAssociationCapacity(a.memory_id, b.memory_id, weight, false, authorizePair);
     const [memberA, memberB] = memberAId < memberBId ? [memberAId, memberBId] : [memberBId, memberAId];
     const clamped = Math.max(0, Math.min(1, weight));
     const existing = await this.db.get<any>(
@@ -2527,11 +2538,12 @@ export class GraphMemory {
     });
   }
 
-  async listAssociations(memoryId?: string, options: { context?: DomainReadContext; membershipIds?: string[] } = {}): Promise<MemoryAssociation[]> {
+  async listAssociations(memoryId?: string, options: { context?: DomainReadContext; membershipIds?: string[]; id?:string; includeInactive?:boolean } = {}): Promise<MemoryAssociation[]> {
     const readable = options.context ? resolveReadDomains(options.context) : undefined;
     if ((readable && !readable.length) || (options.membershipIds && !options.membershipIds.length)) return [];
-    const where = ['x.active = 1', 'y.active = 1', 'nx.domain_kind = ny.domain_kind', 'nx.domain_id = ny.domain_id'];
+    const where = [...(options.includeInactive?[]:['x.active = 1', 'y.active = 1']), 'nx.domain_kind = ny.domain_kind', 'nx.domain_id = ny.domain_id'];
     const params: unknown[] = [];
+    if (options.id) { where.push('a.id = ?'); params.push(options.id); }
     if (memoryId) { where.push('(x.memory_id = ? OR y.memory_id = ?)'); params.push(memoryId, memoryId); }
     if (options.membershipIds) {
       const slots = options.membershipIds.map(() => '?').join(',');
@@ -2551,8 +2563,9 @@ export class GraphMemory {
       ...this.describeEvidence(JSON.parse(r.evidence_json), new Map([[r.member_a_id, r.version_a], [r.member_b_id, r.version_b]])) }));
   }
 
-  async deleteAssociation(id: string, reason = 'host-requested removal', teamAuthorization?: string, context?: DomainReadContext): Promise<boolean> {
-    return this.withWriteLock(async () => {
+  async deleteAssociation(id: string, reason = 'host-requested removal', teamAuthorization?: string, context?: DomainReadContext, hooks:MemoryWriteHooks = {}): Promise<boolean> {
+    return this.growthWrite(async () => {
+      await hooks.authorize?.();
       const row = await this.db!.get<any>('SELECT * FROM memory_associations WHERE id = ?', [id]);
       if (!row) return false;
       if (context) { await this.assertMembershipReadable(row.member_a_id, context); await this.assertMembershipReadable(row.member_b_id, context); }
@@ -3394,8 +3407,9 @@ export class GraphMemory {
     ...GraphMemory.ASSOCIATIVE_LABELS, ...GraphMemory.STRUCTURAL_LABELS, 'contradicts',
   ]);
 
-  private async requireAssociationCapacity(a: string, b: string, weight: number, oneWay = false): Promise<void> {
-    if (!(await admitDegreeNeighbour(this.db!, a, b, weight, this.maxAssociationDegree, oneWay)))
+  private async requireAssociationCapacity(a: string, b: string, weight: number, oneWay = false,
+    authorizeEviction?: (memoryAId:string, memoryBId:string) => Promise<void>): Promise<void> {
+    if (!(await admitDegreeNeighbour(this.db!, a, b, weight, this.maxAssociationDegree, oneWay, authorizeEviction)))
       throw new MindPondError('invalid_input', `Association neighbour limit ${this.maxAssociationDegree} reached; new weight must exceed the weakest existing neighbour`, {
         nextAction: 'Keep the existing associations or supply stronger evidence for a higher weight.',
       });

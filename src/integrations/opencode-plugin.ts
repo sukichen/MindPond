@@ -62,7 +62,7 @@ export async function createOpenCodeMemoryPlugin(host:OpenCodeHost,options:OpenC
       memory_get:tool('memory_get','Read an authorized memory.',{nodeId:z.string().min(1).max(160)}),
       memory_directory:tool('memory_directory','List knowledge allowed to the current human or role.',{...scope,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional()}),
       memory_save_policy:tool('memory_save_policy','Read current saving guidance and dimensions.',{}),
-      memory_action:{description:'Use a layered Memory tool. describe:true returns its schema; identity cannot be supplied through arguments.',args:{tool:z.string().min(1).max(100),describe:z.boolean().optional(),arguments:z.record(z.string(),z.unknown()).optional()},execute:async(a:{tool:string;describe?:boolean;arguments?:unknown},c:{sessionID:string})=>{
+      memory_action:{description:'Use a layered Memory tool: memory_save (scored related[], anchors), memory_update/delete, memory_connections, memory_association_get/upsert/review/delete or memory_use_report. describe:true returns its schema; identity cannot be selected.',args:{tool:z.string().min(1).max(100),describe:z.boolean().optional(),arguments:z.record(z.string(),z.unknown()).optional()},execute:async(a:{tool:string;describe?:boolean;arguments?:unknown},c:{sessionID:string})=>{
         const schema=await call(c.sessionID,'__mindpond_native_schema',{tool:a.tool});
         return JSON.stringify(a.describe?schema:await call(c.sessionID,a.tool,a.arguments??{}));
       }}

@@ -50,7 +50,7 @@ try {
   carried = (await g.listAssociations(replacement))[0]; assert.equal(carried.evidence!.length, 2); assert.equal(carried.evidenceStatus, 'needs_review');
   for (const e of carried.evidence!) await g.reviewAssociationEvidence(carried.id, e.id, 'confirm', '核对整合正文仍保留本地调试和代理访问条件');
   assert.equal((await g.listAssociations(replacement))[0].evidenceStatus, 'supported');
-  await assert.rejects(g.reviewAssociationEvidence(carried.id, carried.evidence![0].id, 'retire', '旧页面提交', carried.updatedAt), /stale_snapshot/);
+  await assert.rejects(g.reviewAssociationEvidence(carried.id, carried.evidence![0].id, 'retire', '过期页面提交', carried.updatedAt), (e:any)=>e.code==='stale_version');
   for (const e of carried.evidence!) await g.reviewAssociationEvidence(carried.id, e.id, 'retire', '测试：已确认此代理方案整体停用');
   assert.equal((await g.listAssociations(replacement))[0].evidenceStatus, 'retired');
   assert(!(await g.search({ nodeId: c.id, maxDepth: 2, spaceId, memoryType })).some(r => r.node.id === replacement));
