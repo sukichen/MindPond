@@ -117,6 +117,7 @@ try {
 
   // ---- legacy bare errors classify at the boundary ----
   assert.equal(toStructuredError(new Error('stale_observation: reload current source observation')).code, 'stale_version');
+  assert.equal(toStructuredError(new Error('stale_snapshot: memory was edited')).code, 'stale_version');
   assert.equal(toStructuredError(new Error('Only failed work may be explicitly retried')).code, 'invalid_input');
   assert.equal(toStructuredError(new Error('Checkpoint memory outside active domain scope')).code, 'scope_denied');
   ok('legacy error messages classify into the unified table');

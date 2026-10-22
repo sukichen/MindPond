@@ -65,7 +65,7 @@ try {
   const edits=await Promise.all([a,b].map((x,i)=>x.callTool({name:'memory_update',arguments:{
     nodeId:id,expectedUpdatedAt:before.updatedAt,content:'Checked loopback proxy, revision '+i+'. Production is unverified.',reason:'fresh evidence'}})));
   assert.equal(edits.filter(r=>!r.isError).length,1,'optimistic edits must not overwrite each other');
-  assert.equal(decode(edits.find(r=>r.isError)).error.code,'stale_lease');
+  assert.equal(decode(edits.find(r=>r.isError)).error.code,'stale_version');
   assert.match(decode(edits.find(r=>r.isError)).error.message,/stale_snapshot/);
   console.log('PASS parallel edits: one update wins; stale update cannot overwrite');
 

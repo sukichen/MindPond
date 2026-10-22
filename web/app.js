@@ -55,7 +55,7 @@ function renderDimensionChoices(){
 $('memoryDimensions').oninput=renderDimensionChoices;
 function types(prefix) {
   const space = $(prefix + 'Space').value;
-  options(prefix + 'Type', [...new Set(state.spaces.filter(s => !space || s.spaceId === space).map(s => s.memoryType))], prefix === 'org' ? '选择类型' : '全部类型');
+  options(prefix + 'Type', [...new Set((prefix==='org'?(state.orgSpaces||state.spaces):state.spaces).filter(s => !space || s.spaceId === space).map(s => s.memoryType))], prefix === 'org' ? '选择类型' : '全部类型');
 }
 function scope(prefix) {
   return { spaceId: $(prefix + 'Space').value || undefined, memoryType: $(prefix + 'Type').value || undefined };
@@ -88,6 +88,12 @@ function applyMemoryOwners(owners){
   $('searchOwner').replaceChildren(new Option('全部记忆（人类管理）',''),...memoryRoles.map(r=>new Option('角色 · '+memoryRoleName(r)+(r.state==='active'?'':'（已停用）'),r.id)),...memoryOffices.map(o=>new Option('办公室 · '+o.title+(o.state==='deleted'?'（已删除）':''),'office:'+o.id)));
   if(memoryRoles.some(r=>r.id===previousOwner)||memoryOffices.some(o=>'office:'+o.id===previousOwner))$('searchOwner').value=previousOwner;
   else if(previousOwner)$('searchOwner').onchange();
+  if(!state.task&&!state.claiming){
+  const previousOrg=$('orgOwner').value;
+  $('orgOwner').replaceChildren(new Option('人类记忆','user'),...memoryRoles.map(r=>new Option('角色 · '+memoryRoleName(r),'agent:'+r.id)),...memoryOffices.map(o=>new Option('办公室 · '+o.title,'office:'+o.id)));
+  $('orgOwner').value=memoryRoles.some(r=>'agent:'+r.id===previousOrg)||memoryOffices.some(o=>'office:'+o.id===previousOrg)?previousOrg:'user';
+  if(previousOrg&&previousOrg!==$('orgOwner').value)invalidateOrganizationOwner();
+  }
   for(const id of ['assignmentRole','roleConnectionRole']){const previous=$(id).value;$(id).replaceChildren(new Option('请选择角色',''),...memoryRoles.filter(r=>r.state==='active').map(r=>new Option(memoryRoleName(r),r.id)));if(memoryRoles.some(r=>r.id===previous&&r.state==='active'))$(id).value=previous;}
   $('confirmAssignment').disabled=!$('assignmentRole').value;
   updateRoleConnection();
@@ -109,10 +115,11 @@ async function refreshMeta() {
   state.spaces = scopes.spaces;
   $('stats').textContent = '共 '+stats.stats.total + ' 条记忆';
   memoryConnectionStatus(true,'已连接 · 人类管理');$('memoryConnectionSettings').open=false;
-  for (const prefix of ['library', 'org', 'graph']) {
+  for (const prefix of ['library', 'graph']) {
     options(prefix + 'Space', [...new Set(state.spaces.map(s => s.spaceId))], prefix === 'org' ? '选择空间' : '全部空间');
     types(prefix);
   }
+  await refreshOrganizationScopes();
   }catch(error){memoryMcpUrl=null;memoryConnectionStatus(false,'未连接：'+error.message);throw error;}
 }
 async function show(view) {
@@ -125,7 +132,7 @@ async function show(view) {
   if (view === 'work') await loadWorkContexts();
   if (view === 'log') await loadLog();
   if (view === 'graph') await loadGraph();
-  if (view === 'organize') await loadOrganizationRequests();
+  if (view === 'organize') {await refreshMemoryOwners();await refreshOrganizationScopes();await loadOrganizationRequests();}
 }
 function evidenceView(a) {
   const box = text('div', '', 'evidence-box');
@@ -216,7 +223,7 @@ async function loadLibrary() {
   const revision=++libraryRevision,roleId=$('libraryOwner').value;
   $('libraryResults').replaceChildren(empty('正在读取记忆…','请稍候'));$('librarySummary').textContent='';
   const q = new URLSearchParams({ limit: '30', offset: String(state.page * 30), activeOnly: $('libraryState').value, scope: 'operator' });
-  if(roleId){q.delete('scope');q.set('domains',JSON.stringify([{kind:'personal',id:roleId.startsWith('office:')?roleId:'agent:'+roleId}]));}
+  if(roleId)q.set(roleId.startsWith('office:')?'ownerOfficeId':'ownerRoleId',roleId.startsWith('office:')?roleId.slice(7):roleId);
   for (const [k, v] of Object.entries(scope('library'))) if (v) q.set(k, v);
   if ($('libraryLayer').value) q.set('layer', $('libraryLayer').value);
   if ($('libraryDimension').value) q.set('dimension', $('libraryDimension').value);
@@ -265,9 +272,7 @@ async function openMemory(id) {
   $('memoryAnchors').value=JSON.stringify((data?.node.anchors||[]).map(({text,basis,spaceId,memoryType})=>({text,basis,spaceId,memoryType})),null,2);
   $('reviewAnchors').checked=false;
   $('anchorStatus').textContent=(data?.node.anchors||[]).filter(a=>a.status==='needs_review').length+' 个入口待复核';
-  $('memoryTags').value = (data?.node.tags || []).join(', '); $('newScope').hidden = !!id;
-  $('newSpace').value='memory';$('newType').value=state.dimensions?.defaultDimension||'work';for(const id of ['newSpace','newType','newDomainKind','newDomainId','newTeamAuthorization'])$(id).closest('label').hidden=true;
-  $('newDomainKind').value = data?.node.domain?.kind || 'personal'; $('newDomainId').value = data?.node.domain?.id || 'default'; $('newTeamAuthorization').value = '';
+  $('memoryTags').value = (data?.node.tags || []).join(', ');
   $('memoryScope').textContent=data?ownerLabel(data.node.owner)+'。独立副本的修改不会同步到来源。':'选择记忆归属。办公室记忆由成员共享，角色私有经验保存在角色名下。';
   if(data?.node.provenance){const p=data.node.provenance;$('memoryScope').append(text('p','副本来源：'+p.sourceId+' · 来源版本 '+when(p.sourceRevision)),button('查看原记忆',()=>openMemory(p.sourceId)));}
   $('nodeLog').hidden = !id; $('deleteArea').hidden = !id; $('deleteConfirm').checked = false; $('deleteMemory').disabled = true;
@@ -324,11 +329,8 @@ $('memoryForm').onsubmit = e => { e.preventDefault(); run(async () => {
     await api('./api/memory/update', { nodeId: state.memory.node.id, scope: 'operator', ...patch,
     expectedContent: state.memory.node.content, expectedUpdatedAt: state.memory.node.updatedAt,teamAuthorization:$('memoryTeamAuthorization').value||undefined });
   } else {
-    if (!$('newSpace').value.trim() || !$('newType').value.trim()) throw new Error('请填写空间和类型');
-    const domain = {kind:$('newDomainKind').value,id:$('newDomainId').value.trim()};
-    if (!domain.id) throw new Error('请填写 domain ID');
-    await api('./api/memory/save', { ...patch,owner:ownerSelection($('memoryNewOwner').value), domain, sessionId: domain.kind === 'session' ? domain.id : undefined,
-      teamAuthorization: $('newTeamAuthorization').value || undefined, memberships: [{ spaceId: $('newSpace').value.trim(), memoryType: $('newType').value.trim() }] });
+    await api('./api/memory/save', { ...patch,owner:ownerSelection($('memoryNewOwner').value),
+      memberships: dimensions.map(memoryType=>({spaceId:'memory',memoryType})) });
   }
   $('memoryDialog').close(); notice('记忆已保存，操作已记录'); await refreshMeta();
   if (state.view === 'library') await loadLibrary();
@@ -340,7 +342,7 @@ async function releaseTask() {
     if(state.task.requestId)await api('./api/host/organization/request/report',{requestId:state.task.requestId,jobId:state.task.job.id,result:'released',reason:'用户释放人工批次'});
     else await api('./api/organization/release', { jobId: state.task.job.id });
   }
-  state.task = null; invalidatePreview(); $('orgEditor').hidden = true;
+  state.task = null;$('orgOwner').disabled=false;invalidatePreview(); $('orgEditor').hidden = true;
   if(state.request)await inspectOrganizationRequest(state.request.requestId);
   $('release').disabled = true; $('renew').disabled = true; $('claim').disabled = false;
   $('jobSummary').textContent = '任务已释放，可以重新领取或从记忆库选择。';
@@ -348,13 +350,16 @@ async function releaseTask() {
 async function claim(ids) {
   const s = scope('org');
   if (!s.spaceId || !s.memoryType) throw new Error('请先选择一个空间和一个记忆类型');
-  if (state.task) throw new Error('请先释放当前任务，避免覆盖尚未完成的整理');
-  const task = await api('./api/organization/claim', { ...s, membershipIds: ids, maxMembers: 8 });
-  if (!task.job) { notice('当前范围没有至少两条可整理记忆，或它们已被其他任务领取'); return; }
-  displayOrganizationTask(task);
+  if (state.task||state.claiming) throw new Error('请先完成当前领取或释放任务，避免覆盖尚未完成的整理');
+  state.claiming=true;$('orgOwner').disabled=true;
+  try{
+    const task = await api('./api/organization/claim', { ...s,...organizationOwnerFilter(),membershipIds: ids,maxMembers: 8 });
+    if (!task.job) { notice('当前范围没有至少两条可整理记忆，或它们已被其他任务领取'); return; }
+    displayOrganizationTask(task);
+  }finally{state.claiming=false;$('orgOwner').disabled=!!state.task;}
 }
 function displayOrganizationTask(task) {
-  state.task = task; supportDrafts.clear(); invalidatePreview();
+  state.task = task;$('orgOwner').disabled=true;supportDrafts.clear();invalidatePreview();
   $('profileTitle').value='';$('profileCoverage').value='';$('profileUnknowns').value='';
   $('profileTarget').replaceChildren(new Option('新建画像',''),...task.job.members.filter(m=>m.memory.profiles?.some(p=>p.membershipId===m.membership.id)).map(m=>new Option(m.memory.profiles.find(p=>p.membershipId===m.membership.id).title,m.membership.id))); $('orgEditor').hidden = false; $('release').disabled = false; $('renew').disabled = false;
   $('jobSummary').textContent = task.job.members.length + ' 条来源 · ' + task.job.spaceId + ' / ' + task.job.memoryType + ' · 租约截至 ' + when(task.job.leaseExpiresAt);
@@ -378,22 +383,26 @@ function displayOrganizationTask(task) {
 }
 const requestEventPages=new Map();
 let requestRefreshVersion=0;
-try {
-  const domain=JSON.parse(sessionStorage.getItem('mindpond:request-domain')||'null');
-  if(domain&&['personal','session','team'].includes(domain.kind)&&typeof domain.id==='string'&&domain.id.trim()) {
-    $('requestDomain').value=domain.kind;$('requestDomainId').value=domain.id;
-  }
-} catch {}
 const requestStates={queued:'等待 agent 或人工领取',running:'处理中（以事件与提交回执为准）',waiting:'等待执行者 / 租约',completed:'本次范围已处理',partial:'部分完成',failed:'处理失败',cancelled:'已取消'};
-function requestDomain() {
-  const kind=$('requestDomain').value,id=$('requestDomainId').value.trim();
-  if(!id)throw new Error('请填写实际域 / 会话 ID');
-  return {kind,id};
+function organizationOwnerFilter() {
+  const owner=ownerSelection($('orgOwner').value||'user');
+  return owner.kind==='agent'?{ownerRoleId:owner.id}:owner.kind==='office'?{ownerOfficeId:owner.id}:{};
+}
+let orgScopesRevision=0;
+let requestListRevision=0;
+function invalidateOrganizationOwner(){
+  ++requestRefreshVersion;++requestListRevision;++orgScopesRevision;state.request=null;state.orgSpaces=[];
+  $('requestDetail').hidden=true;$('requestList').replaceChildren();options('orgSpace',[],'选择分类范围');types('org');
+}
+async function refreshOrganizationScopes(){
+  const revision=++orgScopesRevision;const r=await api('./api/memory/spaces?'+new URLSearchParams(organizationOwnerFilter()));
+  if(revision!==orgScopesRevision||state.task)return;
+  state.orgSpaces=r.spaces;options('orgSpace',[...new Set(r.spaces.map(s=>s.spaceId))],'选择分类范围');types('org');
 }
 async function loadOrganizationRequests() {
-  const domain=requestDomain();
-  sessionStorage.setItem('mindpond:request-domain',JSON.stringify(domain));
-  const r=await api('./api/host/organization/requests',{domains:[domain],sessionId:domain.kind==='session'?domain.id:undefined,limit:50});
+  const revision=++requestListRevision,owner=$('orgOwner').value;
+  const r=await api('./api/organization/requests?'+new URLSearchParams(organizationOwnerFilter()));
+  if(revision!==requestListRevision||owner!==$('orgOwner').value)return;
   $('requestList').replaceChildren(...r.requests.map(p=>{
     const row=text('article','','card');row.append(text('strong',p.spaceId+' / '+p.memoryType),text('p',requestStates[p.status]+' · '+p.total+' 条候选'),button('查看请求',()=>inspectOrganizationRequest(p.requestId)));return row;
   }));
@@ -419,25 +428,35 @@ async function inspectOrganizationRequest(requestId) {
   $('requestEvents').textContent=JSON.stringify({throughSeq:page.seq,latestSeq:events.latestSeq,events:page.events},null,2);
 }
 async function startOrganizationRequest(input) {
-  const scopeInput=input||{...scope('org'),domain:requestDomain(),batchSize:+$('requestBatch').value,limit:+$('requestLimit').value};
+  const owner=$('orgOwner').value,version=requestRefreshVersion;
+  const scopeInput=input||{...scope('org'),...organizationOwnerFilter(),batchSize:+$('requestBatch').value,limit:+$('requestLimit').value};
   if(!scopeInput.spaceId||!scopeInput.memoryType)throw new Error('请选择整理空间和类型');
   const fingerprint=JSON.stringify(scopeInput);
   let pending;try{pending=JSON.parse(sessionStorage.getItem('mindpond:request-draft')||'null');}catch{}
   if(!pending||pending.fingerprint!==fingerprint)pending={fingerprint,key:'workbench-'+Date.now()+'-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('')};
   sessionStorage.setItem('mindpond:request-draft',JSON.stringify(pending));
-  const p=await api('./api/host/organization/request/start',{...scopeInput,idempotencyKey:pending.key});
-  $('requestDomain').value=p.domain.kind;$('requestDomainId').value=p.domain.id;
-  sessionStorage.removeItem('mindpond:request-draft');await loadOrganizationRequests();await inspectOrganizationRequest(p.requestId);
+  const p=await api('./api/organization/request',{...scopeInput,idempotencyKey:pending.key});
+  sessionStorage.removeItem('mindpond:request-draft');
+  if(owner!==$('orgOwner').value||version!==requestRefreshVersion){notice('整理请求已创建，请在对应归属的请求列表查看');return;}
+  await loadOrganizationRequests();await inspectOrganizationRequest(p.requestId);
 }
 async function nextOrganizationBatch() {
-  if(state.task)throw new Error('请先提交或释放当前批次');
+  if(state.task||state.claiming)throw new Error('请先完成当前领取，或提交、释放当前批次');
   const requestId=state.request?.requestId;if(!requestId)return;
-  const r=await api('./api/host/organization/request/next',{requestId});
-  if(r.job)displayOrganizationTask({...r,requestId});
-  await inspectOrganizationRequest(requestId);
+  state.claiming=true;$('orgOwner').disabled=true;
+  try{
+    const r=await api('./api/host/organization/request/next',{requestId});
+    if(r.job)displayOrganizationTask({...r,requestId});
+    await inspectOrganizationRequest(requestId);
+  }finally{state.claiming=false;$('orgOwner').disabled=!!state.task;}
 }
 
 async function organizeSelected() {
+  if(state.task||state.claiming)throw new Error('请先完成领取或释放当前整理任务');
+  const selected=[...state.selected.values()],owners=new Set(selected.map(n=>n.owner?.kind+':'+n.owner?.id));
+  if(owners.size!==1)throw new Error('请选择同一记忆归属的条目');
+  const owner=selected[0]?.owner;$('orgOwner').value=owner?.kind==='agent'?'agent:'+owner.id:owner?.kind==='office'?'office:'+owner.id:'user';
+  await refreshOrganizationScopes();
   const s = scope('library');
   if (!s.spaceId || !s.memoryType) throw new Error('先在记忆库筛选到一个空间和类型，再选择要整理的记忆');
   if (state.selected.size < 2 || state.selected.size > 24) throw new Error('请选择 2–24 条记忆');
@@ -962,6 +981,7 @@ on('prevPage', async () => { if (state.page) state.page--; await loadLibrary(); 
 on('nextPage', async () => { state.page++; await loadLibrary(); });
 on('clearSelection', async () => { state.selected.clear(); await loadLibrary(); });
 on('organizeSelection', organizeSelected);
+$('orgOwner').onchange=e=>run(async()=>{invalidateOrganizationOwner();await refreshOrganizationScopes();await loadOrganizationRequests();},e.currentTarget);
 on('startRequest',()=>startOrganizationRequest());on('listRequests',loadOrganizationRequests);on('nextRequestBatch',nextOrganizationBatch);
 on('cancelRequest',async()=>{if(!state.request)return;const id=state.request.requestId;await api('./api/host/organization/request/cancel',{requestId:id,reason:'用户在工作台取消未提交工作'});if(state.task?.requestId===id){state.task=null;invalidatePreview();$('orgEditor').hidden=true;$('release').disabled=true;$('renew').disabled=true;}await inspectOrganizationRequest(id);await loadOrganizationRequests();});
 on('retryRequest',async()=>{const p=state.request;if(p)await startOrganizationRequest({domain:p.domain,spaceId:p.spaceId,memoryType:p.memoryType,batchSize:+$('requestBatch').value,limit:+$('requestLimit').value});});
@@ -973,8 +993,8 @@ on('previewPlan', () => preview(humanPlan())); on('previewAgent', () => preview(
 on('commitPlan', async () => {
   if (!state.plan || !state.task) throw new Error('请先预览变更');
   const task=state.task,plan=state.plan;
-  const result = await api('./api/organization/commit', { jobId: task.job.id, plan, teamAuthorization:$('requestTeamAuthorization').value||undefined });
-  state.task = null; state.selected.clear(); invalidatePreview(); $('orgEditor').hidden = true; $('release').disabled = true; $('renew').disabled = true;
+  const result = await api('./api/organization/commit', { jobId: task.job.id, plan });
+  state.task = null;$('orgOwner').disabled=false;state.selected.clear(); invalidatePreview(); $('orgEditor').hidden = true; $('release').disabled = true; $('renew').disabled = true;
   let reportError=null;
   if(task.requestId){
     // A lost report response is recoverable from the durable committed job via next.
@@ -1001,7 +1021,7 @@ $('profileTarget').onchange=()=>run(async()=>{
 on('showWork',showWork);
 $('onlyReview').onchange=()=>{for(const card of $('searchResults').querySelectorAll('.card'))card.hidden=$('onlyReview').checked&&card.dataset.review!=='yes';};
 for (const id of ['orgContent', 'orgReason', 'orgContext', 'orgWeight', 'agentPlan','profileTitle','profileCoverage','profileUnknowns']) $(id).oninput = invalidatePreview;
-on('showPolicy', async () => { const p = await api('./api/organization/policy'); $('policyText').textContent = JSON.stringify({ host: await api('./api/host/capabilities'), memorySave: p.savePolicy, organization: p.policy }, null, 2); $('policyDialog').showModal(); });
+on('showPolicy', async () => { const p = await api('./api/organization/policy'); $('policyText').textContent = JSON.stringify({ memory: await api('./api/memory/capabilities'), organization: p.policy }, null, 2); $('policyDialog').showModal(); });
 on('copyPolicy', () => copy($('policyText').textContent));
 on('refreshLog', () => loadLog()); on('filterLog', () => loadLog()); on('moreLog', () => loadLog(true)); on('loadGraph', loadGraph);
 on('nodeLog', async () => { $('logNode').value = state.memory.node.id; $('memoryDialog').close(); await show('log'); });

@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {layeredRecallShape} from '../core/memory-recall-schema.js';
 
 interface OpenCodeHost {
   directory:string;worktree?:string;project?:{id?:string};
@@ -53,18 +54,18 @@ export async function createOpenCodeMemoryPlugin(host:OpenCodeHost,options:OpenC
     return transport.call(id,name,args);
   };
   const tool=(name:string,description:string,args:Record<string,z.ZodType>)=>({description,args,execute:async(a:Record<string,unknown>,context:{sessionID:string})=>JSON.stringify(await call(context.sessionID,name,a))});
-  const scope={officeId:z.string().min(1).max(160).optional()},limit=z.number().int().min(1).max(30).optional(),budget=z.number().int().min(2048).max(65536).optional();
+  const scope={officeId:z.string().min(1).max(160).optional()};
   return {
     tool:{
       memory_identity:tool('memory_identity','Verify the chat identity: unbound human or approved Office role. Missing chat metadata is an error.',{}),
-      memory_brief:tool('memory_brief','Recall knowledge allowed to the current human or role; verify sources.',{...scope,task:z.string().min(1).max(100000),limit,contextBudgetBytes:budget}),
-      memory_search:tool('memory_search','Search knowledge allowed to the current human or role.',{...scope,query:z.string().min(1).max(100000),limit,contextBudgetBytes:budget}),
+      memory_capabilities:tool('memory_capabilities','Discover available Memory tools and advanced actions before requesting a schema.',{}),
+      memory_brief:tool('memory_brief','Recall knowledge allowed to the current human or role; verify sources.',{...scope,...layeredRecallShape,task:z.string().min(1).max(10000)}),
+      memory_search:tool('memory_search','Search knowledge allowed to the current human or role.',{...scope,...layeredRecallShape,query:z.string().min(1).max(10000)}),
       memory_get:tool('memory_get','Read an authorized memory.',{nodeId:z.string().min(1).max(160)}),
       memory_directory:tool('memory_directory','List knowledge allowed to the current human or role.',{...scope,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional()}),
       memory_save_policy:tool('memory_save_policy','Read current saving guidance and dimensions.',{}),
       memory_action:{description:'Use a layered Memory tool: memory_save (scored related[], anchors), memory_update/delete, memory_connections, memory_association_get/upsert/review/delete or memory_use_report. describe:true returns its schema; identity cannot be selected.',args:{tool:z.string().min(1).max(100),describe:z.boolean().optional(),arguments:z.record(z.string(),z.unknown()).optional()},execute:async(a:{tool:string;describe?:boolean;arguments?:unknown},c:{sessionID:string})=>{
-        const schema=await call(c.sessionID,'__mindpond_native_schema',{tool:a.tool});
-        return JSON.stringify(a.describe?schema:await call(c.sessionID,a.tool,a.arguments??{}));
+        return JSON.stringify(await call(c.sessionID,'memory_action',a));
       }}
     },
     'chat.message':async(input:{sessionID:string},_output:unknown)=>{

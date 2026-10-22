@@ -1,0 +1,71 @@
+/** Exercise the human workbench against its actual HTTP server and stored
+ * namespace mappings. No live database, credentials, models or external I/O. */
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {spawn,type ChildProcess} from 'node:child_process';
+import {randomUUID} from 'node:crypto';
+import {GraphMemory} from '../src/core/graph-memory.js';
+import {getEmbeddingService} from '../src/core/embedding.js';
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-owner-workbench-'));
+const graph=new GraphMemory('.',{dbPath:path.join(dir,'fixture.db')});
+const admin={v:1 as const,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+const embedding=getEmbeddingService(),original=embedding.generateEmbedding;
+embedding.generateEmbedding=async()=>[1,...Array(383).fill(0)];
+let child:ChildProcess|undefined;
+try{
+ await graph.init();
+ await graph.offices.configureAgent({id:'fixture-host',principal:'human',name:'Fictional host',host:'codex',state:'active',expectedRevision:0},admin);
+ const actor={...admin,operator:false,agentId:'fixture-host',runtimeId:'fixture-chat',transport:'http-mcp' as const};
+ const application=await graph.roles.application({action:'submit',name:'Fictional reviewer',introduction:'Fixture only',reason:'HTTP owner regression',key:'apply'},actor);
+ const role=await graph.roles.review({action:'approve',applicationId:application.applicationId,expectedRevision:1},admin);
+ await graph.roles.configureOffice({id:'fixture-office',title:'Fictional room',state:'active',expectedRevision:0,seats:[{id:'fixture-seat',roleId:role.roleId,label:'Reviewer',role:'member'}]},admin);
+ const db=(graph as any).db;
+ await graph.memoryOwners.domain({kind:'agent',id:role.roleId});await graph.memoryOwners.domain({kind:'office',id:'fixture-office'});
+ // Storage mappings are authoritative, even when they differ from a guessed prefix.
+ await db.run('UPDATE memory_role_namespaces SET domain_id=? WHERE role_id=?',['fixture-role-namespace',role.roleId]);
+ await db.run('UPDATE memory_office_namespaces SET domain_id=? WHERE office_id=?',['fixture-office-namespace','fixture-office']);
+ const roleDomain=await graph.memoryOwners.domain({kind:'agent',id:role.roleId});
+ const officeDomain=await graph.memoryOwners.domain({kind:'office',id:'fixture-office'});
+ const make=(content:string,domain:any)=>graph.saveMemory(content,{domain,memberships:[{spaceId:'fixture-material',memoryType:'fact'}]});
+ const human=await make('Fixture human procedure',{kind:'personal',id:'default'});
+ const privateA=await make('Fixture private procedure A',roleDomain);await make('Fixture private procedure B',roleDomain);
+ const shared=await make('Fixture shared procedure A',officeDomain);await make('Fixture shared procedure B',officeDomain);
+ const unassigned=await make('Fixture unassigned procedure',{kind:'personal',id:'agent:'+role.roleId});
+ await graph.memoryOwners.setPolicy(shared.id,true,0);
+ const copy=(await graph.memoryOwners.allocate([human.id],role.roleId)).copies[0];
+ await graph.roles.configureOffice({id:'fixture-office',title:'Renamed fictional room',state:'active',expectedRevision:1,seats:[{id:'fixture-seat',roleId:role.roleId,label:'Reviewer',role:'member'}]},admin);
+ assert.deepEqual(await graph.memoryOwners.domain({kind:'office',id:'fixture-office'}),officeDomain,'renaming an office must preserve its stored namespace');
+ assert.equal((await db.get('SELECT title FROM memory_office_namespaces WHERE office_id=?',['fixture-office'])).title,'Renamed fictional room');
+ await graph.roles.configure({roleId:role.roleId,name:'Fictional reviewer',introduction:'Fixture only',state:'disabled',expectedRevision:1},admin);
+ child=spawn(process.execPath,['dist/server.js'],{env:{...process.env,DOTENV_CONFIG_PATH:path.join(dir,'absent.env'),MEMORY_DB_PATH:path.join(dir,'fixture.db'),MEMORY_HOST:'127.0.0.1',MEMORY_PORT:'0',MEMORY_API_KEY:'fixture-api',MEMORY_OPERATOR_KEY:'fixture-operator',MEMORY_CONTEXT_SECRET:'ctx-fixture',MEMORY_EMBEDDING_MODE:'text',EMBEDDING_ZH_ENABLED:'false',EMBEDDING_MODEL_DIR:path.join(dir,'absent-model')},stdio:['ignore','pipe','pipe']});
+ let output='';child.stdout!.on('data',x=>output+=x);child.stderr!.on('data',x=>output+=x);
+ const until=Date.now()+30000;while(!/listening on .*:(\d+)/.test(output)&&child.exitCode===null&&Date.now()<until)await new Promise(r=>setTimeout(r,40));
+ const port=/listening on .*:(\d+)/.exec(output)?.[1];assert(port,output);const base='http://127.0.0.1:'+port;
+ const request=(route:string,body?:unknown,operator=true)=>fetch(base+route,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','x-api-key':'fixture-api',...(operator?{'x-operator-key':'fixture-operator'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+ const json=async(route:string,body?:unknown)=>{const r=await request(route,body),data=await r.json();assert.equal(r.status,200,JSON.stringify(data));return data;};
+ const selected='ownerRoleId='+role.roleId;
+ const privateList=await json('/api/memory/list?scope=operator&'+selected);assert(privateList.nodes.some((n:any)=>n.id===privateA.id));assert(privateList.nodes.some((n:any)=>n.id===copy.copyId));assert(!privateList.nodes.some((n:any)=>n.id===human.id||n.id===unassigned.id||n.id===shared.id));
+ const sharedList=await json('/api/memory/list?scope=operator&ownerOfficeId=fixture-office');assert(sharedList.nodes.some((n:any)=>n.id===shared.id&&n.officePolicy.locked));assert(sharedList.nodes.every((n:any)=>n.owner.kind==='office'));
+ const found=await json('/api/memory/search',{query:'Fixture procedure',ownerOfficeId:'fixture-office',limit:20,useAnchors:false});assert(found.results.some((n:any)=>n.id===shared.id&&n.officePolicy.locked));assert(found.results.every((n:any)=>n.owner.kind==='office'));
+ const copies=await json('/api/memory/search',{query:'Fixture human procedure',ownerRoleId:role.roleId,limit:20,useAnchors:false});assert(copies.results.some((n:any)=>n.id===copy.copyId&&n.provenance.sourceId===human.id));
+ assert((await json('/api/memory/spaces?'+selected)).spaces.some((s:any)=>s.spaceId==='fixture-material'));
+ assert.equal((await request('/api/memory/list?scope=operator&ownerRoleId='+randomUUID())).status,404);
+ assert.equal((await request('/api/memory/spaces?'+selected+'&ownerOfficeId=fixture-office')).status,400);
+ assert.equal((await request('/api/memory/spaces?'+selected,undefined,false)).status,403);
+ const claim=await json('/api/organization/claim',{ownerRoleId:role.roleId,spaceId:'fixture-material',memoryType:'fact',maxMembers:8});assert(claim.job);assert(claim.job.members.every((m:any)=>m.memory.domain.id===roleDomain.id));
+ await json('/api/organization/release',{jobId:claim.job.id});
+ const req=await json('/api/organization/request',{ownerRoleId:role.roleId,spaceId:'fixture-material',memoryType:'fact',batchSize:2,limit:20,idempotencyKey:'fixture-request'});
+ assert((await json('/api/organization/requests?'+selected)).requests.some((r:any)=>r.requestId===req.requestId));
+ assert(!(await json('/api/organization/requests?ownerOfficeId=fixture-office')).requests.some((r:any)=>r.requestId===req.requestId));
+ const saved=await json('/api/memory/save',{owner:{kind:'office',id:'fixture-office'},content:'Fixture new office fact',dimensions:['fact'],memberships:[{spaceId:'memory',memoryType:'fact'}]});
+ assert.equal((await graph.getNodeById(saved.id))!.domain.id,officeDomain.id);assert((await graph.getMemberships(saved.id)).some(m=>m.spaceId==='memory'&&m.memoryType==='fact'));
+ const catalog=await json('/api/memory/capabilities');assert(catalog.operations.some((o:any)=>o.name==='memory_finish'&&!o.direct));assert(catalog.instructions.includes('memory_capabilities'));
+ const html=await (await fetch(base)).text();assert(html.includes('id="orgOwner"'));for(const id of ['newDomainKind','newDomainId','newScope','requestDomainId'])assert(!html.includes('id="'+id+'"'));
+ assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');
+ console.log('PASS real workbench HTTP: stored namespace filtering, disabled-owner visibility, search locks/provenance, organization attribution, new-memory dimensions and operator-only owner selection');
+}finally{
+ if(child&&child.exitCode===null){child.kill('SIGTERM');await new Promise<void>(r=>child!.once('exit',()=>r()));}
+ await graph.close();embedding.generateEmbedding=original;await fs.rm(dir,{recursive:true,force:true});
+}

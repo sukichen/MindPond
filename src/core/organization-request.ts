@@ -106,7 +106,7 @@ export interface RequestGraph {
   claimOrganizationJob(options: {
     domain?: MemoryDomainRef; spaceId: string; memoryType: string;
     maxMembers?: number; leaseMs?: number; membershipIds?: string[];
-  }): Promise<OrganizationJob | null>;
+  },authorize?:()=>Promise<void>): Promise<OrganizationJob | null>;
   getOrganizationJob(jobId: string): Promise<OrganizationJob | null>;
 }
 
@@ -171,7 +171,8 @@ export class OrganizationRequestStore {
    * membership in the scope at creation time, oldest-reviewed first. */
   async createRequest(options: {
     domain?: MemoryDomainRef; spaceId: string; memoryType: string; batchSize?: number; limit?: number; idempotencyKey?: string;
-  }): Promise<OrganizationRequestProgress> {
+  },authorize?:()=>Promise<void>): Promise<OrganizationRequestProgress> {
+    await authorize?.();
     textField(options.spaceId, 'spaceId', 128);
     textField(options.memoryType, 'memoryType', 128);
     const domain = normalizeDomain(options.domain, options.domain?.kind === 'session' ? options.domain.id : undefined);
@@ -191,6 +192,7 @@ export class OrganizationRequestStore {
     const hash = digest({ domain, spaceId: options.spaceId, memoryType: options.memoryType, batchSize, limit });
     await this.db.exec('BEGIN IMMEDIATE');
     try {
+      await authorize?.();
       if (key) {
         const prior = await this.db.get<any>('SELECT request_hash,payload FROM memory_receipts WHERE key=?', [key]);
         if (prior) {
@@ -252,7 +254,8 @@ export class OrganizationRequestStore {
 
   /** Claim the next batch strictly inside the watermark. Returns a null batch
    * when the request drained (terminal transition applied) or must wait. */
-  async nextBatch(requestId: string, options: { leaseMs?: number } = {}): Promise<RequestBatch | RequestWait> {
+  async nextBatch(requestId: string, options: { leaseMs?: number } = {},authorize?:()=>Promise<void>): Promise<RequestBatch | RequestWait> {
+    await authorize?.();
     const row = await this.db.get<any>('SELECT * FROM organization_requests WHERE id = ?', [requestId]);
     if (!row) throw new MindPondError('invalid_input', 'organization request not found', { field: 'requestId', retryable: false, nextAction: '先 POST /api/organization/request 创建请求' });
     if (!['queued', 'running', 'waiting'].includes(row.status)) {
@@ -308,7 +311,8 @@ export class OrganizationRequestStore {
     const job = await this.graph.claimOrganizationJob({
       domain: { kind: row.domain_kind, id: row.domain_id }, spaceId: row.space_id, memoryType: row.memory_type,
       membershipIds, leaseMs: options.leaseMs,
-    }).catch(async error => {
+    },authorize).catch(async error => {
+      if(['scope_denied','identity_required'].includes(error?.code))throw error;
       // Raced away between the availability check and the claim, or every
       // remaining candidate is over the material budget: wait either way.
       if ((error as any)?.code === 'material_over_budget') claimWaitReason = 'material over budget: oversized candidates need segmented reads or a smaller batch';
@@ -323,6 +327,7 @@ export class OrganizationRequestStore {
     const claimed = job.members.map(m => m.membership.id).filter(id => membershipIds.includes(id));
     await this.db.exec('BEGIN IMMEDIATE');
     try {
+      await authorize?.();
       for (const id of claimed) await this.db.run(
         "UPDATE organization_request_members SET status = 'in_flight', job_id = ?, reason = NULL, updated_at = ? WHERE request_id = ? AND membership_id = ?", [job.id, now, requestId, id]);
       await this.appendEvent(requestId, 'batch_claimed', { jobId: job.id, members: claimed }, now);
@@ -337,7 +342,8 @@ export class OrganizationRequestStore {
    * checked results require the job to be completed; released returns members
    * to pending; failed records the per-member failure. Reports for members
    * that are no longer in flight under this job are ignored (idempotent). */
-  async reportBatch(requestId: string, jobId: string, report: BatchReport): Promise<OrganizationRequestProgress> {
+  async reportBatch(requestId: string, jobId: string, report: BatchReport,authorize?:()=>Promise<void>): Promise<OrganizationRequestProgress> {
+    await authorize?.();
     if (!BATCH_RESULTS.includes(report.result)) throw new MindPondError('invalid_input', 'result must be one of ' + BATCH_RESULTS.join('|'), { field: 'result', retryable: false, nextAction: '按批次真实结论报告：已提交/无变化/搁置/失败/释放' });
     const row = await this.db.get<any>('SELECT * FROM organization_requests WHERE id = ?', [requestId]);
     if (!row) throw new MindPondError('invalid_input', 'organization request not found', { field: 'requestId', retryable: false });
@@ -358,6 +364,7 @@ export class OrganizationRequestStore {
     if (report.result === 'released') {
       await this.db.exec('BEGIN IMMEDIATE');
       try {
+      await authorize?.();
         await this.db.run("UPDATE organization_jobs SET lease_expires_at=0 WHERE id=? AND status='leased'", [jobId]);
         for (const m of inFlight) await this.db.run(
           "UPDATE organization_request_members SET status = 'pending', job_id = NULL, reason = NULL, updated_at = ? WHERE request_id = ? AND membership_id = ? AND status = 'in_flight'", [now, requestId, m.membership_id]);
@@ -393,6 +400,7 @@ export class OrganizationRequestStore {
     const target = CHECKED[report.result] ?? 'failed';
     await this.db.exec('BEGIN IMMEDIATE');
     try {
+      await authorize?.();
       if (report.result === 'failed') await this.db.run("UPDATE organization_jobs SET lease_expires_at=0 WHERE id=? AND status='leased'", [jobId]);
       for (const m of inFlight) await this.db.run(
         'UPDATE organization_request_members SET status = ?, reason = ?, updated_at = ? WHERE request_id = ? AND membership_id = ? AND status = ?',
@@ -444,7 +452,8 @@ export class OrganizationRequestStore {
   /** Host-driven terminal transition for budget exhaustion (T13): every still
    * pending member becomes explicitly uncovered; the final status is derived
    * (partial when anything is uncovered or failed, completed otherwise). */
-  async finishRequest(requestId: string, input: { reason: 'budget_exhausted' | 'cancelled_by_host' | string; detail?: string }): Promise<OrganizationRequestProgress> {
+  async finishRequest(requestId: string, input: { reason: 'budget_exhausted' | 'cancelled_by_host' | string; detail?: string },authorize?:()=>Promise<void>): Promise<OrganizationRequestProgress> {
+    await authorize?.();
     textField(input.reason, 'reason', 256);
     const row = await this.db.get<any>('SELECT * FROM organization_requests WHERE id = ?', [requestId]);
     if (!row) throw new MindPondError('invalid_input', 'organization request not found', { field: 'requestId', retryable: false });
@@ -453,6 +462,7 @@ export class OrganizationRequestStore {
     if (outstanding.n) throw new MindPondError('invalid_input', 'report or release the outstanding batch before finishing the request', { field: 'jobId', retryable: false, nextAction: '每个批次先有结论，才能得到可解释的 partial 回执' });
     await this.db.exec('BEGIN IMMEDIATE');
     try {
+      await authorize?.();
       const updated = await this.db.run(
         "UPDATE organization_request_members SET status = 'uncovered', reason = ?, updated_at = ? WHERE request_id = ? AND status = 'pending'", [`uncovered:${input.reason}${input.detail ? ':' + input.detail : ''}`, now, requestId]);
       await this.appendEvent(requestId, 'finished', { reason: input.reason, uncovered: updated.changes }, now);
@@ -462,7 +472,8 @@ export class OrganizationRequestStore {
     return (await this.settle(requestId))!;
   }
 
-  async cancelRequest(requestId: string, reason: string): Promise<OrganizationRequestProgress> {
+  async cancelRequest(requestId: string, reason: string,authorize?:()=>Promise<void>): Promise<OrganizationRequestProgress> {
+    await authorize?.();
     textField(reason, 'reason', 256);
     const row = await this.db.get<any>('SELECT status FROM organization_requests WHERE id = ?', [requestId]);
     if (!row) throw new MindPondError('invalid_input', 'organization request not found', { field: 'requestId', retryable: false });
@@ -472,6 +483,7 @@ export class OrganizationRequestStore {
     // itself belongs to settle so the receipt and the status freeze together.
     await this.db.exec('BEGIN IMMEDIATE');
     try {
+      await authorize?.();
       // Revoke the actual jobs in the same transaction as request cancellation.
       // A client holding a jobId must not bypass the cancelled request via commit.
       await this.db.run(`UPDATE organization_jobs SET cancelled_at=?, lease_expires_at=0, updated_at=?

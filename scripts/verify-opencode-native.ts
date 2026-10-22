@@ -29,10 +29,16 @@ try{
  await assert.rejects(call('memory_get',{nodeId:human.id}),/not_found|scope_denied/);
  const schema=await call('memory_action',{tool:'memory_save',describe:true});assert(!schema.inputSchema.properties.domain&&!schema.inputSchema.properties.roleId);
  assert(schema.inputSchema.properties.related&&schema.inputSchema.properties.anchors,'Native schema preserves scored graph saving');
+ const capabilities=await call('memory_capabilities');assert(capabilities.actions.some((a:any)=>a.name==='memory_finish'));
+ const advanced=await call('memory_action',{tool:'memory_edit_history',describe:true});assert(advanced.inputSchema.properties.nodeId);
+ for(const field of ['queries','maxDepth','useAnchors','retrievalProfile','sourceContext'])assert(field in plugin.tool.memory_search.args,'Native direct search omitted '+field);
  const saved=await call('memory_action',{tool:'memory_save',arguments:{content:'Native A role knowledge',idempotencyKey:'save'}});
  assert.equal(saved.owner.id,roles[0].roleId);assert.equal((await graph.getNodeById(saved.id))!.domain.id,'agent:'+roles[0].roleId);
  const companion=await call('memory_action',{tool:'memory_save',arguments:{content:'Native A complementary skill',idempotencyKey:'companion',related:[{memoryId:saved.id,score:0.8,reason:'Verified complementary procedure',context:'Use together in the tested native runtime'}]}});
  assert.equal(companion.edgesCreated,1);
+ const recalled=await call('memory_search',{query:'Native A role',queries:['complementary skill'],maxDepth:0,useAnchors:false,limit:20});assert(recalled.results.some((r:any)=>r.id===saved.id));
+ const report=await call('memory_action',{tool:'memory_use_report',arguments:{reportId:'native-report',recallId:recalled.recallId,task:'Native capability check',outcome:'completed',observations:[{memoryId:saved.id,disposition:'used',reason:'Actually checked native content'}]}});assert(report);
+ const history=await call('memory_action',{tool:'memory_edit_history',arguments:{nodeId:saved.id}});assert(Array.isArray(history));
  const connections=await call('memory_action',{tool:'memory_connections',arguments:{nodeId:saved.id}});
  assert.equal(connections.connections[0].weight,0.8);assert.equal(connections.connections[0].neighbor.id,companion.id);
  await assert.rejects(call('memory_action',{tool:'memory_association_get',arguments:{id:connections.connections[0].id}},'b'),/not_found|scope_denied/);

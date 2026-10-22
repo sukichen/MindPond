@@ -1,7 +1,11 @@
 /** Approval must be delivered as an external event after real fixture mutation.
  * Scripted inference verifies the harness contract, never model effectiveness. */
 import assert from 'node:assert/strict';
-import { runOfficeEvaluation, type OfficeEvalAdapter } from '../src/eval/office-collaboration.js';
+import { runOfficeEvaluation, evaluationMemoryActions, type OfficeEvalAdapter } from '../src/eval/office-collaboration.js';
+assert(!evaluationMemoryActions('none').size);
+assert(evaluationMemoryActions('recall').has('memory_search'));
+assert(!evaluationMemoryActions('recall').has('memory_finish'),'Progressive actions cannot bypass a read-only condition');
+assert(evaluationMemoryActions('recall_save').has('memory_finish'));
 const adapter: OfficeEvalAdapter={
   id:'scripted-approval-contract',kind:'synthetic',parameters:{},
   async chat(messages){

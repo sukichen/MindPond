@@ -27,7 +27,7 @@ const clear=source.slice(source.indexOf('function clearAssignmentSelection()'),s
 element('query').value='obsolete';const pending=context.invoke();element('searchOwner').value='role-a';element('searchOwner').onchange();requests[2].reject(Error('old request failed'));await pending;assert.equal(state.search,null);assert.match(element('searchSummary').textContent,/尚未搜索/);
 context.URLSearchParams=URLSearchParams;context.scope=()=>({});context.selectionChanged=()=>{};state.page=0;
 const library=source.slice(source.indexOf('async function loadLibrary()'),source.indexOf('\nasync function openMemory('));vm.runInContext('let libraryRevision=0;'+library+'\nglobalThis.library=loadLibrary;',context);
-const queries=[];context.api=url=>new Promise(resolve=>queries.push({url,resolve}));element('libraryOwner').value='role-a';const listA=context.library();element('libraryOwner').value='role-b';const listB=context.library();queries[1].resolve({nodes:[],total:0});await listB;queries[0].resolve({nodes:[],total:0});await listA;assert.match(element('librarySummary').textContent,/Role B/);assert.equal(new URL('http://fixture/'+queries[1].url).searchParams.get('domains'),JSON.stringify([{kind:'personal',id:'agent:role-b'}]));
+const queries=[];context.api=url=>new Promise(resolve=>queries.push({url,resolve}));element('libraryOwner').value='role-a';const listA=context.library();element('libraryOwner').value='role-b';const listB=context.library();queries[1].resolve({nodes:[],total:0});await listB;queries[0].resolve({nodes:[],total:0});await listA;assert.match(element('librarySummary').textContent,/Role B/);assert.equal(new URL('http://fixture/'+queries[1].url).searchParams.get('ownerRoleId'),'role-b');assert.equal(new URL('http://fixture/'+queries[1].url).searchParams.get('domains'),null,'Browser sends the selected owner; only the server resolves its namespace');
 const downloaded=source.slice(source.indexOf("on('downloadRoleMemory',"),source.indexOf('\nlet memoryOwnerSyncPending='));
 context.on=(_id,fn)=>{context.download=fn;};context.memoryMcpUrl=null;context.memoryConnected=true;context.Blob=Blob;context.URL={createObjectURL:blob=>{exported=blob;return 'blob:fixture';},revokeObjectURL(){}};context.setTimeout=()=>0;context.updateRoleConnection=()=>{};context.refreshMeta=async()=>{};context.document.createElement=()=>({click(){}});
 context.api=async()=>{apiCalls++;return {roleId:'role-a',memoryMcpUrl:'https://memory.example/prefix/memory/mcp',configuration:{mime:'application/json',filename:'fixture.json',text:JSON.stringify({mcp:{mindpond_office:{url:'https://memory.example/prefix/mcp'},mindpond_memory:{url:'https://memory.example/prefix/memory/mcp'}}})}};};element('roleConnectionRole').value='role-a';vm.runInContext(downloaded,context);
@@ -77,3 +77,26 @@ context.refreshMemoryOwners=async()=>{ownerSyncCalls++;};await context.syncMemor
 context.document.querySelector=()=>({open:true});await context.syncMemoryOwners();assert.equal(ownerSyncCalls,1,'open forms must retain their current inputs');
 context.document.querySelector=()=>null;context.document.hidden=true;await context.syncMemoryOwners();assert.equal(ownerSyncCalls,1,'hidden tabs do not poll');
 console.log('PASS owner catalog: same-ID duplicates removed, same-name identities distinct, refreshed lists replace stale selections, delayed responses fenced, forms/hidden tabs preserved');
+
+// Organization lists and detail reads must not paint a previous owner's page.
+context.document.hidden=false;context.sessionStorage={getItem(){return null;},setItem(){},removeItem(){}};
+context.ownerSelection=value=>value==='user'?{kind:'user',id:'default'}:{kind:value.split(':')[0],id:value.split(':').slice(1).join(':')};
+context.types=()=>{};context.options=()=>{};
+vm.runInContext(source.slice(source.indexOf('const requestEventPages='),source.indexOf('async function nextOrganizationBatch()')),context);
+const organizationRequests=[];context.api=url=>new Promise(resolve=>organizationRequests.push({url,resolve}));
+element('orgOwner').value='agent:role-a';const orgA=context.loadOrganizationRequests();
+element('orgOwner').value='office:room';const orgB=context.loadOrganizationRequests();
+organizationRequests[1].resolve({requests:[]});await orgB;
+const currentRows=element('requestList').children;organizationRequests[0].resolve({requests:[{requestId:'obsolete',spaceId:'wrong',memoryType:'fact',status:'queued',total:2}]});await orgA;
+assert.equal(element('requestList').children,currentRows,'late request list must not overwrite the selected owner');
+element('orgOwner').value='agent:role-a';const detail=context.inspectOrganizationRequest('obsolete');
+context.invalidateOrganizationOwner();element('orgOwner').value='office:room';
+organizationRequests[2].resolve({requestId:'obsolete'});await detail;assert.equal(state.request,null);
+assert.equal(organizationRequests.length,3,'an invalidated detail must not fetch or paint its events');
+state.request={requestId:'removed-owner'};element('orgOwner').value='agent:same-id';
+context.applyMemoryOwners({roles:[],offices:[]});assert.equal(state.request,null,'owner deletion in a different tab clears organization detail');assert.equal(element('orgOwner').value,'user');
+vm.runInContext(source.slice(source.indexOf('async function claim(ids)'),source.indexOf('function displayOrganizationTask(')),context);
+context.scope=()=>({spaceId:'fixture',memoryType:'fact'});context.notice=()=>{};let completeClaim;
+context.api=()=>new Promise(resolve=>completeClaim=resolve);const claiming=context.claim();assert(state.claiming);assert(element('orgOwner').disabled);
+await assert.rejects(context.claim(),/当前领取/);completeClaim({job:null});await claiming;assert(!state.claiming);assert(!element('orgOwner').disabled);
+console.log('PASS organization owner changes/deletion fence delayed lists and details; pending claims cannot overlap or change owner');

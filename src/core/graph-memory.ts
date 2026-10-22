@@ -38,7 +38,7 @@ import { MEMORY_SAVE_LIMITS } from './save-policy.js';
 import { normalizeDimensions, legacyDimension, dimensionPlacements, type KnowledgeDimension } from './knowledge.js';
 import { AnchorStore, normalizeAnchors, diagnoseAnchors, anchorIssueField, type MemoryAnchor, type StoredAnchor, type AnchorMatch } from './anchors.js';
 export type { KnowledgeDimension, MemoryAnchor, StoredAnchor };
-import { GrowthStore, normalizeSources, stableJSON, digest, textField, type SourceReference, type SynthesizeOperation, type SourceObservation, type CheckpointInput } from './growth.js';
+import { GrowthStore, normalizeSources, stableJSON, digest, textField, sourceObservationContext, type SourceReference, type SynthesizeOperation, type SourceObservation, type CheckpointInput } from './growth.js';
 import { normalizeDomain, resolveReadDomains, sameDomain, verifyTeamWriteGrant, domainKey, type DomainReadContext, type MemoryDomainRef, type TeamOperation } from './domain.js';
 import { MindPondError } from './errors.js';
 import { organizationMaterial } from './organization-material.js';
@@ -1131,7 +1131,7 @@ export class GraphMemory {
     // O01: request model over the fixed watermark — one request = one bounded
     // organization pass; batches are claimed only inside the watermark.
     this.organizationRequests = this.coordinator.service(new OrganizationRequestStore(this.db, {
-      claimOrganizationJob: options => this.claimOrganizationJob(options),
+      claimOrganizationJob: (options,authorize) => this.claimOrganizationJob(options,authorize),
       getOrganizationJob: jobId => this.getOrganizationJob(jobId),
     }, () => this.now(), async (action, payload) => { await this.logAction({ action, reason: stableJSON(payload) }); }), ['init','createRequest','listRequests','getRequest','nextBatch','reportBatch','finishRequest','cancelRequest','listEvents']);
     await this.organizationRequests.init();
@@ -1145,7 +1145,7 @@ export class GraphMemory {
     await this.building.init();
     this.officeCollaboration=this.coordinator.service(new OfficeCollaboration(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock),['init','publish','records','handoffContext','relations','controls','requestControl','responsePage','boundResponse','layout','captureLayout','observations','permissions','impact','exportPage','operations']);
     await this.officeCollaboration.init();
-    this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential','nativeBinding','office','offices','context','policy','setPolicy','assertWritable','roleBinding','present']);
+    this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential','nativeBinding','office','offices','context','ownerContext','policy','setPolicy','assertWritable','roleBinding','present']);
     await this.memoryOwners.init();
     await this.roles.migrateModel();
     // Additive, transactional migration: never reclassify historical events or
@@ -1973,9 +1973,9 @@ export class GraphMemory {
     await this.assertNodeInReadableDomains({ id: m.node_id, domain: { kind: m.domain_kind, id: m.domain_id } }, context);
   }
   async getMemoryFreshness(membershipId:string, sourceContext?:string) {return this.withWriteLock(() => this.growth.freshness(membershipId,sourceContext));}
-  async observeSource(input:SourceObservation) {return this.growthWrite(() => this.growth.observe(input));}
-  async getSourceObservation(uri:string, context:string) {
-    const row=await this.db!.get<any>('SELECT version,payload FROM source_observations WHERE uri=? AND context=?',[uri,context]);
+  async observeSource(input:SourceObservation,domain?:MemoryDomainRef,authorize?:()=>Promise<void>) {return this.growthWrite(async()=>{await authorize?.();return this.growth.observe(input,domain);});}
+  async getSourceObservation(uri:string, context:string,domain?:MemoryDomainRef) {
+    const row=await this.db!.get<any>('SELECT version,payload FROM source_observations WHERE uri=? AND context=?',[uri,sourceObservationContext(context,domain)]);
     return row ? {version:row.version,...JSON.parse(row.payload)} : {version:0,observation:null};
   }
   async checkpoint(input:CheckpointInput) {
@@ -2162,11 +2162,11 @@ export class GraphMemory {
   }
 
   /** Add one independent placement without cloning the memory body. */
-  async addMembership(memoryId: string, spaceId: string, memoryType: string, teamAuthorization?: string, context?: DomainReadContext): Promise<MemoryMembership> {
+  async addMembership(memoryId: string, spaceId: string, memoryType: string, teamAuthorization?: string, context?: DomainReadContext,authorize?:()=>Promise<void>): Promise<MemoryMembership> {
     const node = await this.getNodeById(memoryId, { trackAccess: false, context });
     if (!node) throw new Error('Memory not found');
     await this.assertTeamWrite(node.domain, teamAuthorization, 'membership');
-    return this.withWriteLock(() => this.addMembershipLocked(memoryId, spaceId, memoryType));
+    return this.growthWrite(async()=>{await authorize?.();return this.addMembershipLocked(memoryId, spaceId, memoryType);});
   }
 
   private async addMembershipLocked(memoryId: string, spaceId: string, memoryType: string): Promise<MemoryMembership> {
@@ -2384,13 +2384,13 @@ export class GraphMemory {
     return this.revisions.history(nodeId,limit);
   }
 
-  async restoreMemoryEdit(nodeId:string,options:{revisionId:string;expectedUpdatedAt:number;reason:string;teamAuthorization?:string;context?:DomainReadContext}) {
+  async restoreMemoryEdit(nodeId:string,options:{revisionId:string;expectedUpdatedAt:number;reason:string;teamAuthorization?:string;context?:DomainReadContext},authorize?:()=>Promise<void>) {
     textField(options.reason,'reason',2000);
     if(!Number.isInteger(options.expectedUpdatedAt))throw new MindPondError('invalid_input','expectedUpdatedAt is required');
     if(!await this.getNodeById(nodeId,{trackAccess:false,context:options.context}))throw new MindPondError('invalid_input','Memory not found');
     const revision=await this.revisions.get(nodeId,options.revisionId),before=revision.before.node;
     return this.editMemoryImpl(nodeId,{content:before.content,importance:before.importance,tags:JSON.parse(before.tags??'[]'),verified:!!before.verified,
-      expectedUpdatedAt:options.expectedUpdatedAt,reason:options.reason,teamAuthorization:options.teamAuthorization,context:options.context},options.revisionId);
+      expectedUpdatedAt:options.expectedUpdatedAt,reason:options.reason,teamAuthorization:options.teamAuthorization,context:options.context},options.revisionId,authorize);
   }
 
   async editMemory(nodeId: string, patch: MemoryEditPatch, authorize?:()=>Promise<void>) { return this.editMemoryImpl(nodeId,patch,undefined,authorize); }
@@ -2617,7 +2617,7 @@ export class GraphMemory {
 
   async claimOrganizationJob(options: {
     domain?: MemoryDomainRef; teamAuthorization?: string; spaceId: string; memoryType: string; maxMembers?: number; leaseMs?: number; membershipIds?: string[];
-  }): Promise<OrganizationJob | null> {
+  },authorize?:()=>Promise<void>): Promise<OrganizationJob | null> {
     return this.withWriteLock(async () => {
       if (!options.spaceId?.trim() || !options.memoryType?.trim()) throw new Error('spaceId and memoryType required');
       // A session domain must resolve against its own session id; without the
@@ -2638,6 +2638,7 @@ export class GraphMemory {
       const now = this.now();
       await this.db!.exec('BEGIN IMMEDIATE');
       try {
+        await authorize?.();
         let rows = await this.db!.all<any>(
           "SELECT m.*, n.content AS candidate_content FROM memory_memberships m JOIN nodes n ON n.id = m.memory_id WHERE m.space_id = ? AND m.memory_type = ? AND n.domain_kind=? AND n.domain_id=? AND m.active = 1 AND n.superseded_by IS NULL AND n.layer != 'L0' " +
           (requested ? 'AND m.id IN (' + requested.map(() => '?').join(',') + ') ' : '') +
@@ -2711,15 +2712,17 @@ export class GraphMemory {
     return row ? { ...JSON.parse(row.snapshot), dimensionPolicy:JSON.parse(row.snapshot).dimensionPolicy??dimensionPolicy(LEGACY_DIMENSION_CONFIGURATION), domain: JSON.parse(row.snapshot).domain ?? {kind:'personal',id:'default'}, status: row.status, leaseExpiresAt: row.lease_expires_at } : null;
   }
 
-  async releaseOrganizationJob(jobId: string): Promise<void> {
-    return this.withWriteLock(async () => {
+  async releaseOrganizationJob(jobId: string,authorize?:()=>Promise<void>): Promise<void> {
+    return this.growthWrite(async () => {
+      await authorize?.();
       await this.db!.run("UPDATE organization_jobs SET lease_expires_at = 0 WHERE id = ? AND status = 'leased'", [jobId]);
       await this.logAction({ action: 'organization_job_released', reason: 'job=' + jobId });
     });
   }
 
-  async renewOrganizationJob(jobId: string): Promise<number> {
-    return this.withWriteLock(async () => {
+  async renewOrganizationJob(jobId: string,authorize?:()=>Promise<void>): Promise<number> {
+    return this.growthWrite(async () => {
+      await authorize?.();
       const expiry = this.now() + 300_000;
       // Renewal extends the lease window only — execution budgets tracked by
       // the driver are never reset by it (R02).
@@ -2837,8 +2840,9 @@ export class GraphMemory {
     return { job, replaced, dropped };
   }
 
-  async validateOrganizationPlan(jobId: string, plan: OrganizationPlan) {
+  async validateOrganizationPlan(jobId: string, plan: OrganizationPlan,authorize?:()=>Promise<void>) {
     return this.withWriteLock(async () => {
+      await authorize?.();
       const { job, replaced, dropped } = await this.checkOrganizationPlan(jobId, plan);
       return { valid: true, spaceId: job.spaceId, memoryType: job.memoryType,
         operations: plan.operations, replacedMembershipIds: [...replaced], removedAssociations: dropped,
@@ -2846,7 +2850,7 @@ export class GraphMemory {
     });
   }
 
-  async commitOrganizationPlan(jobId: string, plan: OrganizationPlan, teamAuthorization?: string, execution?: { deadlineAt: number; signal?: AbortSignal }): Promise<{ createdMemoryIds: string[]; updatedMemoryIds?: string[] }> {
+  async commitOrganizationPlan(jobId: string, plan: OrganizationPlan, teamAuthorization?: string, execution?: { deadlineAt: number; signal?: AbortSignal },hooks:MemoryWriteHooks={}): Promise<{ createdMemoryIds: string[]; updatedMemoryIds?: string[] }> {
     const prepared=new Map<OrganizationOperation,Awaited<ReturnType<AnchorStore['prepare']>>>();
     const snapshot=await this.getOrganizationJob(jobId);
     if(snapshot && Array.isArray(plan?.operations))for(const op of plan.operations) {
@@ -2859,6 +2863,7 @@ export class GraphMemory {
     return this.withWriteLock(async () => {
       await this.db!.exec('BEGIN IMMEDIATE');
       try {
+        await hooks.authorize?.();
         // M03.a: a closed or purged session invalidates outstanding
         // organization leases — commits must fail even if a lease/payload
         // technically still exists.
@@ -2936,7 +2941,7 @@ export class GraphMemory {
             await this.anchors.replace(memory.id,memory.content,prepared.get(op)!,{spaceId:job.spaceId,memoryType:job.memoryType});
             await this.db!.run('UPDATE nodes SET updated_at=? WHERE id=?',[Math.max(now,memory.updatedAt+1),memory.id]);updatedMemoryIds.push(memory.id);
           } else if (op.kind === 'associate') {
-            await this.upsertAssociationLocked(op.membershipIds[0], op.membershipIds[1], job.spaceId, job.memoryType, op.weight, op);
+            await this.upsertAssociationLocked(op.membershipIds[0], op.membershipIds[1], job.spaceId, job.memoryType, op.weight, op,hooks.authorizeAssociation);
           }
           for (const id of op.membershipIds) await this.db!.run('UPDATE memory_memberships SET last_reviewed_at = ? WHERE id = ?', [now, id]);
           // M03.c: audit rows must not carry full bodies — content/profile
@@ -2961,11 +2966,11 @@ export class GraphMemory {
             const existing = await this.db!.get<any>('SELECT weight FROM memory_associations WHERE member_a_id = ? AND member_b_id = ?', [left, right]);
             const weight = Math.max(edge.weight, existing?.weight ?? 0);
             const endpoints = await this.db!.all<Array<{memory_id:string}>>('SELECT memory_id FROM memory_memberships WHERE id IN (?,?)',[a,b]);
-            if (!(await admitDegreeNeighbour(this.db!,endpoints[0].memory_id,endpoints[1].memory_id,weight,this.maxAssociationDegree))) {
+            if (!(await admitDegreeNeighbour(this.db!,endpoints[0].memory_id,endpoints[1].memory_id,weight,this.maxAssociationDegree,false,hooks.authorizeAssociation))) {
               await this.logAction({action:'association_carry_rejected',edgeId:edge.id,reason:JSON.stringify({jobId,reason:'degree cap',limit:this.maxAssociationDegree})});
               continue;
             }
-            const carried = await this.upsertAssociationLocked(a, b, edge.spaceId, edge.memoryType, weight);
+            const carried = await this.upsertAssociationLocked(a, b, edge.spaceId, edge.memoryType, weight,undefined,hooks.authorizeAssociation);
             for (const evidence of edge.evidence ?? []) await this.db!.run(
               'INSERT OR IGNORE INTO association_evidence (association_id, id, payload) VALUES (?, ?, ?)', [carried.id, evidence.id, JSON.stringify(evidence)]);
             await this.logAction({ action: 'association_carried', edgeId: carried.id,
@@ -4241,7 +4246,7 @@ export class GraphMemory {
   memoryDirectory(context:DomainReadContext={},limit=24) {return this.workflow().memoryDirectory(context,limit);}
   memoryHistory(nodeId:string,context:DomainReadContext={},before?:number,limit=30,includeContent=false) {return this.workflow().memoryHistory(nodeId,context,before,limit,includeContent);}
   eventRecall(query:MemoryQuery & {runId?:string;hostId?:string}) {return this.workflow().eventRecall(query);}
-  finishMemoryStage(input:MemoryFinishInput) {return this.workflow().finishMemoryStage(input);}
+  finishMemoryStage(input:MemoryFinishInput,execute?: (operation:MemoryFinishInput['operations'][number],operationKey:string)=>Promise<unknown>) {return this.workflow().finishMemoryStage(input,execute);}
   async taskBrief(task:string, options:Omit<MemoryQuery,'query'> & {query?:string;runId?:string;hostId?:string;sinceDimensionRevision?:number;includeDirectory?:boolean}={}) {
     textField(task,'task',1000);
     const {sinceDimensionRevision,...queryOptions}=options;
@@ -4327,7 +4332,7 @@ export class GraphMemory {
   /** One task-time call records actual use and preserves the circumstances
    * needed by a later organizer. Signals only request review: semantic edits,
    * association weights and importance never change here. */
-  async reportMemoryUse(input: MemoryUseReportInput, context?:DomainReadContext) {
+  async reportMemoryUse(input: MemoryUseReportInput, context?:DomainReadContext,authorize?:()=>Promise<void>) {
     textField(input.reportId, 'reportId', 256);
     textField(input.recallId, 'recallId', 256);
     textField(input.task, 'task', 1000);
@@ -4360,6 +4365,7 @@ export class GraphMemory {
     const normalized = { ...input, observations, coUses };
     const requestHash = digest(normalized);
     return this.growthWrite(async () => {
+      await authorize?.();
       await this.authorizeRecall(input.recallId,context);
       const prior = await this.db!.get<any>('SELECT request_hash,receipt FROM memory_use_reports WHERE id=?',[input.reportId]);
       if (prior) {
@@ -4408,28 +4414,29 @@ export class GraphMemory {
   }
 
   /** Pending suggestions are domain-scoped and carry no authority to edit. */
-  async listImprovementSignals(context: DomainReadContext, limit=10) {
+  async listImprovementSignals(context: DomainReadContext|undefined, limit=10) {
     if (!Number.isInteger(limit) || limit<1 || limit>50) throw new Error('limit must be 1..50');
-    const domains=context.domains?.length===0?[]:resolveReadDomains(context);
-    if (!domains.length) return [];
-    const where=domains.map(()=>'(s.domain_kind=? AND s.domain_id=?)').join(' OR ');
+    const domains=context?resolveReadDomains(context):undefined;
+    if (domains&&!domains.length) return [];
+    const where=domains?domains.map(()=>'(s.domain_kind=? AND s.domain_id=?)').join(' OR '):'1=1';
     const rows=await this.db!.all<any>(`SELECT s.* FROM memory_improvement_signals s WHERE s.status='pending' AND (${where})
       AND (s.domain_kind!='session' OR EXISTS(SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=s.domain_id AND d.status IN ('active','paused')))
       ORDER BY CASE s.kind WHEN 'review_memory' THEN 0 ELSE 1 END,s.created_at,s.id LIMIT ?`,
-      [...domains.flatMap(d=>[d.kind,d.id]),limit]);
+      [...(domains?.flatMap(d=>[d.kind,d.id])??[]),limit]);
     return rows.map((row:any)=>({id:row.id,kind:row.kind,domain:{kind:row.domain_kind,id:row.domain_id},
       spaceId:row.space_id??undefined,memoryType:row.memory_type??undefined,memoryIds:[row.memory_a_id,...(row.memory_b_id?[row.memory_b_id]:[])],
       reason:row.reason,context:row.context,sourceRefs:JSON.parse(row.source_refs),createdAt:row.created_at,
       next:row.kind==='review_memory'?'Read current memory and actual evidence; use memory_update with expectedUpdatedAt only if a full correction is supported.':'Read both full memories and original context; use memory_association_upsert only if co-recall is still justified.'}));
   }
 
-  async resolveImprovementSignal(input:{signalId:string;status:'reviewed'|'deferred'|'dismissed';reason:string;context:DomainReadContext}) {
+  async resolveImprovementSignal(input:{signalId:string;status:'reviewed'|'deferred'|'dismissed';reason:string;context:DomainReadContext|undefined},authorize?:()=>Promise<void>) {
     textField(input.signalId,'signalId',256);textField(input.reason,'resolution reason');
     return this.growthWrite(async()=>{
+      await authorize?.();
       const row=await this.db!.get<any>('SELECT * FROM memory_improvement_signals WHERE id=?',[input.signalId]);
       if(!row)throw new Error('Improvement signal not found');
-      const domains=input.context.domains?.length===0?[]:resolveReadDomains(input.context);
-      if(!domains.some(d=>d.kind===row.domain_kind&&d.id===row.domain_id))throw new Error('Improvement signal outside readable domains');
+      const domains=input.context?resolveReadDomains(input.context):undefined;
+      if(domains&&!domains.some(d=>d.kind===row.domain_kind&&d.id===row.domain_id))throw new Error('Improvement signal outside readable domains');
       if(row.domain_kind==='session'){
         const session=await this.db!.get<any>("SELECT status FROM memory_domains WHERE kind='session' AND id=?",[row.domain_id]);
         if(!session||!['active','paused'].includes(session.status))throw new Error('Session is closed');

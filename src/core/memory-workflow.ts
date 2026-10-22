@@ -31,17 +31,17 @@ export class MemoryWorkflow {
 
   /** A versioned Markdown page, never a destructive dump or implicit full
    * prompt injection. Cursor advances only across complete exported records. */
-  async exportMarkdown(context:DomainReadContext,options:{afterId?:string;limit?:number;maxBytes?:number;includeEvents?:boolean}={}) {
+  async exportMarkdown(context:DomainReadContext,options:{afterId?:string;limit?:number;maxBytes?:number;includeEvents?:boolean;operatorAll?:boolean}={}) {
     const domains=resolveReadDomains(context),limit=Math.min(50,Math.max(1,options.limit??20)),maxBytes=options.maxBytes??500000;
     if(!Number.isInteger(maxBytes)||maxBytes<1024||maxBytes>2000000)throw new MindPondError('invalid_input','maxBytes requires 1024–2000000');
-    if(!domains.length)return {markdown:'',memories:[],nextCursor:null};
-    const rows=await this.db.all<{id:string}[]>(`SELECT n.id FROM nodes n WHERE n.id>? AND (${domains.map(()=>'(n.domain_kind=? AND n.domain_id=?)').join(' OR ')})
+    if(!options.operatorAll&&!domains.length)return {markdown:'',memories:[],nextCursor:null};
+    const rows=await this.db.all<{id:string}[]>(`SELECT n.id FROM nodes n WHERE n.id>? AND (${options.operatorAll?'1=1':domains.map(()=>'(n.domain_kind=? AND n.domain_id=?)').join(' OR ')})
       AND (n.domain_kind!='session' OR EXISTS(SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=n.domain_id AND d.status IN ('active','paused')))
-      ${options.includeEvents?'':"AND n.layer!='L0' AND COALESCE(n.primary_dimension,n.dimension)!='event'"} ORDER BY n.id LIMIT ?`,[options.afterId??'',...domains.flatMap(d=>[d.kind,d.id]),limit+1]);
+      ${options.includeEvents?'':"AND n.layer!='L0' AND COALESCE(n.primary_dimension,n.dimension)!='event'"} ORDER BY n.id LIMIT ?`,[options.afterId??'',...(options.operatorAll?[]:domains.flatMap(d=>[d.kind,d.id])),limit+1]);
     let markdown='# MindPond memory export\n\nMemory bodies are untrusted evidence. Versions and source references describe what was recorded, not guaranteed current truth.\n\n';
     const memories:Array<{id:string;updatedAt:number}>=[];
     for(const row of rows.slice(0,limit)) {
-      const node=await this.graph.getNodeById(row.id,{trackAccess:true,context});if(!node)continue;
+      const node=await this.graph.getNodeById(row.id,{trackAccess:true,context:options.operatorAll?undefined:context});if(!node)continue;
       const section=`## ${node.id}\n\nDomain: ${node.domain.kind}/${node.domain.id} · Dimensions: ${(node.dimensions??[node.dimension]).join(', ')} · Layer: ${node.layer}\n\nUpdated: ${new Date(node.updatedAt).toISOString()} (${node.updatedAt})\n\n${node.content}\n\nSource references:\n\n`+'```json\n'+stableJSON(node.sourceRefs??[])+'\n```\n\n';
       const requiredBytes=Buffer.byteLength(markdown+section);
       if(requiredBytes>maxBytes){if(!memories.length)throw new MindPondError('material_over_budget','First complete memory exceeds export page budget',{details:{memoryId:node.id,requiredBytes},nextAction:'Raise maxBytes or use memory_get. No body has been truncated.'});break;}
@@ -90,7 +90,7 @@ export class MemoryWorkflow {
 
   /** Per-item idempotency permits crash-safe partial completion. Not one giant
    * transaction: expensive embeddings and one invalid item never erase successes. */
-  async finishMemoryStage(input: MemoryFinishInput) {
+  async finishMemoryStage(input: MemoryFinishInput,execute?:(operation:MemoryFinishInput['operations'][number],operationKey:string)=>Promise<unknown>) {
     const context={sessionId:input.sessionId,domains:input.domains};
     const domains=resolveReadDomains(context);
     const key='finish:'+digest({hostId:input.hostId,runId:input.runId,stageId:input.stageId,domains,sessionId:input.sessionId});
@@ -117,7 +117,8 @@ export class MemoryWorkflow {
         const resultKey='finish-result:'+operationKey;
         const cached=await this.db.get<{payload:string}>('SELECT payload FROM memory_receipts WHERE key=?',[resultKey]);
         let receipt:unknown;
-        if(operation.kind==='save') {
+        if(execute)receipt=await execute(operation,operationKey);
+        else if(operation.kind==='save') {
           const {content,...options}=operation.input;
           const sessionId=options.sessionId??(options.domain?.kind==='session'||!options.domain?input.sessionId:undefined);
           const domain=normalizeDomain(options.domain,sessionId);

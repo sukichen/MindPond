@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {memoryMcpEndpoint,roleConnectionDownload} from './integrations/office-connection.js';
+import {createOwnerMemoryServer,ROLE_MEMORY_INSTRUCTIONS} from './role-memory-service.js';
 import {officeWorkbench} from './integrations/office-workbench.js';
 import { assemblePresentedRecall, recallEntry } from './core/context-assembly.js';
 import { authorizeOrganizationAccess } from './core/organization-access.js';
@@ -262,6 +263,16 @@ function failErr(res: express.Response, err: unknown, fallbackStatus = 500) {
 // ---- routes ----
 app.get('/health', (_req, res) => ok(res, { service: 'mindpond', port: PORT, mode: 'service (no LLM inside)' }));
 const humanOperator={v:1 as const,operator:true,principal:'human',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+async function humanOwnerFilter(req:express.Request,src:Record<string,any>){
+  if(!src.ownerRoleId&&!src.ownerOfficeId)return undefined;
+  if(CONTEXT_SECRET&&!req.trusted?.operator)throw new MindPondError('scope_denied','Owner selection requires human management access');
+  if(src.ownerRoleId&&src.ownerOfficeId)throw new MindPondError('invalid_input','Select one memory owner');
+  return graphMemory.memoryOwners.ownerContext(src.ownerOfficeId?{kind:'office',id:z.string().min(1).max(160).parse(src.ownerOfficeId)}:{kind:'agent',id:z.string().uuid().parse(src.ownerRoleId)});
+}
+app.get('/api/memory/capabilities',async(_req,res)=>{
+  const service=createOwnerMemoryServer(graphMemory);
+  try{ok(res,{instructions:ROLE_MEMORY_INSTRUCTIONS,operations:service.catalog()});}catch(error){failErr(res,error);}finally{await service.close();}
+});
 async function publicMemoryEndpoint(){
   const settings=await graphMemory.offices.settings(humanOperator);
   if(!settings.mcpUrl)return null;
@@ -379,12 +390,13 @@ app.post('/api/memory/search', async (req, res) => {
     } else {
       readCtx = { sessionId, domains };
     }
+    const ownerContext=await humanOwnerFilter(req,req.body);
     const recall = await graphMemory.recall({
       query, retrievalProfile, vectorAlgorithm, reranker,
-      ...(!CONTEXT_SECRET||req.trusted?.operator?{operatorAll:!req.body.ownerRoleId&&!req.body.ownerOfficeId}:{}),
+      ...(!CONTEXT_SECRET||req.trusted?.operator?{operatorAll:!ownerContext}:{}),
       limit: typeof limit === 'number' ? limit : 10,
       sessionId: readCtx.sessionId,
-      domains: (!CONTEXT_SECRET||req.trusted?.operator)&&(req.body.ownerRoleId||req.body.ownerOfficeId)?[{kind:'personal',id:req.body.ownerOfficeId?'office:'+z.string().min(1).max(160).parse(req.body.ownerOfficeId):'agent:'+z.string().uuid().parse(req.body.ownerRoleId)}]:readCtx.domains,
+      domains: ownerContext?.domains??readCtx.domains,
       dimension,
       layer,
       spaceId,
@@ -399,7 +411,7 @@ app.post('/api/memory/search', async (req, res) => {
     ok(res, {
       recallId: recall.recallId,
       retrieval:recall.retrieval,
-      ...assemblePresentedRecall(await Promise.all(recall.results.map(async r=>({...recallEntry(r),owner:await graphMemory.memoryOwners.owner(r.node)}))),recall.contextBudget),
+      ...assemblePresentedRecall(await Promise.all(recall.results.map(async r=>({...recallEntry(r),...await graphMemory.memoryOwners.present(r.node)}))),recall.contextBudget),
     });
   } catch (err) {
     failErr(res, err);
@@ -625,12 +637,13 @@ app.get('/api/memory/list', async (req, res) => {
       if (ctx === null) return;
       if (ctx !== 'operator') { sessionId = ctx.sessionId; domains = ctx.domains; }
     }
+    const ownerContext=await humanOwnerFilter(req,req.query);
     const { nodes, total } = await graphMemory.listNodes({
       layer: typeof req.query.layer === 'string' ? req.query.layer as never : undefined,
       dimension: typeof req.query.dimension === 'string' ? req.query.dimension as never : undefined,
       sessionId,
-      domains,
-      operatorAll: operator,
+      domains:ownerContext?.domains??domains,
+      operatorAll: operator&&!ownerContext,
       spaceId: typeof req.query.spaceId === 'string' ? req.query.spaceId : undefined,
       memoryType: typeof req.query.memoryType === 'string' ? req.query.memoryType : undefined,
       activeOnly: req.query.activeOnly === 'true',
@@ -879,7 +892,7 @@ app.get('/api/memory/save-policy', async (_req, res) => {try{ok(res,{policy:memo
 app.get('/api/organization/policy', async (_req, res) => {try{ok(res, { policy: organizationPolicyPayload(), dimensionPolicy:await graphMemory.getDimensionPolicy(), savePolicy: memorySavePolicyPayload(await graphMemory.getDimensionPolicy()) });}catch(e){failErr(res,e);}});
 
 app.get('/api/memory/spaces', async (req, res) => {
-  try { ok(res, { spaces: await graphMemory.listSpaces(callerContext(req, req.query)) }); }
+  try { ok(res, { spaces: await graphMemory.listSpaces(await humanOwnerFilter(req,req.query)??callerContext(req, req.query)) }); }
   catch (err) { failErr(res, err); }
 });
 
@@ -898,6 +911,14 @@ app.post('/api/memory/association/delete', async (req, res) => {
 app.post('/api/organization/claim', async (req, res) => {
   try {
     const claim: any = { ...(req.body ?? {}) };
+    const ownerContext=await humanOwnerFilter(req,claim);
+    if(ownerContext)claim.domain=ownerContext.domains[0];
+    if((!CONTEXT_SECRET||req.trusted?.operator)&&claim.membershipIds?.length){
+      const member=await graphMemory.getMembershipById(claim.membershipIds[0]);
+      const node=await graphMemory.getNodeById(member.memoryId,{trackAccess:false});
+      if(ownerContext&&node&&(node.domain.kind!==claim.domain.kind||node.domain.id!==claim.domain.id))throw new MindPondError('invalid_input','Selected memories do not belong to the chosen owner');
+      if(node)claim.domain=node.domain;
+    }
     if (req.trusted && CONTEXT_SECRET && claim.domain !== undefined) claim.domain = narrowTrustedDomain(req.trusted, claim.domain);
     ok(res, organizationTask(await graphMemory.claimOrganizationJob(claim)));
   }
@@ -952,9 +973,14 @@ app.post('/api/organization/commit', async (req, res) => {
 app.post('/api/organization/request', async (req, res) => {
   try {
     const body = req.body ?? {};
-    const domain = req.trusted && CONTEXT_SECRET && body.domain !== undefined ? narrowTrustedDomain(req.trusted, body.domain) : body.domain;
+    const ownerContext=await humanOwnerFilter(req,body);
+    const domain = ownerContext?.domains[0]??(req.trusted && CONTEXT_SECRET && body.domain !== undefined ? narrowTrustedDomain(req.trusted, body.domain) : body.domain);
     ok(res, await graphMemory.organizationRequests.createRequest({ ...body, domain }));
   } catch (err) { failErr(res, err); }
+});
+app.get('/api/organization/requests',async(req,res)=>{
+  if(!requireMemoryManager(req,res))return;
+  try{const ctx=await humanOwnerFilter(req,req.query)??{domains:[{kind:'personal' as const,id:'default'}]};ok(res,{requests:await graphMemory.organizationRequests.listRequests(ctx,50)});}catch(error){failErr(res,error);}
 });
 app.get('/api/organization/request/:id', async (req, res) => {
   try {

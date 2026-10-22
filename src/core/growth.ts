@@ -54,6 +54,9 @@ export function stableJSON(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 export const digest = (value: unknown) => createHash('sha256').update(stableJSON(value)).digest('hex');
+/** A role/office observation must never overwrite another owner's source
+ * status merely because they refer to the same repository and checkout. */
+export const sourceObservationContext=(context:string,domain?:MemoryDomainRef)=>domain?'owner:'+JSON.stringify([domain.kind,domain.id,context]):context;
 export function normalizeSources(input: unknown): SourceReference[] {
   if (input === undefined) return [];
   if (!Array.isArray(input) || input.length > 64) throw new Error('sourceRefs must contain at most 64 references');
@@ -170,16 +173,21 @@ export class GrowthStore {
     for(const e of edges) if(map.get(e.source_id)?.version!==e.source_version) {stale=true;reasons.push('support_changed:'+e.source_id);}
     const memoryIds=[...new Set(members.map(m=>m.memory_id))];
     if(memoryIds.length) {
-      const src=await this.db.all(`SELECT payload FROM memory_sources WHERE memory_id IN (${memoryIds.map(()=>'?').join(',')})`,memoryIds);
-      const refs=src.flatMap(r=>JSON.parse(r.payload) as SourceReference[]);
-      const observations=refs.length ? await this.db.all(`SELECT DISTINCT o.uri,o.context,o.payload FROM memory_sources ms, json_each(ms.payload) ref JOIN source_observations o ON o.uri=json_extract(ref.value,'$.uri') AND o.context=COALESCE(?,json_extract(ref.value,'$.context')) WHERE ms.memory_id IN (${memoryIds.map(()=>'?').join(',')})`,[context ?? null,...memoryIds]) : [];
-      const observed=new Map(observations.map(o=>[stableJSON([o.uri,o.context]),JSON.parse(o.payload)]));
+      const src=await this.db.all(`SELECT memory_id,payload FROM memory_sources WHERE memory_id IN (${memoryIds.map(()=>'?').join(',')})`,memoryIds);
+      const refs=src.flatMap(r=>(JSON.parse(r.payload) as SourceReference[]).map(ref=>({...ref,memoryId:r.memory_id})));
+      const observations=refs.length ? await this.db.all(`SELECT DISTINCT ms.memory_id,o.uri,json_extract(o.payload,'$.context') context,o.payload
+        FROM memory_sources ms JOIN nodes n ON n.id=ms.memory_id JOIN json_each(ms.payload) ref
+        JOIN source_observations o ON o.uri=json_extract(ref.value,'$.uri') AND o.context=COALESCE(
+          (SELECT scoped.context FROM source_observations scoped WHERE scoped.uri=json_extract(ref.value,'$.uri') AND scoped.context='owner:'||json_array(n.domain_kind,n.domain_id,COALESCE(?,json_extract(ref.value,'$.context')))),
+          COALESCE(?,json_extract(ref.value,'$.context')))
+        WHERE ms.memory_id IN (${memoryIds.map(()=>'?').join(',')})`,[context??null,context??null,...memoryIds]) : [];
+      const observed=new Map(observations.map(o=>[stableJSON([o.memory_id,o.uri,o.context]),JSON.parse(o.payload)]));
       // A source-free leaf is unknown, even if another branch of the profile has checked sources.
       const sourceMemories=new Set(await this.db.all(`SELECT memory_id FROM memory_sources WHERE memory_id IN (${memoryIds.map(()=>'?').join(',')})`,memoryIds).then(rs=>rs.map(r=>r.memory_id)));
       for(const m of members) if(!edges.some(e=>e.profile_id===m.id) && !sourceMemories.has(m.memory_id)) unknown=true;
       for(const ref of refs) {
         hasEvidence=true;
-        const o=observed.get(stableJSON([ref.uri,context ?? ref.context]));
+        const o=observed.get(stableJSON([ref.memoryId,ref.uri,context ?? ref.context]));
         if(!o) {unknown=true;reasons.push('source_unchecked:'+ref.uri);continue;}
         const same=ref.fingerprint && o.fingerprint ? ref.fingerprint===o.fingerprint : ref.revision===o.revision;
         if(o.status==='missing' || !same) {stale=true;reasons.push('source_changed:'+ref.uri);}
@@ -236,17 +244,18 @@ export class GrowthStore {
     await this.audit('profile_revised',{membershipId:memberId,revision,reason:op.reason},m.memory_id);
     await this.bump();
   }
-  async observe(input:SourceObservation) {
+  async observe(input:SourceObservation,domain?:MemoryDomainRef) {
     const ref=normalizeSources([input])[0];
     if(!['present','missing'].includes(input.status)||!Number.isInteger(input.expectedVersion)||input.expectedVersion<0) throw new Error('status and expectedVersion required');
-    const old=await this.db.get('SELECT * FROM source_observations WHERE uri=? AND context=?',[ref.uri,ref.context]);
+    const storedContext=sourceObservationContext(ref.context,domain);
+    const old=await this.db.get('SELECT * FROM source_observations WHERE uri=? AND context=?',[ref.uri,storedContext]);
     const payload={...ref,status:input.status};
     // Identical retry returns the existing version, never overwrites a newer observation.
     if(old && old.payload===stableJSON(payload)) return {version:old.version,changed:false,affectedProfileIds:[]};
     if((old?.version ?? 0)!==input.expectedVersion) throw new Error('stale_observation: reload current source observation');
     const version=input.expectedVersion+1;
-    await this.db.run('INSERT INTO source_observations(uri,context,version,payload) VALUES (?,?,?,?) ON CONFLICT(uri,context) DO UPDATE SET version=excluded.version,payload=excluded.payload',[ref.uri,ref.context,version,stableJSON(payload)]);
-    const rows=await this.db.all('SELECT s.memory_id,s.payload,m.id FROM memory_sources s JOIN memory_memberships m ON m.memory_id=s.memory_id WHERE m.active=1');
+    await this.db.run('INSERT INTO source_observations(uri,context,version,payload) VALUES (?,?,?,?) ON CONFLICT(uri,context) DO UPDATE SET version=excluded.version,payload=excluded.payload',[ref.uri,storedContext,version,stableJSON(payload)]);
+    const rows=await this.db.all('SELECT s.memory_id,s.payload,m.id FROM memory_sources s JOIN memory_memberships m ON m.memory_id=s.memory_id JOIN nodes n ON n.id=s.memory_id WHERE m.active=1'+(domain?' AND n.domain_kind=? AND n.domain_id=?':''),domain?[domain.kind,domain.id]:[]);
     const direct=rows.filter(r=>(JSON.parse(r.payload) as SourceReference[]).some(s=>s.uri===ref.uri && s.context===ref.context)).map(r=>r.id);
     const affectedProfileIds=await this.ancestors(direct);
     await this.audit('source_observed',{...payload,version,affectedProfileIds});

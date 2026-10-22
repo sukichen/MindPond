@@ -53,14 +53,17 @@ export class MemoryOwners {
         const ids=[...new Set(seats.map(s=>s.office_id))].sort();
         return Promise.all(ids.map(async id=>{const o=await this.office(id);return {...o,seats:seats.filter(s=>s.office_id===id).map(s=>({id:s.id,revision:s.revision})).sort((a,b)=>a.id.localeCompare(b.id))};}));
     }
-    async domain(owner:MemoryOwner) {
+    async domain(owner:MemoryOwner,create=true) {
         if(owner.kind==='user')return {kind:'personal' as const,id:'default'};
         if(owner.kind==='office'){
             const o=await this.office(owner.id);
             const existing=await this.db.get('SELECT domain_id,title FROM memory_office_namespaces WHERE office_id=?',[o.id]);
-            if(existing?.title===o.title)return {kind:'personal' as const,id:existing.domain_id};
+            if(existing){
+                if(create&&existing.title!==o.title)await this.db.run('UPDATE memory_office_namespaces SET title=? WHERE office_id=?',[o.title,o.id]);
+                return {kind:'personal' as const,id:existing.domain_id};
+            }
             if(!existing&&await this.db.get("SELECT 1 FROM nodes WHERE domain_kind='personal' AND domain_id=?",['office:'+o.id]))throw new MindPondError('invalid_input','The office namespace conflicts with existing unassigned knowledge; human review is required.');
-            await this.db.run('INSERT INTO memory_office_namespaces VALUES(?,?,?) ON CONFLICT(office_id) DO UPDATE SET title=excluded.title',[o.id,'office:'+o.id,o.title]);
+            if(create)await this.db.run('INSERT INTO memory_office_namespaces VALUES(?,?,?) ON CONFLICT(office_id) DO UPDATE SET title=excluded.title',[o.id,'office:'+o.id,o.title]);
             return {kind:'personal' as const,id:'office:'+o.id};
         }
         await this.role(owner.id);
@@ -68,7 +71,7 @@ export class MemoryOwners {
         if(existing)return {kind:'personal' as const,id:existing.domain_id};
         const id='agent:'+owner.id;
         if(await this.db.get("SELECT 1 FROM nodes WHERE domain_kind='personal' AND domain_id=?",[id]))throw new MindPondError('invalid_input','The role namespace conflicts with existing unassigned knowledge; human review is required.');
-        await this.db.run('INSERT OR IGNORE INTO memory_role_namespaces VALUES(?,?)',[owner.id,id]);return {kind:'personal' as const,id};
+        if(create)await this.db.run('INSERT OR IGNORE INTO memory_role_namespaces VALUES(?,?)',[owner.id,id]);return {kind:'personal' as const,id};
     }
     async context(owner:MemoryOwner,officeId?:string) {
         if(owner.kind==='user'){
@@ -82,6 +85,22 @@ export class MemoryOwners {
         const domains=officeId?[]:[await this.domain(owner)];
         for(const o of rooms.filter(o=>!officeId||o.id===officeId))domains.push(await this.domain({kind:'office',id:o.id}));
         return {domains};
+    }
+    /** Human navigation includes disabled/deleted owners' retained knowledge.
+     * Read mappings as stored; never guess a namespace from a display name. */
+    async ownerContext(owner:MemoryOwner){
+        if(owner.kind==='user')return {domains:[{kind:'personal' as const,id:'default'}]};
+        const row=owner.kind==='agent'
+            ?await this.db.get('SELECT domain_id FROM memory_role_namespaces WHERE role_id=?',[owner.id])
+            :await this.db.get('SELECT domain_id FROM memory_office_namespaces WHERE office_id=?',[owner.id]);
+        if(row)return {domains:[{kind:'personal' as const,id:row.domain_id}]};
+        if(owner.kind==='agent'){
+            if(!await this.db.get('SELECT 1 FROM character_roles WHERE id=?',[owner.id]))throw new MindPondError('not_found','Memory role no longer exists');
+            const id='agent:'+owner.id;
+            if(await this.db.get("SELECT 1 FROM nodes WHERE domain_kind='personal' AND domain_id=?",[id]))throw new MindPondError('invalid_input','The role namespace conflicts with unassigned knowledge; human review is required');
+            return {domains:[{kind:'personal' as const,id}]};
+        }
+        return {domains:[await this.domain(owner,false)]};
     }
     async owner(node:MemoryNode):Promise<MemoryOwner> {
         if(node.domain.kind==='personal'){

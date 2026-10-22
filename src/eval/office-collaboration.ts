@@ -43,6 +43,9 @@ const resources: Record<string, string> = {
     'docs/test-runner.md': 'The generated sources are resolved from build/sources. Before tests use FIXTURE_PROFILE=fixture-cpu and the command node scripts/check.mjs --generated-root build/sources. UTF-16 JavaScript character offsets are not UTF-8 byte offsets. These rules apply only to fixture revision fixture-v1.',
 };
 const scenarios = ['onboarding', 'reuse', 'restart', 'conflict', 'misleading'] as const;
+const readMemoryActions=['memory_identity','memory_capabilities','memory_brief','memory_search','memory_get','memory_expand','memory_directory','memory_connections','memory_association_get','memory_profile_get','memory_profile_history','memory_history','memory_trace','memory_retrieval_status','memory_retrieval_profiles','memory_dimension_policy','memory_save_policy'];
+const writeMemoryActions=['memory_save','memory_update','memory_finish','memory_use_report','memory_save_validate'];
+export function evaluationMemoryActions(condition:string){return new Set(condition==='none'?[]:[...readMemoryActions,...(condition==='recall_save'?writeMemoryActions:[])]);}
 const admin: TrustedCallContext = { v: 1, principal: 'eval-human', operator: true, issuedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER };
 export async function runOfficeEvaluation(adapter: OfficeEvalAdapter, options: {
     repetitions: number;
@@ -56,7 +59,7 @@ export async function runOfficeEvaluation(adapter: OfficeEvalAdapter, options: {
         throw Error('Explicit host model adapter required');
     const extension=import.meta.url.endsWith('.ts')?'.ts':'.js';
     const implementation:Record<string,string>={};
-    for(const file of ['role-memory-service','core/memory-owners','core/office-building','core/building-tools','core/roles','core/office-collaboration','core/trust','mcp-service','eval/office-collaboration']){const data=await fs.readFile(new URL('../'+file+extension,import.meta.url));implementation[file]=createHash('sha256').update(data).digest('hex');}
+    for(const file of ['role-memory-service','owner-memory-actions','core/memory-capability-contract','core/memory-recall-schema','core/memory-use-schema','core/graph-memory','core/growth','core/memory-owners','core/office-building','core/building-tools','core/roles','core/office-collaboration','core/trust','mcp-service','eval/office-collaboration']){const data=await fs.readFile(new URL('../'+file+extension,import.meta.url));implementation[file]=createHash('sha256').update(data).digest('hex');}
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-office-eval-')), runs: any[] = [];
     const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
     async function exercise(caseId: string, condition: string, repetition: number, seed: string[] = [], producer = false) {
@@ -95,7 +98,8 @@ export async function runOfficeEvaluation(adapter: OfficeEvalAdapter, options: {
             if (caseId === 'conflict')
                 await graph.building.container({ action: 'save', officeId: 'fixture-room', id: 'shared-notes', title: 'Shared notes', content: { summary: 'Initial note' }, expectedRevision: 0, key: 'initial' }, peer);
             await connect();
-            const allowed = new Set(['role_application', 'role_sync', 'office_directory', 'office_receive', 'office_message', 'office_container', 'office_record', 'office_context', 'office_host', ...(condition === 'none' ? [] : ['memory_capabilities', 'memory_brief', 'memory_get', 'memory_expand']), ...(condition === 'recall_save' ? ['memory_save_policy', 'memory_save', 'memory_update', 'memory_finish', 'memory_use_report'] : [])]);
+            const allowedActions=evaluationMemoryActions(condition);
+            const allowed = new Set(['role_application', 'role_sync', 'office_directory', 'office_receive', 'office_message', 'office_container', 'office_record', 'office_context', 'office_host',...allowedActions,...(condition==='none'?[]:['memory_action'])]);
             const catalog = [...(await client!.listTools()).tools,...(await memoryClient!.listTools()).tools].filter(t => allowed.has(t.name));
             const tools = [...catalog.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })), { type: 'function', function: { name: 'eval_source', description: 'Read/check fictional repository source and environment only. No shell, network, real files or secrets.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'read', 'check'] }, path: { type: 'string' }, command: { type: 'string' } }, required: ['action'], additionalProperties: false } } }];
             const messages: any[] = [{ role: 'system', content: BUILDING_INSTRUCTIONS + '\nYou are in a real-model evaluation over fictional source fixtures and a real isolated MindPond SQLite/MCP instance. Work only within this user request. Tool availability varies. Do not claim tests you did not invoke. End with a concise result; code reviews use the requested JSON. The environment revision is fixture-v1. Office and memory use separate MCP services. Memory identity is bound to this approved role; no workspace or domain argument is accepted. Human-provided environment lessons are independent copies in this role’s knowledge. You cannot read human or other-role memory. You have at most ' + options.maxTurns + ' turns.' }, { role: 'user', content: messageText + '\nOffice ID: fixture-room. Start as this authenticated session; do not select another character. Sources are available through eval_source.' }];
@@ -126,7 +130,15 @@ export async function runOfficeEvaluation(adapter: OfficeEvalAdapter, options: {
                         else if (!allowed.has(name))
                             throw Error('Tool not available in this condition');
                         else {
+                            if(name==='memory_action'&&!allowedActions.has(args.tool))throw Error('Memory action not available in this evaluation condition');
                             result = await (name.startsWith('memory_')?memoryClient!:client!).callTool({ name, arguments: args });
+                            if((name==='memory_capabilities'||name==='memory_action'&&args.tool==='memory_capabilities')&&!result.isError){
+                                const data=JSON.parse(result.content[0].text);
+                                data.directTools=data.directTools.filter((n:string)=>allowed.has(n));data.actions=data.actions.filter((a:any)=>allowedActions.has(a.name));
+                                data.capabilities=data.capabilities.map((f:any)=>({...f,routes:f.routes.filter((n:string)=>allowedActions.has(n))})).filter((f:any)=>f.routes.length);
+                                data.instructions='Only the listed Memory tools/actions are available in this evaluation condition. Check actual evidence and never claim unavailable operations.';
+                                result.content[0].text=JSON.stringify(data);
+                            }
                             if (name === 'role_application' && args.action === 'submit' && !result.isError) {
                                 const data = JSON.parse(result.content[0].text);
                                 await graph.roles.review({ applicationId: data.applicationId, expectedRevision: 1, action: 'approve' }, admin);

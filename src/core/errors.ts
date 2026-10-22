@@ -13,7 +13,7 @@ export type MindPondErrorCode =
   | 'stale_version'            // optimistic version check failed; reload and retry
   | 'material_over_budget'     // material exceeds the organization budget; shrink the batch or read in segments — never truncate
   | 'scope_denied'             // outside trusted context/authorization; never auto-expand
-  | 'identity_required'        // no approved role identity; activate/configure before retrying
+  | 'identity_required'        // missing reliable chat identity; fix the native integration before retrying
   | 'temporarily_unavailable'  // transient (locks, index); bounded backoff within budget
   | 'internal';                // unexpected; report with diagnostics, do not blind-retry
 
@@ -61,6 +61,7 @@ export class MindPondError extends Error {
  * (HTTP/MCP/SDK) can map the same failure consistently. Specific patterns
  * precede the generic invalid_input fallback. */
 const LEGACY_PATTERNS: Array<{ match: RegExp; shape: Omit<ErrorShape, 'message'> }> = [
+  { match: /^stale_snapshot/, shape: { code: 'stale_version', retryable: true, nextAction: 'Reload the current memory or organization snapshot before applying an edit.' } },
   { match: /^stale_observation/, shape: { code: 'stale_version', retryable: true, nextAction: '先用 memory_source_get 读取最新 version，再携带 expectedVersion 重试' } },
   { match: /^stale_/, shape: { code: 'stale_lease', retryable: true, nextAction: '重新领取任务后携带当前租约与 attempts 重试' } },
   { match: /^idempotency_conflict/, shape: { code: 'idempotency_conflict', retryable: false, nextAction: '先查原回执；同 key 仅可重放相同载荷，修改必须用新 key 或显式修订' } },

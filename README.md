@@ -46,6 +46,8 @@ Codex CLI / OpenCode CLI 还可通过原生 HTTP MCP 在聊天中申请角色，
 
 ## 给 agent 的标准提示词
 
+普通聊天以[分层 Memory 接入](docs/role-memory.md)和当前 MCP 的初始化提示为准。以下生命周期与宿主队列文档供显式 SDK/宿主管理集成使用，其中的 session/domain 参数不能用于选择聊天身份。
+
 - [首次连接提示](docs/memory-bootstrap-prompt.md)：初始化时给出检索、代码审查期间保存、阶段核对与信任边界；完整规则按需读取。
 - [写入规范](docs/memory-save-prompt.md)：何时保存、如何形成完整且可复用的记忆、稳定分类、事实与不确定性、关联场景、提交前检查及完整示例。
 - [整理规范 organization.v2](docs/memory-organization-prompt.md)：完整来源、条件保留、去重整合、关联依据和逐条复核。
@@ -54,7 +56,7 @@ Codex CLI / OpenCode CLI 还可通过原生 HTTP MCP 在聊天中申请角色，
 - [跨 agent 生长契约](docs/host-growth-contract.md)：生命周期、接口字段与迁移边界；旧宿主专用章节按通用协议逐步迁移。
 - [工作台与宿主接入](docs/workbench-and-host.md)：人工操作与 host 协作流程。
 
-这些提示词直接从运行时代码和新安装默认配置导出；运行时以当前数据库的维度与自定义提示词为准。npm run check 会检查是否漂移。MCP 工具只保留简短规则，完整写入规范通过 memory_save_policy 按需读取。独立 Memory MCP 提供 memory_brief/search/get、save/update/delete、directory、save_policy 与 use_report。下述高级批处理、捕获和整理规范供显式维护工具使用，不属于 Office 工具目录。HTTP 使用 GET /api/memory/save-policy。
+这些提示词直接从运行时代码和新安装默认配置导出；运行时以当前数据库的维度与自定义提示词为准。npm run check 会检查是否漂移。MCP 工具只保留简短规则，完整写入规范通过 memory_save_policy 按需读取。独立 Memory MCP 直接提供检索、读写、图维护和使用反馈；通过 memory_capabilities 发现高级操作，再用 memory_action 按需读取 schema 并执行预检、历史、画像、批处理及整理恢复。原始采集、模型安装和宿主生命周期队列仍需显式管理配置；Memory 与 Office 分开。HTTP 使用 GET /api/memory/save-policy。完整目录、边界和回归范围见[能力复核记录](docs/capability-audit.md)。
 
 一条记忆建议按“对象与范围 → 事实/决策/操作 → 条件与方法 → 结果与依据 → 例外与限制 → 来源与时间”组织。只写有依据的部分，也可以用包含相同信息的连贯段落；不强迫填满模板，不为固定字数省掉条件，也不把操作过程拆成大量碎片。
 
@@ -167,6 +169,7 @@ spaceId 是检索隔离维度，不是认证或租户隔离。当前共享 API k
 npm run check 覆盖规范化写入、上下文依据、复核停用/恢复、跨重启迁移、整理快照/幂等、空间与类型边界、涟漪传播及真实 HTTP/MCP 交互。所有测试使用临时数据库；有模型和无模型两种环境均可运行同一检查集。
 
 - [架构与涟漪边界](docs/architecture.md)
+- [能力完整性复核](docs/capability-audit.md)
 - [验证与发布](docs/releasing.md)
 - [情境关联与反馈迭代](docs/contextual-associations.md)
 - [整理规范](docs/memory-organization-prompt.md)
