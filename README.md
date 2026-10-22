@@ -16,6 +16,8 @@ Office MCP 与 Memory MCP 分开配置。OpenCode 多聊天通过宿主会话插
 
 生产默认安装不带本地模型运行库。基础/选装能力、许可证范围及认证排障见[生产依赖说明](docs/production-dependencies.md)。
 
+**Codex / OpenCode 客户端如何配置：** [首次配置、双 MCP 示例、插件位置与验收步骤](docs/client-connections.md#首次配置完成后直接启动-codex--opencode)。完成后可直接启动客户端；包装脚本为可选入口。
+
 ## 快速开始
 
 ```bash
