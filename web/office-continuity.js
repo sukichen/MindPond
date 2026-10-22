@@ -38,7 +38,7 @@
     }
     async function load(more=false){
       const version=++generation,view=select.value;feedback.textContent='正在读取…';moreButton.hidden=true;if(!more){results.replaceChildren();next=null;}
-      let result;try{result=await request(view==='resume'?'':view==='history'?'/history':'/tasks',view==='resume'?{cursor:more?next:undefined}:view==='history'?{beforeSeq:more?next:undefined}:{state:view,cursor:more?next:undefined});}catch(error){if(version===generation&&current())throw error;return;}
+      let result;try{result=await request(view==='resume'?'':view==='history'?'/history':'/tasks',view==='resume'?{cursor:more?next:undefined}:view==='history'?{beforeSeq:more?next:undefined}:{state:view,cursor:more?next:undefined});}catch(error){if(version===generation&&current()){moreButton.hidden=!next;throw error;}return;}
       if(version!==generation||!current())return;
       feedback.textContent='';next=view==='history'?result.nextBeforeSeq:result.nextCursor;
       const records=view==='resume'?[...result.checkpoints,...result.tasks]:result.records;
@@ -71,13 +71,14 @@
       form.onsubmit=async event=>{
         event.preventDefault();if(saving||!form.reportValidity())return;if(!current()){error.textContent='角色详情已关闭，请重新打开后再保存。';return;}
         const multiline=key=>fields[key].value.split('\n').map(v=>v.trim()).filter(Boolean),value=key=>fields[key].value.trim();
-        let payload;try{
+        let payload,locked=[];try{
           const sources=JSON.parse(source.value||'[]');
           payload=kind==='checkpoint'?{summary:{goal:value('goal'),progress:value('progress'),nextSteps:multiline('nextSteps'),blockers:multiline('blockers'),constraints:multiline('constraints'),sources},expectedRevision:record.revision??0}:{task:{id:taskId,expectedRevision:record.revision??0,title:value('title'),status:fields.status.value,priority:Number(fields.priority.value),progress:value('progress'),nextSteps:multiline('nextSteps'),blockers:multiline('blockers'),sources}};
           payload={roleId:role.id,...(owner.value?{officeId:owner.value}:{}),...payload,reason:value('reason')};
           const fingerprint=JSON.stringify(payload);if(priorPayload&&priorPayload!==fingerprint){error.textContent='上次提交结果不明确。请先刷新核对实际版本，再重新编辑，避免重复提交。';return;}priorPayload=fingerprint;
-          saving=true;submit.disabled=true;await api('role/continuity/'+kind,{...payload,key});dirty=false;d.close();if(current()){notice('接续记录已保存');await load();}
-        }catch(failure){if(failure.status>=400&&failure.status<500){priorPayload='';key=crypto.randomUUID();}error.textContent=failure.message;}finally{saving=false;submit.disabled=false;}
+          saving=true;locked=[...form.querySelectorAll('input,textarea,select,button')].map(control=>[control,control.disabled]);for(const [control] of locked)control.disabled=true;
+          await api('role/continuity/'+kind,{...payload,key});dirty=false;d.close();if(current()){notice('接续记录已保存');await load().catch(failure=>{if(current())feedback.textContent='记录已保存，但列表刷新失败：'+failure.message;});}
+        }catch(failure){if(failure.status>=400&&failure.status<500){priorPayload='';key=crypto.randomUUID();}error.textContent=failure.message;}finally{saving=false;for(const [control,disabled] of locked)control.disabled=disabled;}
       };
       document.body.append(d);d.showModal();(fields.goal||fields.title).focus();
     }

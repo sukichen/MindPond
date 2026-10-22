@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 class Element{
- constructor(tag,text=''){this.tagName=tag;this.textContent=text;this.children=[];this.attrs={};this.hidden=false;this.value='';}
- append(...nodes){for(const n of nodes){if(this.tagName==='select'&&!this.children.length)this.value=n.value;this.children.push(n);}}
+ constructor(tag,text=''){this.tagName=tag;this.textContent=text;this.children=[];this.attrs={};this.hidden=false;this.value='';this.disabled=false;this.listeners={};}
+ append(...nodes){for(const n of nodes){if(this.tagName==='select'&&!this.children.length)this.value=n.value;n.parent=this;this.children.push(n);}}
  replaceChildren(...nodes){this.children=[];this.append(...nodes);}
- setAttribute(name,value){this.attrs[name]=value;}addEventListener(){}focus(){}
+ setAttribute(name,value){this.attrs[name]=value;}addEventListener(name,fn){(this.listeners[name]??=[]).push(fn);}focus(){}
+ querySelectorAll(selector){return all(this).slice(1).filter(n=>selector.split(',').includes(n.tagName));}
+ reportValidity(){return true;}showModal(){this.open=true;}close(){this.open=false;for(const fn of this.listeners.close??[])fn();}
+ remove(){if(this.parent)this.parent.children=this.parent.children.filter(n=>n!==this);}
 }
 const body=new Element('body'),requests=[];let live=true;
 const context=vm.createContext({document:{createElement:tag=>new Element(tag),body},window:{MindPondOfficeMarkdown:{render:value=>new Element('markdown',value)}},Option:function(label,value){this.tagName='option';this.textContent=label;this.value=value;},crypto:{randomUUID:()=>String(Math.random())},console});
@@ -30,6 +33,23 @@ assert.equal(requests[4].path,'role/continuity/task');
 view.value='resume';view.onchange();requests[5].resolve({checkpoints:[],tasks:[],recordedCheckpoints:0,activeTasks:0,attention:{pendingMessages:0,processingMessages:0,controlRequests:[]}});await new Promise(r=>setImmediate(r));
 requests[4].resolve({});await new Promise(r=>setImmediate(r));assert.equal(view.value,'resume','a delayed restore must not force a different view after the user switches');
 requests[6].resolve({checkpoints:[],tasks:[],recordedCheckpoints:0,activeTasks:0,attention:{pendingMessages:0,processingMessages:0,controlRequests:[]}});await restoring;
-const html=await fs.readFile(new URL('../web/collaboration.html',import.meta.url),'utf8');assert(html.includes('office-continuity.js?v=role-continuity-20261022'));
+// A failed continuation preserves both the cursor and a visible retry control.
+view.value='completed';view.onchange();requests[7].resolve({records:[{kind:'task',id:'finished',title:'Completed fixture',status:'done',priority:1,revision:1,updatedAt:1,progress:'Checked',sources:[]}],nextCursor:'page-two'});await new Promise(r=>setImmediate(r));
+const more=all(container).find(n=>n.textContent==='继续读取');assert.equal(more.hidden,false);
+const failedPage=more.onclick();requests[8].reject(Error('Temporary page failure'));await failedPage;assert.equal(more.hidden,false,'pagination failure must leave a retry control');
+const retryPage=more.onclick();assert.equal(requests[9].args.cursor,'page-two');requests[9].resolve({records:[],nextCursor:null});await retryPage;
+// Existing immutable scope remains disabled; all editable controls lock during
+// the request and recover their original state after validation failure.
+await all(container).find(n=>n.textContent==='编辑').onclick();
+const dialog=body.children.at(-1),form=all(dialog).find(n=>n.tagName==='form'),controls=form.querySelectorAll('input,textarea,select,button');
+const owner=controls.find(n=>n.tagName==='select');assert.equal(owner.disabled,true);
+const reason=controls.find(n=>n.name==='reason');reason.value='Verified fixture correction';
+const saving=form.onsubmit({preventDefault(){}});assert(controls.every(n=>n.disabled),'no field may accept changes while its save is pending');
+requests[10].reject(Object.assign(Error('Correct the source'),{status:400}));await saving;
+assert.equal(owner.disabled,true);assert.equal(reason.disabled,false);assert.equal(dialog.open,true);
+const savingAgain=form.onsubmit({preventDefault(){}});requests[11].resolve({});await new Promise(r=>setImmediate(r));
+assert.equal(dialog.open,false);assert.equal(requests[12].path,'role/continuity/tasks');requests[12].reject(Object.assign(Error('List unavailable'),{status:403}));await savingAgain;
+assert(all(container).some(n=>n.textContent==='记录已保存，但列表刷新失败：List unavailable'),'a successful mutation must not be reported as a failed save');
+const html=await fs.readFile(new URL('../web/collaboration.html',import.meta.url),'utf8');assert(html.includes('office-continuity.js?v=continuity-review-20261022'));
 const office=await fs.readFile(new URL('../web/office.js',import.meta.url),'utf8');assert(office.includes('state.authEpoch===continuityEpoch'));assert(!office.includes('state.authenticated'));
-console.log('PASS real continuity UI: precise manager target, current/completed/history navigation, stale failure suppression, closed-role/auth epoch protection and deployed asset registration');
+console.log('PASS real continuity UI: manager target, navigation, stale response fences, pagination retry, in-flight edit locking, save/read failure separation and asset registration');
