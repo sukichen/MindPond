@@ -348,6 +348,7 @@
       const pick = button('', () => openOffice(room.id));
       pick.append(make('strong', room.title), make('span', officeStates[room.state] ?? room.state));
       pick.className = 'office-room-choice';
+      pick.title = room.title;
       pick.setAttribute('aria-pressed', String(state.office?.office.id === room.id));
       row.append(pick);
       if (['completed','cancelled'].includes(room.state)) {
@@ -676,15 +677,17 @@
   }
   function layoutScene(count) {
     const viewport=el('officeStage');
+    const desks=el('officeDesks'),world=el('officeScene');
+    const rowHeight=Math.max(420,...[...desks.querySelectorAll('.office-desk')].map(n=>n.offsetHeight));
     let cols=1,best=0;
     for(let candidate=1;candidate<=Math.min(count||1,7);candidate++){
-      const score=Math.min((Math.max(viewport.clientWidth,300)-40)/(candidate*312+100),(Math.max(viewport.clientHeight,260)-40)/(Math.ceil((count||1)/candidate)*492+257));
+      const score=Math.min((Math.max(viewport.clientWidth,300)-40)/(candidate*312+100),(Math.max(viewport.clientHeight,260)-40)/(Math.ceil((count||1)/candidate)*(rowHeight+62)+195));
       if(score>best){best=score;cols=candidate;}
     }
     const columns=`repeat(${cols}, 280px)`;
     if(el('officeDesks').style.gridTemplateColumns!==columns)scenePlayer.stop();
-    el('officeDesks').style.gridTemplateColumns = columns;
-    el('officeScene').style.width = (cols * 312 + 100) + 'px';
+    desks.style.gridTemplateColumns = columns;
+    world.style.width = (cols * 312 + 100) + 'px';
     scenePlayer.startIdle();
   }
   function applyScene() {
@@ -886,7 +889,7 @@
     }
   });
   window.addEventListener('beforeunload', e => {if (state.roleDraft?.dirty || state.containerDirty) {e.preventDefault();e.returnValue = '';}});
-  new ResizeObserver(() => {if (state.scene.autoFit) requestAnimationFrame(()=>fitScene());}).observe(stage);
+  new ResizeObserver(() => {if (state.scene.autoFit) requestAnimationFrame(()=>{if(!replayController.active)layoutScene(el('officeDesks').querySelectorAll('.office-desk').length);fitScene();});}).observe(stage);
   function renderProjects() {
     const members = el('officeProjectMembers'),
       selected = [...members.selectedOptions].map((o) => o.value);
@@ -1131,8 +1134,8 @@
     if(replayController.active)return;
     const data = state.office,
       o = data.office;
-    el('officeTitle').textContent = o.title;el('officeMemoryLink').href='./?office='+encodeURIComponent(o.id);
-    el('officeGoal').textContent = o.goal;
+    el('officeTitle').textContent = o.title;el('officeTitle').title=o.title;el('officeMemoryLink').href='./?office='+encodeURIComponent(o.id);
+    el('officeGoal').textContent = o.goal;el('officeGoal').title = o.goal;
     el('officeRoomMeta').textContent =
       `${officeStates[o.state]??o.state} · ${data.seats.filter(s=>s.enabled).length} 位参与者`;
     renderFacilities(data.facilities);
@@ -1254,6 +1257,7 @@
       papers.style.setProperty('--paper-count',Math.min(12,pending));papers.hidden=!pending;
       if(pending){papers.textContent=String(pending);body.append(make('small',`待处理消息 ${pending} 条`));}
       if(activity?.waitingUntil>Date.now())body.append(make('small','正在等待消息（等待窗口内）'));
+      body.title=[...body.children].map(n=>n.textContent).join('\n');
       node.append(station, body);
       desks.append(node);
     }

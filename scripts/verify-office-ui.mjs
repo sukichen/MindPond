@@ -315,3 +315,18 @@ assert.deepEqual([...refreshRequest.body.knownIds],['old','finished']);
 assert.deepEqual([...refreshState.mail.messages].map(m=>m.id),['new','old'],'incoming matches join the current window, older loaded messages remain, and completed messages leave the pending filter');
 assert(refreshState.mail.hasMore);assert.equal(refreshRender,1);assert.equal(refreshState.mailLoading,false);
 console.log('PASS live counts and filtered sync: totals are independent of loaded pages, applied filters survive edits, new arrivals appear and older reading context remains');
+
+// Exercise the actual scene layout and ResizeObserver callback: a multi-person
+// room must choose columns again after its available panel width changes.
+const layoutElements={officeStage:{clientWidth:1300,clientHeight:700},officeDesks:{style:{},querySelectorAll:()=>Array.from({length:6},()=>({offsetHeight:520}))},officeScene:{style:{}}};
+let layoutStops=0,resizeCallback,fitCalls=0;
+const layoutContext=vm.createContext({Math,state:{scene:{autoFit:true}},replayController:{active:false},stage:layoutElements.officeStage,el:id=>layoutElements[id],scenePlayer:{stop(){layoutStops++;},startIdle(){}},ResizeObserver:class{constructor(fn){resizeCallback=fn;}observe(){}},requestAnimationFrame:fn=>fn(),fitScene(){fitCalls++;}});
+vm.runInContext(source.slice(source.indexOf('  function layoutScene('),source.indexOf('  function applyScene(')),layoutContext);
+vm.runInContext(source.split('\n').find(line=>line.includes('new ResizeObserver(')),layoutContext);
+layoutContext.layoutScene(6);const wideColumns=layoutElements.officeDesks.style.gridTemplateColumns;
+layoutElements.officeStage.clientWidth=320;resizeCallback();assert.notEqual(layoutElements.officeDesks.style.gridTemplateColumns,wideColumns);assert(Number(layoutElements.officeDesks.style.gridTemplateColumns.match(/repeat\((\d+)/)[1])<Number(wideColumns.match(/repeat\((\d+)/)[1]),'a narrower viewport must choose fewer columns');assert.equal(fitCalls,1);
+const previousStops=layoutStops;resizeCallback();assert.equal(layoutStops,previousStops,'unchanged columns must not interrupt an animation');
+layoutContext.state.scene.autoFit=false;resizeCallback();assert.equal(fitCalls,2,'manual camera must not be reset by a viewport resize');
+layoutContext.state.scene.autoFit=true;layoutContext.replayController.active=true;layoutElements.officeStage.clientWidth=1500;const replayColumns=layoutElements.officeDesks.style.gridTemplateColumns;resizeCallback();assert.equal(layoutElements.officeDesks.style.gridTemplateColumns,replayColumns,'resizing must not rearrange historical seats or cancel replay');assert.equal(layoutStops,previousStops);
+layoutContext.layoutScene(1);assert.equal(layoutElements.officeScene.style.width,'412px');
+console.log('PASS responsive scene: resize recomputes multi-person columns, stable layouts preserve animations and manual camera remains under user control');
