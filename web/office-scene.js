@@ -172,7 +172,7 @@
       const nodes=[...this.root.querySelectorAll('.office-desk')].filter(n=>!n.hidden),body=e.body??{};
       const from=nodes.find(n=>(e.actorKey&&n.dataset.replayKey===e.actorKey)||n.dataset.seat===e.seat_id||n.dataset.role===(body.sender??e.actor?.roleId));
       if(!from){if(e.replay)return this.clock(e);return 'completed';}
-      const to=(e.kind==='presence'&&body.area&&body.area!=='desk'?this.root.querySelector('.office-area-'+body.area):null)??nodes.find(n=>n.dataset.seat===body.recipient||n.dataset.role===body.recipient||(e.recipientKey&&n.dataset.replayKey===e.recipientKey)),person=from.querySelector('.office-person');
+      const to=nodes.find(n=>n.dataset.seat===body.recipient||n.dataset.role===body.recipient||(e.recipientKey&&n.dataset.replayKey===e.recipientKey)),person=from.querySelector('.office-person');
       if(!person)return e.replay?this.clock(e):'completed';
       if(person.dataset.idle)clearAction(person);this.idleSeats.delete(from);
       const name=from.querySelector('strong')?.textContent??'角色',label=labels[e.kind]??e.kind;
@@ -188,7 +188,7 @@
         const box=n=>{const r=n.getBoundingClientRect();return {left:(r.left-room.left)/s,top:(r.top-room.top)/s,right:(r.left+r.width-room.left)/s,bottom:(r.top+r.height-room.top)/s};};
         const a=box(person),target=box(to.querySelector('.office-person')??to),origin={x:(a.left+a.right)/2,y:(a.top+a.bottom)/2},end={x:(target.left+target.right)/2,y:(target.top+target.bottom)/2};
         const halfWidth=(a.right-a.left)/2,halfHeight=(a.bottom-a.top)/2;
-        const obstacles=[...this.root.querySelectorAll('.office-table,.office-chair,.office-monitor,.office-task-light,.office-room-door,.office-room-lounge,.office-area'),...nodes.filter(n=>n!==from).map(n=>n.querySelector('.office-person'))].map(box);
+        const obstacles=[...this.root.querySelectorAll('.office-table,.office-chair,.office-monitor,.office-task-light,.office-room-door'),...nodes.filter(n=>n!==from).map(n=>n.querySelector('.office-person'))].map(box);
         const options={bounds:{left:12,top:28,right:room.width/s-12,bottom:room.height/s-12},obstacles,halfWidth,halfHeight,clearance:12};
         const dx=halfWidth+(target.right-target.left)/2+26,dy=halfHeight+(target.bottom-target.top)/2+26;
         const chair=box(to.querySelector('.office-chair')??to),front=Math.max(target.bottom,chair.bottom)+halfHeight+26;
@@ -208,7 +208,7 @@
       }else frames=[{transform:'none'},{transform:'none'}];
       duration=e.durationMs??duration;
       if(!this.enabled()){frames=[{},{}];from.classList.remove('is-walking');this.wires.replaceChildren();}
-      const state=e.kind==='presence'?(body.area==='library'||body.phase==='learning'?'reading':body.area==='lounge'?'resting':'communicating'):stateFor(e.kind),choices=e.demo&&Object.hasOwn(actions,e.demoClip)?[actions[e.demoClip]]:catalog[state],key=(e.actorKey??from.dataset.role??from.dataset.seat)+':'+state;
+      const state=e.kind==='presence'?(body.phase==='learning'?'reading':body.phase==='resting'?'resting':'communicating'):stateFor(e.kind),choices=e.demo&&Object.hasOwn(actions,e.demoClip)?[actions[e.demoClip]]:catalog[state],key=(e.actorKey??from.dataset.role??from.dataset.seat)+':'+state;
       const seed=e.replay?(e.seq??0)%choices.length:this.variants.get(key)??0;this.variants.set(key,(seed+1)%choices.length);
       const animation=person.animate(frames,{duration,easing:'linear'});animation.updatePlaybackRate(e.rate??1);this.animations.add(animation);
       let last='';const tick=()=>{

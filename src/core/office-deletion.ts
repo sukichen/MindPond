@@ -3,6 +3,9 @@ import type { Database } from 'sqlite';
 /** Operator-only hard deletion. The caller owns one BEGIN IMMEDIATE
  * transaction, including revision checks and the durable deletion audit. */
 export async function deleteRoleData(db: Database, roleId: string) {
+  await db.run('DELETE FROM office_discussions WHERE id IN (SELECT room_id FROM office_discussion_members WHERE role_id=?) OR creator=?',[roleId,roleId]);
+  await db.run('DELETE FROM office_discussion_creations WHERE role_id=?',[roleId]);
+  await db.run('DELETE FROM office_script_receipts WHERE owner=?',['role:'+roleId]);
   await db.run('DELETE FROM memory_role_credentials WHERE role_id=?',[roleId]);
   await db.run('DELETE FROM role_connection_requests WHERE runtime_id IN (SELECT runtime_id FROM role_bindings WHERE role_id=?)',[roleId]);
   await db.run('DELETE FROM office_response_pages');
@@ -43,6 +46,7 @@ export async function deleteRoleData(db: Database, roleId: string) {
 }
 
 export async function deleteOfficeData(db: Database, officeId: string) {
+  await db.run('DELETE FROM office_script_receipts WHERE owner=?',['office:'+officeId]);
   await db.run('DELETE FROM office_response_pages');
   await db.run('DELETE FROM office_collaboration_receipts WHERE office_id=?',[officeId]);
   const seats = 'SELECT id FROM office_seats WHERE office_id=?';

@@ -143,7 +143,7 @@ export function hostOperations(graph:GraphMemory) {
     if(['work_workspace_configure','work_workspaces','work_handoff','work_inbox','work_thread_get','work_reply','work_ack','work_iteration_submit','work_verification_report','work_wait','work_activity'].includes(operation.name))return (operation.run as (a:any,t?:TrustedCallContext,r?:WorkCallRuntime)=>Promise<unknown>)(args,actor,runtime);
     if(operation.name==='memory_brief'&&actor){
       const brief=await operation.run(args) as object;
-      if(actor.agentId){const identity=await graph.roles.identity(actor);return {...brief,collaboration:{identity:{principal:actor.principal,agentId:actor.agentId,...identity},tools:['role_application','role_sync','office_directory','office_receive','office_message','office_wait','office_container']}};}
+      if(actor.agentId){const identity=await graph.roles.identity(actor);return {...brief,collaboration:{identity:{principal:actor.principal,agentId:actor.agentId,...identity},tools:['role_application','role_sync','office_directory','office_receive','office_message','office_wait','office_container','office_discussion','office_script']}};}
       const inbox=await graph.collaboration.inbox({limit:3,unreadOnly:true},actor);
       return {...brief,collaboration:{principal:actor.principal,updates:inbox.items.map(item=>({seq:item.seq,taskId:item.taskId,kind:item.kind,status:item.status})),nextAction:'Use work_inbox for all updates and work_thread_get for complete evidence; these operational hints are not recalled memory or read receipts.'}};
     }

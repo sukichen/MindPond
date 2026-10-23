@@ -1,3 +1,5 @@
+import {OfficeDiscussions} from './office-discussions.js';
+import {OfficeScripts} from './office-scripts.js';
 import { ConnectionCoordinator } from './connection-coordinator.js';
 import {preparePrivateDatabase,reservePrivateBackup} from './sqlite-files.js';
 import { admitDegreeNeighbour, degreeNeighbours, degreeRepairPlan, evictDegreeNeighbour, DEFAULT_MAX_ASSOCIATION_DEGREE } from './association-degree.js';
@@ -425,6 +427,8 @@ export class GraphMemory {
   officeCollaboration!: OfficeCollaboration;
   memoryOwners!:MemoryOwners;
   roleContinuity!:RoleContinuityStore;
+  discussions!:OfficeDiscussions;
+  scripts!:OfficeScripts;
   officeTaskStore(actor:import('./trust.js').TrustedCallContext){return new OfficeTaskStore(this.db!,this,work=>this.growthWrite(work),actor);}
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
@@ -1141,7 +1145,7 @@ export class GraphMemory {
     await this.collaboration.init();
     this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
     await this.offices.init();
-    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','init','migrateModel','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','link']);
+    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','connect','disconnect','init','migrateModel','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','link']);
     await this.roles.init();
     this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay']);
     await this.building.init();
@@ -1152,6 +1156,12 @@ export class GraphMemory {
     await this.roles.migrateModel();
     this.roleContinuity=this.coordinator.service(new RoleContinuityStore(this.db,this,work=>this.growthWrite(work),this.clock),['init','resume','checkpoint','updateTask','tasks','history','archive']);
     await this.roleContinuity.init();
+    this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','sweep']);await this.discussions.init();
+    this.scripts=this.coordinator.service(new OfficeScripts(this.db,this,work=>this.growthWrite(work),this.clock),['init','run']);await this.scripts.init();
+    const expireDiscussions=async()=>{try{await this.discussions.sweep();}finally{this.later(expireDiscussions,60000);}};this.later(expireDiscussions,60000);
+    this.roles.discussionStatus=a=>this.discussions.attention(a);
+    this.building.discussionStatus=a=>this.discussions.attention(a);
+    this.building.assertMailbox=a=>this.discussions.assertMailbox(a);
     // Additive, transactional migration: never reclassify historical events or
     // infer additional identities from tags, existing edges or model guesses.
     await this.db.exec('BEGIN IMMEDIATE');
@@ -5235,6 +5245,7 @@ export class GraphMemory {
     for (const timer of this.backgroundTimers) clearTimeout(timer);
     this.backgroundTimers.clear();
     this.closePromise = (async () => {
+      await this.discussions?.close();
       await this.building?.close();
       await this.offices?.close();
       await this.collaboration?.closeWaits();

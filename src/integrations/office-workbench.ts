@@ -1,3 +1,5 @@
+import {discussionSchema} from '../core/office-discussions.js';
+import {managedScriptSchema} from '../core/office-scripts.js';
 /** Browser-only operator control plane. This router is never mounted on /mcp. */
 import express from 'express';
 import { officeConnection, OFFICE_CAPABILITIES } from './office-connection.js';
@@ -237,7 +239,18 @@ export function officeWorkbench(
   route('/role/link', req => graph.roles.link(roleLinkSchema.parse(req.body), operator));
   route('/role/activation/resolve',req=>graph.roles.resolveConnection(z.object({requestId:z.string().uuid(),expectedRevision:z.number().int().positive(),action:z.enum(['reject','delete'])}).strict().parse(req.body),operator));
   route('/role/application/delete',req=>graph.roles.deleteApplication(z.object({applicationId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(req.body),operator));
+  route('/role/disconnect',req=>graph.roles.disconnect(z.object({roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),bindingId:z.string().uuid()}).strict().parse(req.body),operator));
+  route('/role/connect',req=>graph.roles.connect(z.object({roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),targetRuntimeId:z.string().min(1).max(256)}).strict().parse(req.body),operator));
   route('/role/activate',req=>graph.roles.activate(z.object({requestId:z.string().uuid(),roleId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(req.body),operator));
+  route('/discussions',req=>graph.discussions.run(discussionSchema.parse(req.body),operator));
+  route('/scripts',req=>graph.scripts.run(managedScriptSchema.parse(req.body),operator));
+  route('/discussion-memory',async req=>{
+    const i=z.object({id:z.string().uuid(),expectedRevision:z.number().int().positive(),content:z.string().trim().min(1).max(10000),key:z.string().min(1).max(256)}).strict().parse(req.body);
+    const read=async()=>{const v=await graph.discussions.run({action:'get',id:i.id},operator);if(v.room.revision!==i.expectedRevision)throw new MindPondError('stale_version','讨论已有变化，请核对最新内容后再保存结论');return v;};
+    const v=await read(),domain=await graph.memoryOwners.domain({kind:'office',id:v.room.office_id});
+    const memory=await graph.saveMemory(i.content,{domain,idempotencyKey:'discussion:'+i.id+':'+i.key,sourceRefs:[{uri:'mindpond:discussion:'+i.id,revision:String(i.expectedRevision),context:'Human-reviewed independent conclusion. Temporary discussion content is deleted on close; this memory preserves only the selected conclusion.',fingerprint:createHash('sha256').update(i.content).digest('hex')}]},{authorize:async()=>{await read();},saved:async id=>{await graph.discussions.run({action:'export',id:i.id,memoryId:id},operator);}});
+    return {memoryId:memory.id,officeId:v.room.office_id,saved:true};
+  });
   route('/containers', req => graph.building.container(parseContainerInput(req.body),operator));
   const mailSchema=z.object({officeId:officeConfigurationSchema.shape.id,knownIds:officeConfigurationSchema.shape.id.array().max(200).optional(),beforeSeq:z.number().int().min(1).optional(),state:z.enum(['pending','processing','archived','all']).optional(),query:z.string().trim().min(1).max(200).optional(),correspondent:officeConfigurationSchema.shape.id.optional(),threadId:officeConfigurationSchema.shape.id.optional(),since:z.number().int().min(0).optional(),until:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional(),contextBudgetBytes:z.number().int().min(2048).max(65536).optional()}).strict();
   route('/messages', req=>graph.building.history(mailSchema.parse(req.body),operator));

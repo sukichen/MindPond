@@ -23,6 +23,7 @@ function fail(message: string, code: 'not_found' | 'scope_denied' | 'invalid_inp
   throw new MindPondError(code, message, { nextAction: code==='not_found'?'List permitted roles/messages and check the ID before retrying.':code==='invalid_input'?'Correct the request or missing role/session context; this is not a permission grant failure.':'Call role_sync to check this chat’s role and user approval. The host supplies chat identity; never select a role through arguments or read credentials.' });
 }
 export class RoleStore {
+  discussionStatus?:(a?:TrustedCallContext)=>Promise<Row>;
   constructor(private db: Database, private write: <T>(fn: () => Promise<T>) => Promise<T>, private offices: OfficeStore, private clock: () => number = Date.now) {}
   async init() {
     await this.db.exec(`
@@ -184,6 +185,32 @@ export class RoleStore {
     await this.db.run('DELETE FROM office_response_pages');
     await this.event(role.id,'user_activated_connection',{requestId:i.requestId,connectorId:request.connector_id,previousConnectorId:previous?.connector_id??null});return {roleId:role.id,activated:true,connectorId:request.connector_id};
   });}
+  async disconnect(i:{roleId:string;expectedRevision:number;bindingId:string},a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
+    const role=await this.db.get<Row>('SELECT revision FROM character_roles WHERE id=?',[i.roleId]);
+    const b=await this.db.get<Row>("SELECT * FROM role_bindings WHERE role_id=? AND state='active'",[i.roleId]);
+    if(!role)fail('Role not found','not_found');
+    if(role.revision!==i.expectedRevision||!b||b.id!==i.bindingId)fail('Role connection changed; refresh before disconnecting','stale_version');
+    await this.fenceRole(i.roleId);
+    await this.db.run("UPDATE role_bindings SET state='revoked',epoch=epoch+1 WHERE role_id=?",[i.roleId]);
+    await this.db.run("UPDATE memory_role_credentials SET state='revoked' WHERE role_id=? AND state='active'",[i.roleId]);
+    await this.dismissChat(b,'disconnected');
+    await this.db.run('UPDATE character_roles SET revision=revision+1 WHERE id=?',[i.roleId]);
+    await this.db.run('DELETE FROM office_response_pages');
+    await this.event(i.roleId,'user_disconnected_connection',{bindingId:b.id,connectorId:b.connector_id});
+    return {roleId:i.roleId,disconnected:true,notice:'The chat is now unbound (human memory). Role knowledge, mail and office assignments are preserved; in-flight role calls and dedicated credentials are revoked.'};
+  });}
+  async connect(i:{roleId:string;expectedRevision:number;targetRuntimeId:string},a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
+    const chat=await this.db.get<Row>('SELECT * FROM role_chat_sessions WHERE runtime_id=?',[i.targetRuntimeId]);
+    if(!chat)fail('Chat not observed; call role_sync in the target chat first','not_found');
+    const occupied=await this.db.get<Row>("SELECT role_id FROM role_bindings WHERE runtime_id=? AND principal=? AND connector_id=? AND state='active'",[chat.runtime_id,chat.principal,chat.connector_id]);
+    if(occupied)fail('Target chat is already connected. Disconnect its current role before switching.','invalid_input');
+    let request=await this.db.get<Row>('SELECT id FROM role_connection_requests WHERE runtime_id=?',[chat.runtime_id]);
+    if(!request){request={id:randomUUID()};await this.db.run('INSERT INTO role_connection_requests VALUES(?,?,?,?,?,?,1)',[request.id,chat.principal,chat.connector_id,chat.runtime_id,this.clock(),this.clock()]);}
+    else await this.db.run('UPDATE role_connection_requests SET last_seen=? WHERE id=?',[this.clock(),request.id]);
+    const result=await this.activate({requestId:request.id,roleId:i.roleId,expectedRevision:i.expectedRevision},a);
+    await this.db.run('DELETE FROM role_activation_dismissals WHERE runtime_id=?',[chat.runtime_id]);
+    return result;
+  });}
   async application(i: Row, a?: TrustedCallContext) {
     const actor = this.actor(a);
     return this.write(async () => {
@@ -224,7 +251,7 @@ export class RoleStore {
     const controlRequests=await this.db.all("SELECT id,action,reason,requested_at FROM office_control_requests WHERE role_id=? AND state='requested' ORDER BY requested_at LIMIT 20",[b.role_id]);
     const waits=await this.db.all<Row[]>("SELECT id,state,conditions,expires_at FROM role_message_waits WHERE role_id=? ORDER BY started_at DESC LIMIT 10",[b.role_id]);
     const waitRecovery=waits.map(w=>{const conditions=JSON.parse(w.conditions);return {...w,conditions,resume:{afterSeq:conditions.afterSeq??0,...(conditions.replyTo?{replyTo:conditions.replyTo}:{}),waitMs:conditions.waitMs??300000}};});
-    return { state: 'active', identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
+    return { state: 'active', discussions:await this.discussionStatus?.(actor), identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
       processing:processing.slice(0,20),processingHasMore:processing.length>20,resume:{mcp:'memory',tool:'memory_resume',next:'Read current role working state on the separate Memory MCP before continuing. Follow its pages, check new messages and verify linked versions; do not infer unrecorded progress.'},instructions: ROLE_INSTRUCTIONS };
   }
   async contacts(i:Row,a?:TrustedCallContext){
@@ -333,7 +360,11 @@ export class RoleStore {
     const links = await this.db.all('SELECT sender,recipient FROM role_links ORDER BY sender,recipient');
     const messages = (await this.db.all<Row[]>(`SELECT m.*,s.state,s.taken_at,s.completed_at,s.completion FROM role_messages m JOIN role_message_states s ON s.message_id=m.id ORDER BY m.seq DESC LIMIT 100`)).map(m=>({...m,state:messageState(m.state),body:previewText(m.body,700),bodyTruncated:Buffer.byteLength(m.body)>700}));
     const events = await this.db.all('SELECT seq,role_id,kind,body,ts FROM role_events ORDER BY seq DESC LIMIT 100');
-    return { revision, roles, pending, connections:await this.db.all("SELECT p.*,c.source chat_source,c.native_chat_id FROM role_connection_requests p LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal WHERE p.last_seen>? ORDER BY p.last_seen DESC LIMIT 100",[this.clock()-86400000]), mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
+    const chats=await this.db.all(`SELECT c.runtime_id,c.principal,c.connector_id,c.source chat_source,c.native_chat_id,c.last_seen,a.name connector_name,a.host,a.state host_state,b.role_id,r.name role_name
+      FROM role_chat_sessions c JOIN office_agents a ON a.id=c.connector_id
+      LEFT JOIN role_bindings b ON b.runtime_id=c.runtime_id AND b.principal=c.principal AND b.connector_id=c.connector_id AND b.state='active'
+      LEFT JOIN character_roles r ON r.id=b.role_id ORDER BY c.last_seen DESC,c.runtime_id LIMIT 500`);
+    return { revision, roles, pending, chats, connections:await this.db.all("SELECT p.*,c.source chat_source,c.native_chat_id FROM role_connection_requests p LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal WHERE p.last_seen>? ORDER BY p.last_seen DESC LIMIT 100",[this.clock()-86400000]), mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
   }
   async messagePreview(id:string|{messageId?:string;seq?:number},a?:TrustedCallContext){
     this.admin(a);

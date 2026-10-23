@@ -8,6 +8,8 @@ export const OFFICE_CAPABILITIES = {
   version: 'mindpond.office.v1',
   wait: { defaultMs: OFFICE_WAIT_MS, maxMs: OFFICE_WAIT_MS, toolTimeoutMs: OFFICE_TOOL_TIMEOUT_MS, wakesStoppedHost: false, capacity:officeWaitCapacity() },
   messages: { defaultPageSize: 10, maxPageSize: 20, defaultContextBytes: 16384, maxContextBytes: 65536 },
+  discussions:{maxParticipants:8,maxRoomsPerOffice:16,temporary:true,oneActiveRoomPerRole:true},
+  scripts:{rolePrivate:true,officeShared:true,maxBytes:131072,executesCode:false},
   correlation: 'Codex per-call threadId, OpenCode native chat metadata or signed session plugin; fallback requires user activation or a role credential.',
   memory: 'Separate Memory MCP binds to this chat’s approved role. Humans see all knowledge; roles read their own knowledge, human-assigned independent copies and member-office knowledge. Office entries may be human-locked against role changes.'
 } as const;

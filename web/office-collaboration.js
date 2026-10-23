@@ -335,16 +335,6 @@
             }
         } if (clear)
             replayBase = null; }
-        const decor = document.querySelector('.office-room-decor');
-        decor.removeAttribute('aria-hidden');
-        const areas = node('div');
-        areas.className = 'office-areas';
-        for (const [area, labelText, kind] of [['lounge', '休息区', 'presence'], ['meeting', '讨论区', 'marker'], ['library', '资料区', 'learning']]) {
-            const areaButton = button(labelText, async () => { mode = kind; setRoomTab(panel.id); await refresh(true); });
-            areaButton.className = 'office-area office-area-' + area;
-            areas.append(areaButton);
-        }
-        decor.append(areas);
         const apiObject = { refresh, inspectRole, openLearning: async (messageId) => { sourceMessage = messageId; mode = 'learning'; setRoomTab(panel.id); await refresh(true); }, deleteImpact: async (kind, id) => showDetail('永久删除影响预览', await api('delete-impact', { kind, id })), applyReplayLayout, renderParallel, restoreLayout, replayFilters() { return { ...(person.value ? { roleId: person.value } : {}), ...(topic.value.trim() ? { topic: topic.value.trim() } : {}), ...(keys.checked ? { keyOnly: true } : {}) }; }, reset() { version++; sourceMessage = null; body.replaceChildren(); } };
         return apiObject;
     }

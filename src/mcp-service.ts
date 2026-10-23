@@ -105,9 +105,9 @@ const seenRoleProfiles=new Map<string,string>();
 function tool(name: string, description: string, shape: any, handler: (args: any,runtime?:WorkCallRuntime) => Promise<any>) {
   if (!exposesMcpTool(toolProfile, name)) return;
   if(baseTrusted.agentId&&name.startsWith('work_'))return;
-  if(name.startsWith('office_')||name==='role_sync')shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
+  if((name.startsWith('office_')||name==='role_sync')&&!['office_discussion','office_script'].includes(name))shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
   exposedTools.push(name);
-  server.tool(name, description, shape, async (args: any,extra:{signal:AbortSignal;requestId:string|number;_meta?:Record<string,unknown>}) => {
+  const execute=async (args: any,extra:{signal:AbortSignal;requestId:string|number;_meta?:Record<string,unknown>}) => {
     if(closing)return {content:[{type:'text' as const,text:'Memory server is closing; retry the same operation key'}],isError:true};
     let release!:()=>void;const active=new Promise<void>(r=>release=r);activeCalls.add(active);
     let auditContext:TrustedCallContext=baseTrusted;
@@ -178,6 +178,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
             maintenance: toolProfile === 'work' ? 'Bulk requests, worker draining, legacy and destructive administration need a separate full-profile connection (MINDPOND_TOOL_PROFILE=full). The work profile supports scoped saves, edits, small organization jobs and collaboration tasks.' : 'All tools are exposed.' } });
         }
       }
+      if(name==='office_discussion'||name==='office_script')return result; // Own bounded pages; never persist ephemeral posts or downloadable source in generic response caches.
       if(name.startsWith('office_')||name==='role_sync')return graphMemory.officeCollaboration.boundResponse(result,args.responseBudgetBytes??16384,current);
       return result;
       });
@@ -186,7 +187,9 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!auditContext.operator?(auditContext.sessionId?{kind:'session',id:auditContext.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code,...(trustBound?{principal:auditContext.principal,agentId:auditContext.agentId,workSessionId:auditContext.workSessionId,roleId:auditContext.roleId,roleBindingEpoch:auditContext.roleBindingEpoch}:{})})});
       return { content: [{ type: 'text' as const, text: JSON.stringify({ error: e }) }], isError: true };
     } finally {release();activeCalls.delete(active);}
-  });
+  };
+  if(['office_discussion','office_script'].includes(name))server.registerTool(name,{description,inputSchema:z.object(shape).strict()},execute);
+  else server.tool(name,description,shape,execute);
 }
 
 for (const op of [...roleOperations(graphMemory),...buildingOperations(graphMemory)]) {
