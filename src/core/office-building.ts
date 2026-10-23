@@ -368,16 +368,20 @@ export class OfficeBuilding {
           (SELECT COUNT(*) FROM role_messages m JOIN role_message_states st ON st.message_id=m.id WHERE m.recipient=rs.role_id AND st.state='processing') processing,
           (SELECT MAX(w.expires_at) FROM role_message_waits w JOIN role_bindings b ON b.id=w.binding_id WHERE w.role_id=rs.role_id AND b.state='active' AND w.state='waiting' AND w.expires_at>?) waitingUntil,
           (SELECT observed_at FROM office_host_reports h WHERE h.role_id=rs.role_id) hostSeenAt,
-          (SELECT r.title FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=rs.role_id AND m.state='joined' AND r.office_id=s.office_id) discussionTitle,
+          (SELECT r.title FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=rs.role_id AND m.state='joined' AND r.office_id=s.office_id AND r.expires_at>?) discussionTitle,
+          (SELECT r.id FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=rs.role_id AND m.state='joined' AND r.office_id=s.office_id AND r.expires_at>?) discussionId,
           (SELECT payload FROM office_collaboration_records r WHERE r.office_id=s.office_id AND r.role_id=rs.role_id AND r.kind='presence' ORDER BY created_at DESC,id DESC LIMIT 1) presence,
           (SELECT created_at FROM office_collaboration_records r WHERE r.office_id=s.office_id AND r.role_id=rs.role_id AND r.kind='presence' ORDER BY created_at DESC,id DESC LIMIT 1) presenceAt
-          FROM office_seats s LEFT JOIN role_seats rs ON rs.seat_id=s.id WHERE s.office_id=? AND s.enabled=1 ORDER BY s.id`,[this.clock(),officeId]);
+          FROM office_seats s LEFT JOIN role_seats rs ON rs.seat_id=s.id WHERE s.office_id=? AND s.enabled=1 ORDER BY s.id`,[this.clock(),this.clock(),this.clock(),officeId]);
+        // Manager-only geometry metadata; no temporary discussion posts are copied here.
+        const meetings=await this.db.all<Row[]>('SELECT id,title FROM office_discussions WHERE office_id=? AND expires_at>? ORDER BY created_at,id',[officeId,this.clock()]);
+        for(const meeting of meetings)meeting.members=await this.db.all(`SELECT m.role_id roleId,r.name,m.state FROM office_discussion_members m JOIN character_roles r ON r.id=m.role_id WHERE m.room_id=? AND r.state='active' AND EXISTS(SELECT 1 FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id WHERE rs.role_id=m.role_id AND s.office_id=? AND s.enabled=1) ORDER BY m.role_id`,[meeting.id,officeId]);
         const counts=await this.db.get<Row>(`SELECT COUNT(*) total,COALESCE(SUM(${messageStateSql()}='pending'),0) pending,COALESCE(SUM(${messageStateSql()}='processing'),0) processing,COALESCE(SUM(${messageStateSql()}='archived'),0) archived FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.office_id=?`,[officeId]);
         if (revision === afterRevision)
-            return { unchanged: true, revision, activity, counts };
+            return { unchanged: true, revision, activity, counts, meetings };
         const containers = await this.container({ action: 'list', officeId }, a);
         const mail = await this.history({officeId},a);
-        return { ...containers, ...mail, messagesHasMore:mail.hasMore, hasMore:containers.hasMore, revision, activity, counts };
+        return { ...containers, ...mail, messagesHasMore:mail.hasMore, hasMore:containers.hasMore, revision, activity, counts, meetings };
     }
     async material(i: Row, a?: TrustedCallContext) {
         return this.write(async () => {

@@ -123,8 +123,8 @@
       document.body.classList.toggle('office-hidden',document.hidden);this.media=window.matchMedia('(prefers-reduced-motion: reduce)');this.media.addEventListener('change',()=>{this.stop();this.startIdle();});
       document.addEventListener('visibilitychange',()=>{document.body.classList.toggle('office-hidden',document.hidden);if(document.hidden){if(this.replaying){this.pauseReplay();this.onReplayVisibility?.();}else this.stop();}else this.startIdle();});
     }
-    reset(){this.active=false;this.stop();this.seen.clear();this.variants.clear();}
-    stop(){this.stopIdle();this.epoch++;this.queue=[];this.running=false;for(const a of this.animations)a.cancel();this.animations.clear();this.wires.replaceChildren();this.root.classList.remove('replay-paused');for(const n of this.root.querySelectorAll('.is-live,.has-motion,.is-walking,.is-standing'))n.classList.remove('is-live','has-motion','is-walking','is-standing');for(const n of this.root.querySelectorAll('.office-action-bubble'))n.remove();for(const n of this.root.querySelectorAll('.office-person'))clearAction(n);for(const n of this.root.querySelectorAll('.office-desk'))if(n.dataset.busy==='true')n.querySelector('.office-person').dataset.facing='desk';this.status.textContent=this.replaying?'历史回放已暂停。':'休息动作是场景装饰；工作与消息动作来自实际交互。';}
+    reset(){this.active=false;this.stop();this.seen.clear();this.variants.clear();this.meetings?.reset();}
+    stop(){this.stopIdle();this.epoch++;this.queue=[];this.running=false;for(const a of this.animations)a.cancel();this.animations.clear();this.wires.replaceChildren();this.root.classList.remove('replay-paused');for(const n of this.root.querySelectorAll('.is-live,.has-motion,.is-walking,.is-standing'))n.classList.remove('is-live','has-motion','is-walking','is-standing');for(const n of this.root.querySelectorAll('.office-action-bubble'))n.remove();for(const n of this.root.querySelectorAll('.office-person'))clearAction(n);for(const n of this.root.querySelectorAll('.office-desk'))if(n.dataset.busy==='true')n.querySelector('.office-person').dataset.facing='desk';this.meetings?.suspend();this.status.textContent=this.replaying?'历史回放已暂停。':'休息动作是场景装饰；工作与消息动作来自实际交互。';}
     enabled(){return this.motion&&!this.list&&!this.media.matches&&!document.hidden;}
     setActive(on){this.active=on;if(on)this.startIdle();else this.stop();}
     stopIdle(){clearInterval(this.idleTimer);this.idleTimer=null;for(const {person} of this.idleSeats.values())if(person.dataset.idle)clearAction(person);this.idleSeats.clear();}
@@ -135,10 +135,10 @@
     }
     idleTick(){
       if(!this.active||!this.enabled()||this.replaying){this.stopIdle();return;}
-      const now=Date.now(),nodes=[...this.root.querySelectorAll('.office-desk')],current=new Set(nodes);
+      const now=Date.now();this.meetings?.tick(now);const nodes=[...this.root.querySelectorAll('.office-desk')],current=new Set(nodes);
       for(const [node,row] of this.idleSeats)if(!current.has(node)){if(row.person.dataset.idle)clearAction(row.person);this.idleSeats.delete(node);}
       for(const node of nodes){
-        const person=node.querySelector('.office-person');if(!person)continue;
+        const person=node.querySelector('.office-person');if(!person)continue;if(person.dataset.meeting){this.idleSeats.delete(node);continue;}
         if(node.classList.contains('is-live')){
           if(person.dataset.idle)clearAction(person);
           this.idleSeats.delete(node);continue;
@@ -155,8 +155,8 @@
       }
     }
     setMotion(on){this.motion=on;this.root.classList.toggle('motion-off',!on);if(!on)this.stop();else this.startIdle();}
-    beginReplay(){this.stop();this.replaying=true;this.root.classList.add('is-replaying');this.status.textContent='历史回放 · 已就绪（未播放）';}
-    endReplay(){this.stop();this.replaying=false;this.root.classList.remove('is-replaying');this.startIdle();this.status.textContent='休息动作是场景装饰；工作与消息动作来自实际交互。';}
+    beginReplay(){this.stop();this.meetings?.setReplay(true);this.replaying=true;this.root.classList.add('is-replaying');this.status.textContent='历史回放 · 已就绪（未播放）';}
+    endReplay(){this.stop();this.replaying=false;this.root.classList.remove('is-replaying');this.meetings?.setReplay(false);this.startIdle();this.status.textContent='休息动作是场景装饰；工作与消息动作来自实际交互。';}
     pauseReplay(){for(const a of this.animations)a.pause();this.root.classList.add('replay-paused');}
     resumeReplay(){for(const a of this.animations)a.play();this.root.classList.remove('replay-paused');}
     setReplayRate(rate){for(const a of this.animations)a.updatePlaybackRate(rate);}
@@ -166,21 +166,21 @@
       for(const e of events){if(!demo){if(this.seen.has(e.seq))continue;this.seen.add(e.seq);if(this.seen.size>500)this.seen.delete(this.seen.values().next().value);if(!Number.isFinite(e.ts)||Date.now()-e.ts>15000||e.ts>Date.now()+1000)continue;}if(!labels[e.kind])continue;this.queue.push({...e,demo});}
       this.queue=this.queue.slice(-8);if(!this.running)void this.drain(this.epoch);
     }
-    async drain(epoch){this.running=true;try{while(this.queue.length&&epoch===this.epoch&&this.enabled()&&!this.replaying)await this.play(this.queue.shift(),epoch);}finally{if(epoch===this.epoch){this.running=false;this.status.textContent='休息动作是场景装饰；工作与消息动作来自实际交互。';}}}
+    async drain(epoch){this.running=true;try{while(this.queue.length&&epoch===this.epoch&&this.enabled()&&!this.replaying&&!this.meetings?.moving)await this.play(this.queue.shift(),epoch);}finally{if(epoch===this.epoch){this.running=false;if(!this.meetings?.moving)this.status.textContent='休息动作是场景装饰；工作与消息动作来自实际交互。';}}}
     async play(e,epoch){
       if(!e.demo&&!e.replay&&Date.now()-e.ts>15000)return 'cancelled';
       const nodes=[...this.root.querySelectorAll('.office-desk')].filter(n=>!n.hidden),body=e.body??{};
       const from=nodes.find(n=>(e.actorKey&&n.dataset.replayKey===e.actorKey)||n.dataset.seat===e.seat_id||n.dataset.role===(body.sender??e.actor?.roleId));
       if(!from){if(e.replay)return this.clock(e);return 'completed';}
       const to=nodes.find(n=>n.dataset.seat===body.recipient||n.dataset.role===body.recipient||(e.recipientKey&&n.dataset.replayKey===e.recipientKey)),person=from.querySelector('.office-person');
-      if(!person)return e.replay?this.clock(e):'completed';
+      if(!person)return e.replay?this.clock(e):'completed';if(!e.replay&&person.dataset.meeting)return 'completed';
       if(person.dataset.idle)clearAction(person);this.idleSeats.delete(from);
       const name=from.querySelector('strong')?.textContent??'角色',label=labels[e.kind]??e.kind;
       this.status.textContent=(e.replay?'历史回放：':e.demo?'动画演示（不发送消息、不启动 agent）：':'刚刚：')+name+' · '+label;
       const bubble=document.createElement('span');bubble.className='office-action-bubble';bubble.textContent=(e.demo?'演示 · ':'')+label;from.append(bubble);from.classList.add('has-motion','is-live');
       const s=this.scale();
       let frames,duration=3200,travel;
-      if(this.enabled()&&to&&to!==from&&['message','inform','request','reply','presence'].includes(e.kind)){
+      if(this.enabled()&&to&&to!==from&&!to.querySelector('.office-person')?.dataset.meeting&&['message','inform','request','reply','presence'].includes(e.kind)){
         // An occupied chair is intentional contact at rest. Tuck only this chair under its desk
         // before measuring the walking obstacles; every other chair remains solid.
         from.classList.add('is-standing');person.dataset.posture='standing';
@@ -189,6 +189,7 @@
         const a=box(person),target=box(to.querySelector('.office-person')??to),origin={x:(a.left+a.right)/2,y:(a.top+a.bottom)/2},end={x:(target.left+target.right)/2,y:(target.top+target.bottom)/2};
         const halfWidth=(a.right-a.left)/2,halfHeight=(a.bottom-a.top)/2;
         const obstacles=[...this.root.querySelectorAll('.office-table,.office-chair,.office-monitor,.office-task-light,.office-room-door'),...nodes.filter(n=>n!==from).map(n=>n.querySelector('.office-person'))].map(box);
+        obstacles.push(...(this.meetings?.furniture()??[]));
         const options={bounds:{left:12,top:28,right:room.width/s-12,bottom:room.height/s-12},obstacles,halfWidth,halfHeight,clearance:12};
         const dx=halfWidth+(target.right-target.left)/2+26,dy=halfHeight+(target.bottom-target.top)/2+26;
         const chair=box(to.querySelector('.office-chair')??to),front=Math.max(target.bottom,chair.bottom)+halfHeight+26;
@@ -244,5 +245,5 @@
     }
 
   }
-  window.MindPondOfficeScene={Scene,props,catalog,stateFor,sampleAction,idleClips};
+  window.MindPondOfficeScene={Scene,props,catalog,stateFor,sampleAction,drawAction,idleClips};
 })();

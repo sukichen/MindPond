@@ -678,6 +678,8 @@
     el('officeSceneExpand').setAttribute('aria-expanded', String(id === 'officeCanvas'));
     if (state.scene.autoFit) requestAnimationFrame(()=>fitScene());
   }
+  const meetingLocations=make('div');meetingLocations.className='office-meeting-locations';meetingLocations.hidden=true;el('officeCanvas').querySelector('.office-canvas-tools').after(meetingLocations);
+  const meetingScene=new window.MindPondOfficeMeetings.Meetings(scenePlayer,{navigation:meetingLocations,focusArea:area=>{const viewport=el('officeStage'),width=area.right-area.left,height=area.bottom-area.top,scale=Math.max(.1,Math.min(1.25,(viewport.clientWidth-40)/width,(viewport.clientHeight-40)/height));Object.assign(state.scene,{scale,x:(viewport.clientWidth-width*scale)/2-area.left*scale,y:(viewport.clientHeight-height*scale)/2-area.top*scale,autoFit:false});applyScene();},openDiscussion:id=>void window.MindPondOfficeResources?.openDiscussion?.(id)});
   function layoutScene(count) {
     const viewport=el('officeStage');
     const desks=el('officeDesks'),world=el('officeScene');
@@ -690,7 +692,9 @@
     const columns=`repeat(${cols}, 280px)`;
     if(el('officeDesks').style.gridTemplateColumns!==columns)scenePlayer.stop();
     desks.style.gridTemplateColumns = columns;
-    world.style.width = (cols * 312 + 100) + 'px';
+    const meetings=state.office?.facilities?.meetings??[];
+    world.style.width = meetingScene.width(cols * 312 + 100,meetings) + 'px';
+    if(!replayController.active&&state.office)meetingScene.sync(state.office.office.id,meetings);
     scenePlayer.startIdle();
   }
   function applyScene() {
@@ -836,7 +840,7 @@
   el('officeReplaySpeed').onchange=()=>{replayController.setSpeed(Number(el('officeReplaySpeed').value));replayController.view.change(replayController);};
   el('officeScenePreview').onclick = () => scenePlayer.demo(el('officeActionPreview').value);
   el('officeSceneMotion').onclick = () => {const on=!scenePlayer.motion;scenePlayer.setMotion(on);el('officeSceneMotion').setAttribute('aria-pressed',String(!on));el('officeSceneMotion').textContent=on?'暂停动态':'开启动效';};
-  el('officeSceneList').onclick = () => {const list=el('officeCanvas').classList.toggle('is-list');el('officeSceneList').setAttribute('aria-pressed',String(list));el('officeSceneList').textContent=list?'场景视图':'列表视图';scenePlayer.list=list;scenePlayer.stop();if(!list)requestAnimationFrame(()=>{fitScene();scenePlayer.startIdle();});};
+  el('officeSceneList').onclick = () => {const list=el('officeCanvas').classList.toggle('is-list');el('officeSceneList').setAttribute('aria-pressed',String(list));el('officeSceneList').textContent=list?'场景视图':'列表视图';scenePlayer.list=list;scenePlayer.stop();if(!list)requestAnimationFrame(()=>{layoutScene(el('officeDesks').querySelectorAll('.office-desk').length);fitScene();scenePlayer.startIdle();});};
   el('officeSceneFit').onclick = fitScene;
   el('officeSceneZoomOut').onclick = () => zoomScene(state.scene.scale / 1.2);
   el('officeSceneZoomIn').onclick = () => zoomScene(state.scene.scale * 1.2);
@@ -1199,7 +1203,7 @@
       state.deskSnapshot = deskSnapshot;
       const focusedSeat = document.activeElement?.closest('[data-seat]')?.dataset.seat;
     const desks = el('officeDesks');
-    scenePlayer.stop();
+    meetingScene.prepareRebuild();scenePlayer.stop();
     desks.replaceChildren();
     for (const seat of data.seats.filter((s) => s.enabled)) {
       const node = button('', () => showSeat(seat));
@@ -1209,7 +1213,7 @@
       node.dataset.replayKey=node.dataset.role?'role:'+node.dataset.role:'seat:'+seat.id;
       const person = make('span');
       const access = fileCondition(seat);
-      person.className='office-person';
+      person.className='office-person';person.dataset.name=characterForSeat(seat)?.name??seat.name;
       let appearance=0;
       for(const c of node.dataset.role||seat.id)appearance=(appearance*31+c.charCodeAt(0))|0;
       const palette=[158,208,32,266,12],tone=Math.abs(appearance);
@@ -1488,7 +1492,7 @@
       const old = state.office;
       state.office = {
         ...data,
-        facilities: data.facilities?.unchanged ? {...old.facilities,activity:data.facilities.activity,counts:data.facilities.counts} : data.facilities,
+        facilities: data.facilities?.unchanged ? {...old.facilities,activity:data.facilities.activity,counts:data.facilities.counts,meetings:data.facilities.meetings} : data.facilities,
         items: mergeRecords(old.items, data.items),
         materials: mergeRecords(old.materials, data.materials)
       };

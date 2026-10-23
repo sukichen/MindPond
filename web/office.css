@@ -720,3 +720,20 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-discussion-card form{display:grid;gap:10px;margin:16px 0}
 .office-discussion-card textarea{min-height:120px}
 .office-discussion-card .office-item{margin:10px 0}
+.office-meeting-wing{position:static;pointer-events:none}
+.office-meeting-room{position:absolute;width:760px;height:720px;background:repeating-linear-gradient(90deg,transparent 0 39px,#b6c8bb33 40px 41px),repeating-linear-gradient(0deg,#e6efe5 0 39px,#cedecc66 40px 41px);border-radius:12px;pointer-events:none;box-shadow:0 8px 0 #bccdbd,0 12px 24px #35563d16}
+.office-meeting-title{position:absolute!important;left:24px;top:18px;width:215px;max-height:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px!important;padding:9px 12px!important;pointer-events:auto;background:#fffdf1!important;border-color:#b5caba!important;z-index:2}
+.office-meeting-label{position:absolute;left:40px;right:40px;bottom:22px;margin:0;text-align:center;color:#546c58;font-size:13px;overflow-wrap:anywhere}
+.office-meeting-room.is-closing .office-meeting-title{opacity:.65;pointer-events:none}
+.office-meeting-wall{position:absolute;background:#b2c6b6;border-radius:5px;box-shadow:inset 0 3px #d3dfcf}
+.office-meeting-wall.north-left{left:0;top:0;width:270px;height:10px}.office-meeting-wall.north-right{left:490px;top:0;width:270px;height:10px}
+.office-meeting-wall.west{left:0;top:0;width:10px;height:720px}.office-meeting-wall.east{right:0;top:0;width:10px;height:720px}.office-meeting-wall.south{left:0;bottom:0;width:760px;height:10px}
+.office-meeting-door{position:absolute;left:270px;top:0;width:220px;height:12px;background:#c9b18c;border-bottom:3px solid #b39770;border-radius:0 0 6px 6px;text-align:center;font-size:11px;color:#64775f;line-height:34px}
+.office-meeting-table{position:absolute;left:140px;top:300px;width:480px;height:140px;border-radius:44px;background:linear-gradient(150deg,#f0d9b5,#d6b68a);border:3px solid #c9a77d;box-shadow:0 10px 0 #b69a77,0 18px 14px #61705b20}
+.office-meeting-notebook{position:absolute;left:216px;top:46px;width:46px;height:38px;border-radius:3px;background:repeating-linear-gradient(0deg,#fdfbef 0 7px,#b3c8b5 8px 9px);transform:rotate(-7deg);box-shadow:-4px 0 #9bb49f}
+.office-meeting-cup{position:absolute;left:328px;top:62px;width:24px;height:24px;border:5px solid #f8f6e6;border-radius:50%;background:#9c7959;box-shadow:4px 2px #a3b99c}
+.office-meeting-chair{position:absolute;width:72px;height:60px;border-radius:14px;background:#86a39b;border:3px solid #6a8982;box-shadow:0 7px 0 #58726e,0 11px 8px #4b65542b}.office-meeting-chair::before{content:'';position:absolute;left:6px;right:6px;bottom:-8px;height:18px;border-radius:7px;background:#678982;border:2px solid #55756e}.office-meeting-chair.north::before{bottom:auto;top:-8px}
+.office-desk.is-meeting{z-index:9}.office-desk.is-meeting .office-chair{z-index:2}.office-person[data-meeting]::after{content:attr(data-meeting-name);position:absolute;left:50%;top:-24px;transform:translateX(-50%);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 8px;background:#fffdf2;border:1px solid #cad9c5;border-radius:20px;font-size:11px;color:#426151;line-height:16px;pointer-events:none}
+.office-canvas.is-list .office-meeting-wing,.office-scene.is-replaying .office-meeting-wing{display:none}
+.office-meeting-locations{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#f4f8ee;border-bottom:1px solid var(--o-line);flex:none}.office-meeting-locations[hidden]{display:none}.office-meeting-locations button{font-size:11px!important;padding:5px 9px!important;min-height:30px!important;max-width:min(100%,240px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.office-canvas.is-list .office-meeting-locations{display:none}.office-person[data-meeting][data-facing=up] .avatar-head>:not(.avatar-back-head){display:none}

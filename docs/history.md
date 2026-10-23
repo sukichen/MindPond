@@ -6,6 +6,8 @@
 
 ## 连接管理、讨论室与脚本库（2026-10-23）
 
+会议室场景补充：增加 `office-meetings.js`，按实际成员关系展示空间、相对座位和避障进出路径，增加工位区/会议室聚焦入口。管理快照的增量响应同时提供会议室元数据，消息正文不进入场景数据；无新数据库表、依赖或外部素材。更新完整前端和 Web 服务后刷新页面，避免只更新页面却缺少快照字段。历史回放继续不推测没有记录的会议室历史布局。
+
 加入角色断开连接、显示已识别真实聊天的连接选择器；加入临时小组讨论室和角色/办公室源码库。删除办公室场景中装饰性的休息区、资料区及讨论区入口，实际功能改由独立“讨论室”页提供。使用步骤、删除范围和源码下载校验见[讨论室与脚本库](discussions-and-scripts.md)。
 
 本轮不增加第三方依赖。数据库追加 `office_discussions`、`office_discussion_members/posts/exports/creations/conclusions`，以及 `office_scripts/office_script_receipts`；不改写已有图记忆及普通消息。更新全部 Web、Office/Memory MCP 常驻进程及本机 worker 后重启并刷新页面；Memory MCP 仍独立，不应合并到 Office。新 Office 工具是 `office_discussion`、`office_script`，宿主须重新连接以发现目录。新版 presence 仅报告 phase，不再使用装饰区域选择。

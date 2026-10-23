@@ -80,7 +80,7 @@
     "verify:network-mcp": "tsx scripts/verify-network-mcp.ts",
     "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts",
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
-    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection && npm run verify:office-collaboration",
+    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-meetings && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection && npm run verify:office-collaboration",
     "verify:office-deletion": "tsx scripts/verify-office-deletion.ts",
     "verify:roles": "npm run verify:office-model-migration && tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts && tsx scripts/verify-role-connection-switch.ts",
     "verify:office-building": "tsx scripts/verify-office-building.ts",
@@ -104,7 +104,8 @@
     "verify:production-boundaries": "tsx scripts/verify-production-boundaries.ts",
     "verify:owner-workbench": "tsx scripts/verify-owner-workbench.ts",
     "verify:role-continuity": "tsx scripts/verify-role-continuity.ts && node scripts/verify-continuity-ui.mjs",
-    "verify:office-resources": "tsx scripts/verify-office-resources.ts && node scripts/verify-office-resources-ui.mjs"
+    "verify:office-resources": "tsx scripts/verify-office-resources.ts && node scripts/verify-office-resources-ui.mjs",
+    "verify:office-meetings": "node scripts/verify-office-meetings.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
@@ -212,7 +213,8 @@
     "docs/role-continuity.md",
     "web/guide/26-role-continuity.jpg",
     "web/office-resources.js",
-    "docs/discussions-and-scripts.md"
+    "docs/discussions-and-scripts.md",
+    "web/office-meetings.js"
   ],
   "license": "MIT",
   "repository": {

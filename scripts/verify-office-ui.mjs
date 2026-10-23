@@ -320,7 +320,7 @@ console.log('PASS live counts and filtered sync: totals are independent of loade
 // room must choose columns again after its available panel width changes.
 const layoutElements={officeStage:{clientWidth:1300,clientHeight:700},officeDesks:{style:{},querySelectorAll:()=>Array.from({length:6},()=>({offsetHeight:520}))},officeScene:{style:{}}};
 let layoutStops=0,resizeCallback,fitCalls=0;
-const layoutContext=vm.createContext({Math,state:{scene:{autoFit:true}},replayController:{active:false},stage:layoutElements.officeStage,el:id=>layoutElements[id],scenePlayer:{stop(){layoutStops++;},startIdle(){}},ResizeObserver:class{constructor(fn){resizeCallback=fn;}observe(){}},requestAnimationFrame:fn=>fn(),fitScene(){fitCalls++;}});
+const layoutContext=vm.createContext({Math,meetingScene:{width:n=>n,sync(){}},state:{scene:{autoFit:true}},replayController:{active:false},stage:layoutElements.officeStage,el:id=>layoutElements[id],scenePlayer:{stop(){layoutStops++;},startIdle(){}},ResizeObserver:class{constructor(fn){resizeCallback=fn;}observe(){}},requestAnimationFrame:fn=>fn(),fitScene(){fitCalls++;}});
 vm.runInContext(source.slice(source.indexOf('  function layoutScene('),source.indexOf('  function applyScene(')),layoutContext);
 vm.runInContext(source.split('\n').find(line=>line.includes('new ResizeObserver(')),layoutContext);
 layoutContext.layoutScene(6);const wideColumns=layoutElements.officeDesks.style.gridTemplateColumns;
