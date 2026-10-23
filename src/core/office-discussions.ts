@@ -26,6 +26,7 @@ export class OfficeDiscussions{
  CREATE INDEX IF NOT EXISTS office_discussion_post_page ON office_discussion_posts(room_id,seq);
  CREATE TABLE IF NOT EXISTS office_discussion_exports(room_id TEXT NOT NULL REFERENCES office_discussions(id) ON DELETE CASCADE,memory_id TEXT NOT NULL,fingerprint TEXT NOT NULL,PRIMARY KEY(room_id,memory_id));
  CREATE TABLE IF NOT EXISTS office_discussion_creations(role_id TEXT NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,room_id TEXT NOT NULL,PRIMARY KEY(role_id,key));
+ CREATE TABLE IF NOT EXISTS office_discussion_conclusions(room_id TEXT NOT NULL REFERENCES office_discussions(id) ON DELETE CASCADE,key TEXT NOT NULL,hash TEXT NOT NULL,memory_id TEXT NOT NULL,PRIMARY KEY(room_id,key));
  `);}
  private async actor(a?:TrustedCallContext){if(a?.operator&&a.expiresAt>this.clock())return {human:true,roleId:null as string|null};const b=await this.graph.roles.binding(a);return {human:false,roleId:b!.role_id as string};}
  private async member(officeId:string,roleId:string){return !!await this.db.get(`SELECT 1 FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id JOIN character_roles r ON r.id=rs.role_id WHERE s.office_id=? AND rs.role_id=? AND s.enabled=1 AND r.state='active'`,[officeId,roleId]);}
@@ -44,11 +45,32 @@ export class OfficeDiscussions{
  private async focus(roleId:string){return this.db.get<Row>(`SELECT r.id,r.office_id,r.title,r.revision FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state='joined'`,[roleId]);}
  async attention(a?:TrustedCallContext){return this.write(async()=>{const actor=await this.actor(a);if(actor.human)return {};await this.cleanup();
   // Membership and host grants are rechecked, including after an office move.
-  const rows=await this.db.all<Row[]>(`SELECT r.id,r.office_id,r.title,r.revision,m.state FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state IN ('joined','invited') ORDER BY r.created_at,r.id LIMIT 64`,[actor.roleId]);
+  // Focus is a safety condition, so it must precede the bounded invitation list.
+  const rows=await this.db.all<Row[]>(`SELECT r.id,r.office_id,r.title,r.revision,m.state FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state IN ('joined','invited') ORDER BY (m.state='joined') DESC,r.created_at,r.id LIMIT 66`,[actor.roleId]);
   const allowed=new Set((await this.graph.offices.authorizedSeats(a!)).map(s=>s.office_id));
-  for(const r of rows)if(!allowed.has(r.office_id)||!await this.member(r.office_id,actor.roleId!))await this.db.run("UPDATE office_discussion_members SET state='left' WHERE room_id=? AND role_id=?",[r.id,actor.roleId]);
-  const visible=rows.filter(r=>allowed.has(r.office_id));return {active:visible.find(r=>r.state==='joined')??null,invitations:visible.filter(r=>r.state==='invited'),next:'Use office_discussion get/join/post/wait/leave; wait afterSeq uses the discussion cursor, not the mailbox cursor. While joined, prioritize this bounded discussion; other inbox messages remain pending. Save reusable conclusions with the separate Memory MCP before closing. Closing/expiry permanently deletes temporary discussion content; it never wakes a stopped host.'};
+  const visible:Row[]=[];for(const r of rows){if(!allowed.has(r.office_id)||!await this.member(r.office_id,actor.roleId!))await this.db.run("UPDATE office_discussion_members SET state='left' WHERE room_id=? AND role_id=?",[r.id,actor.roleId]);else visible.push(r);}
+  const invitations=visible.filter(r=>r.state==='invited');return {active:visible.find(r=>r.state==='joined')??null,invitations:invitations.slice(0,64),hasMoreInvitations:invitations.length>64,next:'Use office_discussion list per office for all invitations; get/join/post/wait/leave for a room. wait afterSeq uses the discussion cursor, not the mailbox cursor. While joined, prioritize this bounded discussion; other inbox messages remain pending. Save reusable conclusions with the separate Memory MCP before closing. Closing/expiry permanently deletes temporary discussion content; it never wakes a stopped host.'};
  });}
+ async saveConclusion(i:{id:string;expectedRevision:number;content:string;key:string},a?:TrustedCallContext){
+  // Leave embedding outside the connection owner; the save hooks atomically
+  // recheck the room and commit its receipt with the independent graph memory.
+  if(!(await this.actor(a)).human)fail('scope_denied','Only human management can save a selected conclusion here');
+  const hash=digest(i);
+  const read=()=>this.write(async()=>{
+   await this.cleanup();const {row}=await this.room(i.id,a);
+   const prior=await this.db.get<Row>('SELECT * FROM office_discussion_conclusions WHERE room_id=? AND key=?',[i.id,i.key]);
+   if(prior){if(prior.hash!==hash)fail('idempotency_conflict','Conclusion key has another payload');if(!await this.graph.getNodeById(prior.memory_id,{trackAccess:false}))fail('not_found','The saved conclusion was deleted');}
+   else if(row.revision!==i.expectedRevision)fail('stale_version','讨论已有变化，请核对最新内容后再保存结论');
+   return {row,prior};
+  });
+  const {row,prior}=await read();if(prior)return {memoryId:prior.memory_id,officeId:row.office_id,saved:true};
+  const domain=await this.graph.memoryOwners.domain({kind:'office',id:row.office_id});
+  const memory=await this.graph.saveMemory(i.content,{domain,idempotencyKey:'discussion:'+i.id+':'+digest(i.key),sourceRefs:[{uri:'mindpond:discussion:'+i.id,revision:String(i.expectedRevision),context:'Human-reviewed independent conclusion. Temporary discussion content is deleted on close; this memory preserves only the selected conclusion.',fingerprint:createHash('sha256').update(i.content).digest('hex')}]},{authorize:async()=>{await read();},saved:async memoryId=>{
+   await this.run({action:'export',id:i.id,memoryId},a);
+   await this.db.run('INSERT OR IGNORE INTO office_discussion_conclusions VALUES(?,?,?,?)',[i.id,i.key,hash,memoryId]);
+  }});
+  return {memoryId:memory.id,officeId:row.office_id,saved:true};
+ }
  async assertMailbox(a?:TrustedCallContext){const priority=await this.attention(a);if(priority.active)throw new MindPondError('invalid_input','Finish or leave your active discussion before taking ordinary mailbox work',{details:{discussionId:priority.active.id},nextAction:'Use office_discussion get/post/leave. Ordinary messages remain pending.'});}
  async run(value:unknown,a?:TrustedCallContext):Promise<Row>{const i=discussionSchema.parse(value);return this.write(async()=>{await this.cleanup();const actor=await this.actor(a);
   if(i.action==='create'){

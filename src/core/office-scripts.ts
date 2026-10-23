@@ -17,6 +17,7 @@ export class OfficeScripts{
  CREATE INDEX IF NOT EXISTS office_script_role ON office_scripts(role_id,id);
  CREATE INDEX IF NOT EXISTS office_script_room ON office_scripts(office_id,id);
  CREATE TABLE IF NOT EXISTS office_script_receipts(owner TEXT NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,script_id TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(owner,key));
+ CREATE INDEX IF NOT EXISTS office_script_receipt_source ON office_script_receipts(script_id);
  `);}
  private async scope(i:Row,a?:TrustedCallContext,writing=false){
   const human=!!a?.operator&&a.expiresAt>this.clock(),b=human?null:await this.graph.roles.binding(a),roleId=i.officeId?null:human?i.roleId:b!.role_id;
@@ -44,7 +45,9 @@ export class OfficeScripts{
   }
   if(row?.locked&&!scope.human)fail('scope_denied','This script is locked by the human manager');
   if(i.action==='delete'){
-   if(!row)fail('not_found','Script not found');if(i.expectedRevision!==row.revision)fail('stale_version','Script changed; read the current revision');await this.db.run('DELETE FROM office_scripts WHERE id=?',[i.id]);await this.db.run('DELETE FROM office_script_receipts WHERE script_id=?',[i.id]);await this.db.run('DELETE FROM office_response_pages');await this.log(i.id!,'script_deleted');return {id:i.id,deleted:true};
+   if(!row)fail('not_found','Script not found');if(i.expectedRevision!==row.revision)fail('stale_version','Script changed; read the current revision');await this.db.run('DELETE FROM office_scripts WHERE id=?',[i.id]);
+   // Keep metadata-only save receipts: a delayed retry must never recreate deleted source.
+   await this.db.run('DELETE FROM office_response_pages');await this.log(i.id!,'script_deleted');return {id:i.id,deleted:true};
   }
   if(!i.filename||!i.description||!i.usage||!i.language||i.content===undefined||i.expectedRevision===undefined||!i.key)fail('invalid_input','Save requires filename,description,usage,language,content,expectedRevision (0=new),key');if(Buffer.byteLength(i.content)>131072)fail('material_over_budget','A script may contain at most 128 KiB of UTF-8 source');
   const hash=createHash('sha256').update(JSON.stringify(i)).digest('hex'),receipt=await this.db.get<Row>('SELECT * FROM office_script_receipts WHERE owner=? AND key=?',[scope.owner,i.key]);if(receipt){if(receipt.hash!==hash)fail('idempotency_conflict','Script save key has another payload');if(!await this.db.get('SELECT 1 FROM office_scripts WHERE id=? AND '+where,[receipt.script_id,...params]))fail('not_found','Saved script was deleted');return {id:receipt.script_id,revision:receipt.revision,replayed:true};}
@@ -52,7 +55,7 @@ export class OfficeScripts{
   if(!row&&(await this.db.get<Row>('SELECT COUNT(*) n FROM office_scripts WHERE '+where,params))!.n>=100)fail('invalid_input','At most 100 scripts per library');
   const scriptId=i.id??randomUUID(),revision=i.expectedRevision+1,sha256=createHash('sha256').update(i.content).digest('hex');
   // An ID from another scope must never be turned into an overwrite via UPSERT.
-  if(!row&&await this.db.get('SELECT 1 FROM office_scripts WHERE id=?',[scriptId]))fail('not_found','Script id unavailable in this library');
+  if(!row&&(await this.db.get('SELECT 1 FROM office_scripts WHERE id=?',[scriptId])||await this.db.get('SELECT 1 FROM office_script_receipts WHERE script_id=?',[scriptId])))fail('not_found','Script id unavailable; a deleted script needs a new ID and key');
   await this.db.run(`INSERT INTO office_scripts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET filename=excluded.filename,description=excluded.description,usage=excluded.usage,language=excluded.language,content=excluded.content,sha256=excluded.sha256,revision=excluded.revision,locked=excluded.locked,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,[scriptId,scope.roleId,scope.officeId,i.filename,i.description,i.usage,i.language,i.content,sha256,revision,i.locked===undefined?row?.locked??0:Number(i.locked),scope.writer,this.clock()]);
   await this.db.run('INSERT INTO office_script_receipts VALUES(?,?,?,?,?)',[scope.owner,i.key,hash,scriptId,revision]);await this.log(scriptId,'script_saved');return {id:scriptId,revision,sha256};
  });}

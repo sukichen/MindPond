@@ -40,6 +40,11 @@ try{
  await deny('office_script',{...script,key:'traversal',filename:'../escape.py'},'invalid_input');await deny('office_script',{...script,key:'reserved',filename:'NUL.py'},'invalid_input');
  let offset:any=0,source='';do{const page=await call('office_script',{action:'get',id:saved.id,offset,characters:257,expectedRevision:1});assert(!/[\uD800-\uDBFF]$/.test(page.content));source+=page.content;offset=page.nextOffset;}while(offset!==null);
  assert.equal(source,script.content);assert.equal(createHash('sha256').update(source).digest('hex'),saved.sha256);
+ const disposable={...script,key:'deleted-script',content:'echo disposable\n'},deleted=await call('office_script',disposable);
+ await call('office_script',{action:'delete',id:deleted.id,expectedRevision:1});
+ await deny('office_script',disposable,'not_found');
+ await deny('office_script',{...disposable,id:deleted.id,key:'reuse-deleted-id'},'not_found');
+ assert(!(await call('office_script',{action:'list'})).scripts.some((r:any)=>r.id===deleted.id),'lost-response retry must not resurrect deleted scripts');
  await deny('office_script',{action:'get',id:saved.id,offset:20},'invalid_input');
  const edited=await Promise.all(['first','second'].map(key=>raw('office_script',{...script,id:saved.id,expectedRevision:1,key,content:'print("'+key+'")\n'})));assert.equal(edited.filter((r:any)=>!r.isError).length,1);
  await deny('office_script',{action:'get',id:saved.id,offset:20,expectedRevision:1},'stale_version');
@@ -87,7 +92,33 @@ try{
  assert.equal((await manage('scripts',{action:'list',roleId:roles[0].roleId})).body.scripts[0].id,saved.id);
  const meeting=await call('office_discussion',{action:'get',id:parallel.room.id},'c');
  const conclusion=await manage('discussion-memory',{id:parallel.room.id,expectedRevision:meeting.room.revision,content:'Human-reviewed fixture conclusion',key:'human-conclusion'});assert.equal(conclusion.status,200,JSON.stringify(conclusion));assert.equal((await graph.getNodeById(conclusion.body.memoryId))!.domain.id,domain.id);
+ const retry=await manage('discussion-memory',{id:parallel.room.id,expectedRevision:meeting.room.revision,content:'Human-reviewed fixture conclusion',key:'human-conclusion'});assert.equal(retry.status,200,JSON.stringify(retry));assert.equal(retry.body.memoryId,conclusion.body.memoryId,'lost-response retry must return the same conclusion');
+ assert.equal((await manage('discussion-memory',{id:parallel.room.id,expectedRevision:meeting.room.revision,content:'Changed payload',key:'human-conclusion'})).body.code,'idempotency_conflict');
+ const concurrentRevision=(await call('office_discussion',{action:'get',id:parallel.room.id},'c')).room.revision;
+ const concurrent=await Promise.all([1,2].map(()=>manage('discussion-memory',{id:parallel.room.id,expectedRevision:concurrentRevision,content:'Concurrent exact conclusion',key:'k'.repeat(256)})));assert(concurrent.every(r=>r.status===200),JSON.stringify(concurrent));assert.equal(concurrent[0].body.memoryId,concurrent[1].body.memoryId);
+ const closing=await call('office_discussion',{...create,key:'close-during-save'});
+ let begin!:()=>void,release!:()=>void;const started=new Promise<void>(r=>begin=r),released=new Promise<void>(r=>release=r),stub=embedding.generateEmbedding;
+ embedding.generateEmbedding=async content=>{if(content==='Close-race conclusion'){begin();await released;}return stub.call(embedding,content);};
+ try{
+  const pending=manage('discussion-memory',{id:closing.room.id,expectedRevision:closing.room.revision,content:'Close-race conclusion',key:'close-race'});
+  await started;await call('office_discussion',{action:'close',id:closing.room.id,expectedRevision:closing.room.revision});release();assert.equal((await pending).body.code,'not_found');
+  assert.equal((await db.get('SELECT COUNT(*) n FROM nodes WHERE content=?',['Close-race conclusion'])).n,0,'closing during embedding must roll back the selected memory and its receipt');
+ }finally{release();embedding.generateEmbedding=stub;}
  console.log('PASS human routes: authenticated/CSRF fenced script management and selected independent office-memory export');
+
+ // More than one attention page must never hide focus or bypass ordinary-mail priority.
+ await call('office_discussion',{action:'leave',id:parallel.room.id},'c');
+ for(let n=0;n<5;n++){
+  const officeId='busy-office-'+n;
+  await graph.roles.configureOffice({id:officeId,title:'Invitation load fixture '+n,state:'active',expectedRevision:0,seats:[{id:'busy-a-'+n,roleId:roles[0].roleId,label:'A',role:'member'},{id:'busy-c-'+n,roleId:roles[2].roleId,label:'C',role:'member'}]},admin);
+  for(let k=0;k<13;k++){const r=await call('office_discussion',{...create,officeId,participants:[roles[0].roleId],key:'invite-'+n+'-'+k},'c');await call('office_discussion',{action:'leave',id:r.room.id},'c');}
+ }
+ const focused=await call('office_discussion',{...create,key:'focus-after-invitations'});
+ assert.equal((await call('role_sync',{responseBudgetBytes:65536})).discussions.active.id,focused.room.id,'invitation limit must not hide an active discussion');
+ await deny('office_receive',{action:'take',key:'overloaded-focus'},'invalid_input');
+ await call('office_discussion',{action:'close',id:focused.room.id,expectedRevision:focused.room.revision});
+ for(let n=0;n<5;n++)await graph.roles.deleteOffice({id:'busy-office-'+n,expectedRevision:1},admin);
+ console.log('PASS high invitation volume: active focus remains visible and ordinary mail stays deferred');
 
  const identity=(await call('role_sync')).identity;const roleNow=(await graph.roles.registry(admin)).roles.find((r:any)=>r.id===roles[0].roleId)!;const credential=await graph.memoryOwners.issue(roleNow.id);
  await call('role_application',{action:'submit',name:'Pending target fixture',introduction:'Native target already observed',reason:'Pending application must not hide the chat',key:'new-app'},'new-target');

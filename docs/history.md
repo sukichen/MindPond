@@ -8,7 +8,9 @@
 
 加入角色断开连接、显示已识别真实聊天的连接选择器；加入临时小组讨论室和角色/办公室源码库。删除办公室场景中装饰性的休息区、资料区及讨论区入口，实际功能改由独立“讨论室”页提供。使用步骤、删除范围和源码下载校验见[讨论室与脚本库](discussions-and-scripts.md)。
 
-本轮不增加第三方依赖。数据库追加 `office_discussions`、`office_discussion_members/posts/exports/creations`，以及 `office_scripts/office_script_receipts`；不改写已有图记忆及普通消息。更新全部 Web、Office/Memory MCP 常驻进程及本机 worker 后重启并刷新页面；Memory MCP 仍独立，不应合并到 Office。新 Office 工具是 `office_discussion`、`office_script`，宿主须重新连接以发现目录。新版 presence 仅报告 phase，不再使用装饰区域选择。
+本轮不增加第三方依赖。数据库追加 `office_discussions`、`office_discussion_members/posts/exports/creations/conclusions`，以及 `office_scripts/office_script_receipts`；不改写已有图记忆及普通消息。更新全部 Web、Office/Memory MCP 常驻进程及本机 worker 后重启并刷新页面；Memory MCP 仍独立，不应合并到 Office。新 Office 工具是 `office_discussion`、`office_script`，宿主须重新连接以发现目录。新版 presence 仅报告 phase，不再使用装饰区域选择。
+
+后续复核修复：大量邀请遮住当前讨论、删除脚本后旧请求复活源码及编号复用、结论响应丢失后的重试冲突、前端刷新后重试误换版本。新增结论回执表只存哈希与记忆 ID，并与独立记忆原子提交、随讨论关闭清理；脚本删除保留无源码回执以拒绝延迟重放。回归入口及覆盖边界见[验证与发布](releasing.md#协作功能回归用例)。
 
 生产升级前停写并做一致备份，在副本验证角色连接、普通取信、讨论关闭和脚本下载校验。脚本只存源码，不要求生产机安装新运行器或模型；运行条件由脚本使用说明明确列出。断开连接后该聊天恢复既有的人类记忆权限，请只给可信的人类聊天使用；角色专用凭据会撤销。讨论到期/关闭会实际删除临时内容，需保留的结论务必先带到独立记忆；备份仍可能保有删除前内容。角色/办公室永久删除会级联清理其脚本，并清理涉及的临时讨论；独立知识按已有策略保留。回退时保留新版数据库快照，切回与旧程序相匹配的一致备份，不混跑新旧常驻进程。
 
