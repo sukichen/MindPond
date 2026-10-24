@@ -8,7 +8,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { GraphMemory } from '../core/graph-memory.js';
-import { MindPondError, httpStatus } from '../core/errors.js';
+import { MindPondError, httpStatus, httpError } from '../core/errors.js';
 import { roleRuntimeId } from '../core/roles.js';
 import { createMemoryMcpServer } from '../mcp-service.js';
 import {
@@ -78,12 +78,12 @@ export function createNetworkMcpApp(
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     if (!options.allowedHosts.includes(req.headers.host ?? '')) {
-      res.status(403).json({ error: 'Host is not allowed' });
+      res.status(403).json(httpError('scope_denied','Host is not allowed'));
       return;
     }
     const origin = req.header('origin');
     if (origin && !(options.allowedOrigins ?? []).includes(origin)) {
-      res.status(403).json({ error: 'Origin is not allowed' });
+      res.status(403).json(httpError('scope_denied','Origin is not allowed'));
       return;
     }
     next();
@@ -91,7 +91,7 @@ export function createNetworkMcpApp(
   app.all(['/mcp','/memory/mcp'], async (req, res, next) => {
     try {
       if (closing) {
-        res.status(503).json({ error: 'Server is closing' });
+        res.status(503).json(httpError('temporarily_unavailable','Server is closing'));
         return;
       }
       const token=req.header('authorization')?.replace(/^Bearer /,'')??'';
@@ -110,11 +110,11 @@ export function createNetworkMcpApp(
         }))
       ) {
         res.setHeader('WWW-Authenticate', 'Bearer realm="MindPond"');
-        res.status(401).json({ error: 'Invalid account credential' });
+        res.status(401).json(httpError('scope_denied','Invalid account credential'));
         return;
       }
       if(!networkHostId(grant)){
-        res.status(403).json({error:'This account credential is not a registered Office host. Generate a host connection in the workbench; account-domain MCP access has been removed.',code:'identity_required',humanFallback:false});return;
+        res.status(403).json({...httpError('identity_required','This account credential is not a registered Office host. Generate a host connection in the workbench.'),humanFallback:false});return;
       }
       // Rotating a credential must free its obsolete connections immediately,
       // otherwise the valid replacement could be blocked by the account cap.
@@ -131,7 +131,7 @@ export function createNetworkMcpApp(
       res.locals.grant = grant;
       next();
     } catch {
-      res.status(503).json({ error: 'Account configuration unavailable' });
+      res.status(503).json(httpError('temporarily_unavailable','Account configuration unavailable'));
     }
   });
   app.use(['/mcp','/memory/mcp'], express.json({ limit: '1mb' }));
@@ -164,15 +164,15 @@ export function createNetworkMcpApp(
     res.once('close', finishRequest);
     try {
       if (closing) {
-        res.status(503).json({ error: 'Server is closing' });
+        res.status(503).json(httpError('temporarily_unavailable','Server is closing'));
         return;
       }
       const identityHeader=req.header('x-mindpond-identity');
-      if(identityHeader!==undefined&&identityHeader!=='connection'){res.status(400).json({error:'X-MindPond-Identity must be connection when supplied',code:'invalid_input'});return;}
+      if(identityHeader!==undefined&&identityHeader!=='connection'){res.status(400).json(httpError('invalid_input','X-MindPond-Identity must be connection when supplied'));return;}
       const connectionIdentity=identityHeader==='connection';
       const logicalSession = req.header('x-mindpond-session') ?? '';
       if (logicalSession && !/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u.test(logicalSession)) {
-        res.status(400).json({ error: 'Invalid host session label' });
+        res.status(400).json(httpError('invalid_input','Invalid host session label'));
         return;
       }
       const header = req.header('mcp-session-id');
@@ -186,19 +186,19 @@ export function createNetworkMcpApp(
           JSON.stringify(c.grant) !== JSON.stringify(grant) ||
           c.logicalSession !== logicalSession || c.connectionIdentity !== connectionIdentity
         ) {
-          res.status(404).json({ error: 'MCP session not found for this account' });
+          res.status(404).json(httpError('not_found','MCP session not found for this account'));
           return;
         }
       } else {
         if (req.method !== 'POST' || !isInitializeRequest(req.body)) {
-          res.status(400).json({ error: 'Initialize before making MCP requests' });
+          res.status(400).json(httpError('invalid_input','Initialize before making MCP requests'));
           return;
         }
         const own =
           [...connections.values()].filter((v) => v.grant.principal === grant.principal).length +
           (pendingOwners.get(grant.principal) ?? 0);
         if (connections.size + pending >= max || own >= perAccount) {
-          res.status(429).json({ error: 'Connection limit reached' });
+          res.status(429).json(httpError('temporarily_unavailable','Connection limit reached'));
           return;
         }
         pending++;
@@ -300,9 +300,10 @@ export function createNetworkMcpApp(
       for (const message of Array.isArray(req.body) ? req.body : [req.body]) {
         if (
           message?.method === 'tools/call' &&
-          ['work_wait', 'work_office_wait', 'office_wait'].includes(message.params?.name) &&
           (typeof message.id === 'string' || typeof message.id === 'number')
         ) {
+          // Every tool receives disconnect cancellation, including discussion
+          // waits and host probes added after the original mailbox waits.
           const controller = new AbortController();
           c.waitSignals.set(message.id, controller);
           waitControllers.push([message.id, controller]);
@@ -352,7 +353,7 @@ export function createNetworkMcpApp(
       if (newConnection && !c.transport.sessionId) await remove(id!);
     } catch (error) {
       if (newConnection && id) await remove(id).catch(() => {});
-      if (!res.headersSent) res.status(error instanceof MindPondError?httpStatus(error.code):500).json({ error: error instanceof MindPondError?error.message:'MCP request failed' });
+      if (!res.headersSent) res.status(error instanceof MindPondError?httpStatus(error.code):500).json(error instanceof MindPondError?{error:error.message,...error.toJSON()}:httpError('internal','MCP request failed'));
     } finally {
       finishRequest();
       res.removeListener('close', finishRequest);
@@ -368,15 +369,15 @@ export function createNetworkMcpApp(
     }
   });
   app.use((_req, res) => {
-    res.status(404).json({ error: 'Not found' });
+    res.status(404).json(httpError('not_found','Not found'));
   });
   app.use(
     (error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       if(res.headersSent)return;
       const type=(error as {type?:string})?.type;
-      if(type==='entity.too.large')res.status(413).json({code:'invalid_input',error:'Request body exceeds 1MB',nextAction:'Reduce the request body or split the work into smaller batches.'});
-      else if(type==='entity.parse.failed')res.status(400).json({code:'invalid_input',error:'Malformed JSON request',nextAction:'Send a valid JSON request.'});
-      else res.status(500).json({code:'internal',error:'MCP request failed',retryable:false,nextAction:'Report the failure with the operation and service version.'});
+      if(type==='entity.too.large')res.status(413).json(httpError('invalid_input','Request body exceeds 1MB','Reduce the request body or split the work into smaller batches.'));
+      else if(type==='entity.parse.failed')res.status(400).json(httpError('invalid_input','Malformed JSON request','Send a valid JSON request.'));
+      else res.status(500).json(httpError('internal','MCP request failed'));
     }
   );
   const reportId=randomUUID();let reporting:Promise<unknown>|undefined;

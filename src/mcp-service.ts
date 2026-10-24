@@ -109,7 +109,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
   if((name.startsWith('office_')||name==='role_sync')&&!['office_discussion','office_script'].includes(name))shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
   exposedTools.push(name);
   const execute=async (args: any,extra:{signal:AbortSignal;requestId:string|number;_meta?:Record<string,unknown>}) => {
-    if(closing)return {content:[{type:'text' as const,text:'Memory server is closing; retry the same operation key'}],isError:true};
+    if(closing)return {content:[{type:'text' as const,text:JSON.stringify({error:toStructuredError(new MindPondError('temporarily_unavailable','The MCP service is shutting down. Reconnect before retrying the same operation key.'))})}],isError:true};
     let release!:()=>void;const active=new Promise<void>(r=>release=r);activeCalls.add(active);
     let auditContext:TrustedCallContext=baseTrusted;
     try {
@@ -186,7 +186,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       });
     } catch (err) {
       const e = toStructuredError(err);
-      await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!auditContext.operator?(auditContext.sessionId?{kind:'session',id:auditContext.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code,...(trustBound?{principal:auditContext.principal,agentId:auditContext.agentId,workSessionId:auditContext.workSessionId,roleId:auditContext.roleId,roleBindingEpoch:auditContext.roleBindingEpoch}:{})})});
+      await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!auditContext.operator?(auditContext.sessionId?{kind:'session',id:auditContext.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code,...(trustBound?{principal:auditContext.principal,agentId:auditContext.agentId,workSessionId:auditContext.workSessionId,roleId:auditContext.roleId,roleBindingEpoch:auditContext.roleBindingEpoch}:{})})}).catch(()=>{});
       return { content: [{ type: 'text' as const, text: JSON.stringify({ error: e }) }], isError: true };
     } finally {release();activeCalls.delete(active);}
   };

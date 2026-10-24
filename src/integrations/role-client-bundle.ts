@@ -28,7 +28,7 @@ export async function prepareRoleClientBundle(o: { directory: string; client: 'c
   const tokenEnv = o.tokenEnv ?? 'MINDPOND_TOKEN', sessionLabel = o.sessionLabel ?? randomUUID();
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(tokenEnv) || !/^[A-Za-z0-9_.:-]{1,128}$/.test(sessionLabel)) throw new Error('Invalid environment-variable name/session label');
   const url = endpoint(o.url, o.allowHttp);
-  const connection = officeConnection({host:o.client,id:'office',name:'mindpond_office',url,tokenEnv,sessionLabel});
+  const connection = officeConnection({host:o.client,id:'office',name:'mindpond_office',url,tokenEnv,sessionLabel,identityMode:'native'});
   const config = { $schema: 'https://opencode.ai/config.json', ...connection.config, command: { mindpond_office_get_message: { description: '同步角色、读取一条 MindPond 消息并继续', template: INBOX_PROMPT, subtask: false } } };
   const files: Record<string, string> = o.client === 'codex' ? {
     '.codex/config.toml': connection.text,

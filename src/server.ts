@@ -100,7 +100,7 @@ import { MemoryPipelineManager } from './core/memory-pipeline.js';
 import { MemoryConsolidation } from './core/memory-consolidation.js';
 import { memorySavePolicyPayload } from './core/save-policy.js';
 import { organizationPolicyPayload, organizationTask } from './core/organization-policy.js';
-import { httpStatus, MindPondError, toStructuredError } from './core/errors.js';
+import { httpStatus, MindPondError, toStructuredError, httpError } from './core/errors.js';
 import type { DomainReadContext, MemoryDomainRef } from './core/domain.js';
 import { narrowTrustedContext, narrowTrustedSaveContext, narrowTrustedDomains, narrowTrustedDomain, narrowTrustedSession, verifyContextToken, type TrustedCallContext } from './core/trust.js';
 
@@ -159,11 +159,11 @@ app.use((_req, res, next) => {
 app.use('/api',(req,res,next)=>{
   const origin=req.header('origin');
   if(origin&&origin!==`${req.protocol}://${req.header('host')}`&&!CORS_ORIGINS.has(origin)){
-    res.status(403).json({code:'scope_denied',error:'Cross-origin API request rejected'});return;
+    res.status(403).json(httpError('scope_denied','Cross-origin API request rejected'));return;
   }
   if(!API_KEY&&!OPERATOR_KEY&&!CONTEXT_SECRET&&process.env.MEMORY_ALLOW_UNAUTHENTICATED_NETWORK!=='1'
     &&!/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(req.header('host')??'')){
-    res.status(403).json({code:'scope_denied',error:'The local API requires a loopback Host or configured authentication'});return;
+    res.status(403).json(httpError('scope_denied','The local API requires a loopback Host or configured authentication'));return;
   }
   next();
 });
@@ -201,7 +201,7 @@ app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control','no-store');
   if (!API_KEY) return next();
   if (keyMatches(req.header('x-api-key'), API_KEY)) return next();
-  res.status(401).json({ error: 'unauthorized: missing/invalid x-api-key' });
+  res.status(401).json(httpError('scope_denied','unauthorized: missing/invalid x-api-key'));
 });
 
 // ---- R03: bind the trusted call context (strict mode when configured) ----
@@ -247,7 +247,7 @@ function ok(res: express.Response, data: unknown) {
   res.json({ ok: true, ...((data as object) ?? {}) });
 }
 function fail(res: express.Response, status: number, msg: string) {
-  res.status(status).json({ ok: false, error: msg });
+  res.status(status).json({ok:false,...httpError(status===404?'not_found':status===401||status===403?'scope_denied':status===503||status===429?'temporarily_unavailable':status>=500?'internal':'invalid_input',msg)});
 }
 /** R01: every caught failure keeps its stable code/retryability/nextAction so
  * HTTP clients react to structure; `fallbackStatus` only covers unclassified
@@ -720,7 +720,7 @@ app.post('/api/memory/ingest', async(req,res)=>{
   try{const {transcript,sessionId,idempotencyKey}=req.body ?? {};
     const boundSession = req.trusted && CONTEXT_SECRET ? narrowTrustedSession(req.trusted, sessionId) : sessionId;
     ok(res,{...await graphMemory.ingestTranscript(transcript,boundSession,idempotencyKey),next:'GET /api/extract/job → host LLM → POST /api/extract/commit'});}
-  catch(error){fail(res,400,error instanceof Error?error.message:String(error));}
+  catch(error){failErr(res,error);}
 });
 
 // ---- L1 extraction: scoped hosts claim/commit only their readable jobs ----
@@ -935,12 +935,12 @@ app.post('/api/organization/validate', async (req, res) => {
 
 app.post('/api/organization/release', async (req, res) => {
   try { await graphMemory.releaseOrganizationJob(req.body?.jobId); ok(res, { released: true }); }
-  catch (err) { fail(res, 409, String(err)); }
+  catch (err) { failErr(res,err); }
 });
 
 app.post('/api/organization/renew', async (req, res) => {
   try { ok(res, { leaseExpiresAt: await graphMemory.renewOrganizationJob(req.body?.jobId) }); }
-  catch (err) { fail(res, 409, String(err)); }
+  catch (err) { failErr(res,err); }
 });
 
 app.get('/api/organization/job', async (req, res) => {
@@ -1047,7 +1047,7 @@ app.use((error:unknown,_req:express.Request,res:express.Response,next:express.Ne
   const type=(error as {type?:string})?.type;
   if(type==='entity.too.large')res.status(413).json({ok:false,code:'invalid_input',error:'Request body exceeds 2MB',retryable:false,nextAction:'Reduce the request body or split it into smaller batches.'});
   else if(type==='entity.parse.failed')res.status(400).json({ok:false,code:'invalid_input',error:'Malformed JSON request',retryable:false,nextAction:'Send a valid JSON request.'});
-  else res.status(500).json({ok:false,code:'internal',error:'HTTP request failed',retryable:false});
+  else failErr(res,error);
 });
 
 // ---- bootstrap ----

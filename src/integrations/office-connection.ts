@@ -4,6 +4,10 @@ import { createHash } from 'node:crypto';
 import {renderOpenCodeSessionPlugin} from './host-correlation.js';
 import { OFFICE_WAIT_MS, OFFICE_TOOL_TIMEOUT_MS, OFFICE_TOOL_TIMEOUT_SECONDS, officeWaitCapacity } from '../core/office-wait-policy.js';
 
+/** Ordinary MCP needs no harness-specific chat metadata. Native chat isolation
+ * is an explicit enhancement, never inferred from a client product name. */
+export const DEFAULT_OFFICE_IDENTITY='connection' as const;
+
 export const OFFICE_CAPABILITIES = {
   version: 'mindpond.office.v1',
   wait: { defaultMs: OFFICE_WAIT_MS, maxMs: OFFICE_WAIT_MS, toolTimeoutMs: OFFICE_TOOL_TIMEOUT_MS, wakesStoppedHost: false, capacity:officeWaitCapacity() },
@@ -34,7 +38,7 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
   const name = o.name ?? 'mindpond_' + compact(o.id.replace(/[^A-Za-z0-9_]/g, '_'));
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(env) || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) throw new Error('Invalid public configuration identifier');
   if (o.sessionLabel && !/^[A-Za-z0-9_.:-]{1,128}$/.test(o.sessionLabel)) throw new Error('Invalid session label');
-  const connectionScoped=o.identityMode==='connection';
+  const connectionScoped=(o.identityMode??DEFAULT_OFFICE_IDENTITY)==='connection';
   const headers:Record<string,string> = connectionScoped?{'X-MindPond-Identity':'connection'}:o.sessionLabel&&!['codex','opencode'].includes(o.host) ? { 'X-MindPond-Session': o.sessionLabel } : {};
   const warnings = [
     ...(url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? ['远程明文 HTTP 会暴露凭据，请改用 HTTPS。'] : []),
@@ -42,7 +46,7 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
   ];
   const memoryName=o.name==='mindpond_office'?'mindpond_memory':compact('mindpond_memory_'+o.id.replace(/[^A-Za-z0-9_]/g,'_'));
   const memoryUrl=memoryMcpEndpoint(o.url);
-  warnings.push(connectionScoped?'通用连接身份：共享这份配置的聊天共享一个角色；需要不同角色时创建独立连接。无需插件，Office 和 Memory 身份一致。':'逐聊天身份：宿主必须提供可靠聊天标识；Codex 原生支持，OpenCode 可安装会话插件。不支持时选择通用连接身份。');
+  warnings.push(connectionScoped?'通用连接身份：共享这份配置的聊天共享一个角色；需要不同角色时创建独立连接。无需插件，Office 和 Memory 身份一致。':'逐聊天身份：需要宿主提供可靠聊天标识，请在实际客户端验证。支持的 Codex 可提供 threadId，OpenCode 可选会话插件；不支持时使用通用连接身份。');
   const base = { env, name,identityMode:connectionScoped?'connection' as const:'native' as const, warnings, capabilities: OFFICE_CAPABILITIES };
   if (o.host === 'codex') return { ...base, place: 'Codex .codex/config.toml', docs: 'https://learn.chatgpt.com/docs/config-file/config-reference',
     text: [name,memoryName].map((entry,i)=>`[mcp_servers.${entry}]\nurl = ${JSON.stringify(i===0?o.url:memoryUrl)}\nbearer_token_env_var = ${JSON.stringify(env)}\ntool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS}\n${connectionScoped?'http_headers = { "X-MindPond-Identity" = "connection" }\n':''}`).join('\n') };
@@ -60,14 +64,14 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
 /** One-time secret download for the role's actual current host. Server names
  * match the host template, including its installed OpenCode session plugin. */
 export function roleConnectionDownload(o:{host:string;connectorId:string;roleId:string;url:string;token:string}){
-  return credentialConnectionDownload({host:o.host,id:o.connectorId,url:o.url,token:o.token,tokenEnv:'MINDPOND_ROLE_TOKEN',filename:'mindpond-role-'+o.roleId.slice(0,8)+'-'+o.host});
+  return credentialConnectionDownload({host:o.host,id:o.connectorId,url:o.url,token:o.token,tokenEnv:'MINDPOND_ROLE_TOKEN',identityMode:'native',filename:'mindpond-role-'+o.roleId.slice(0,8)+'-'+o.host});
 }
 /** Human-requested one-time download; never write the credential into source or logs. */
 export function credentialConnectionDownload(o:{host:string;id:string;url:string;token:string;tokenEnv?:string;identityMode?:'connection'|'native';filename?:string}){
   const template=officeConnection(o);
   let text:string,extension:string,mime:string;
   if(o.host==='codex'){
-    text=template.text.replace(/^http_headers = .*\n/gm,'').replaceAll('bearer_token_env_var = '+JSON.stringify(template.env),'http_headers = { Authorization = '+JSON.stringify('Bearer '+o.token)+(o.identityMode==='connection'?', "X-MindPond-Identity" = "connection"':'')+' }');
+    text=template.text.replace(/^http_headers = .*\n/gm,'').replaceAll('bearer_token_env_var = '+JSON.stringify(template.env),'http_headers = { Authorization = '+JSON.stringify('Bearer '+o.token)+(template.identityMode==='connection'?', "X-MindPond-Identity" = "connection"':'')+' }');
     extension='toml';mime='application/toml';
   }else if(template.config){
     const config=JSON.parse(JSON.stringify(template.config));

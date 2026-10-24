@@ -73,8 +73,7 @@ try {
       issuedAt: 0,
       expiresAt: Number.MAX_SAFE_INTEGER
     };
-    const registry = await graph.offices.registry(operator),
-      old = registry.agents.find((a: any) => a.id === values.agent);
+    const old = await graph.offices.agent(values.agent!,operator);
     const registration = {
       id: values.agent,
       principal: values.principal,

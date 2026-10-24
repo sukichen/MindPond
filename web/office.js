@@ -15,7 +15,7 @@
           n.toString(16).padStart(2, '0')
         ).join('');
   const state = {
-    data: null,
+    data: null, directoryThrough:{}, directoryLoading:false, directoryGeneration:0,
     office: null,
     cursor: 0,
     events: [],
@@ -104,7 +104,7 @@
     const data = await r.json();
     if (!r.ok) { const error=Error(data.code === 'stale_version'
       ? route.endsWith('/delete') ? '资料已被其他操作更新或删除。请重新打开角色或办公室，核对最新内容后再决定是否删除。' : '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。'
-      : data.error ?? '操作失败'); error.status=r.status;error.code=data.code; throw error; }
+      : data.error ?? '操作失败'); error.status=r.status;error.code=data.code;error.nextAction=data.nextAction; throw error; }
     return data;
   }
   function confirmAction(message, {destructive=false,title='确认操作'} = {}) {
@@ -170,23 +170,39 @@
     if (!cfg) { details.append(make('p', '配置暂不可用，请重新登录并刷新连接设置。')); box.append(details); return; }
     selectedMode??=cfg.identityMode??'connection';
     const mode=make('select');for(const [value,title] of [['connection','通用连接身份 · 无需插件'],['native','逐聊天身份 · 需要宿主支持']]){const option=make('option',title);option.value=value;mode.append(option);}mode.value=selectedMode;details.append(label('导出配置的身份范围',mode));
-    mode.addEventListener('change',()=>run(async()=>{const epoch=state.authEpoch;const template=await api('connection-template',{agentId:agent.id,identityMode:mode.value});if(epoch!==state.authEpoch||!state.logged||!details.isConnected)return;const holder=make('div');connectionDetails(agent,holder,mode.value,template);const next=holder.firstElementChild;next.open=true;details.replaceWith(next);},mode));
-    details.append(make('p',selectedMode==='connection'?'无需插件。共享这份配置的聊天共享一个角色；需要不同角色时分别创建连接。':'不同聊天可绑定不同角色；宿主需要提供可靠聊天标识。Codex 使用原生标识，OpenCode 可选下方插件。缺少标识时可改用通用连接身份。'));
+    mode.addEventListener('change',()=>run(async()=>{
+      const epoch=state.authEpoch,requested=mode.value;
+      details.dataset.connectionDraft='true';issue.disabled=true;
+      try{
+        const template=await api('connection-template',{agentId:agent.id,identityMode:requested});
+        if(epoch!==state.authEpoch||!state.logged||!details.isConnected)return;
+        if(details.dataset.configurationStale)throw Error('配置已更新，草稿仍保留。请先核对并重新读取配置。');
+        if(template.identityMode!==requested)throw Error('服务返回的身份范围不一致，请重新读取配置。');
+        const draft=details.dataset.connectionDraft?restrictions.value:null;
+        const holder=make('div');connectionDetails(agent,holder,requested,template);const next=holder.firstElementChild;
+        next.dataset.connectionDraft='true';if(draft!==null)next.querySelector('[data-restrictions]').value=draft;
+        next.open=true;details.replaceWith(next);
+      }catch(error){if(epoch===state.authEpoch&&details.isConnected)mode.value=selectedMode;throw error;}
+      finally{if(epoch===state.authEpoch&&details.isConnected)issue.disabled=!state.data.credentialIssuance||state.data.credentialPolicyError||Boolean(policy?.ambiguous)||Boolean(details.dataset.configurationStale);}
+    },mode));
+    details.append(make('p',selectedMode==='connection'?'无需插件。共享这份配置的聊天共享一个角色；需要不同角色时分别创建连接。':'不同聊天可绑定不同角色；宿主需要提供可靠聊天标识。宿主版本或公司封装可能不提供聊天标识，须实际核对；OpenCode 可选下方插件。缺少标识时可改用通用连接身份。'));
     for(const [filename,source] of Object.entries(cfg.files??{}))details.append(button('下载逐聊天身份插件',async()=>{if(state.logged)download(source,filename.split('/').at(-1));}));
     details.append(make('p','下载的配置包含 Office 和 Memory。合并到宿主设置并重连后，调用 role_sync 和 memory_identity 核对身份。'));
     const advanced=make('details');advanced.append(make('summary','高级：环境变量模板与访问范围'),make('p','连接编号：'+agent.id+' · 账户：'+agent.principal),make('p',cfg.place),make('pre',cfg.text),make('p','上面的模板使用环境变量 '+cfg.env+'；完整配置下载会直接包含凭据。请私下保存配置，不要发给模型或提交仓库。'));
     for(const warning of cfg.warnings)advanced.append(make('p',warning));
-    for(const [filename,source] of Object.entries(cfg.files??{}))advanced.append(make('p','逐聊天模式：将插件保存到项目 '+filename+'，或用户配置目录 plugins/。'),button('下载 OpenCode 会话插件',async()=>{if(!state.logged)return;download(source,filename.split('/').at(-1));}));
+    for(const filename of Object.keys(cfg.files??{}))advanced.append(make('p','逐聊天模式：将上方下载的插件保存到项目 '+filename+'，或用户配置目录 plugins/。'));
     advanced.append(make('p','消息等待最多 5 分钟，调用期限配置为 6 分钟。未绑定的明确连接/聊天使用人类记忆；身份缺失时不会猜测。'));
     if(cfg.docs){const a=make('a','宿主配置文档');a.href=cfg.docs;a.target='_blank';a.rel='noopener noreferrer';advanced.append(a);}
     const policy = state.data.credentialPolicies?.[agent.id];
     const initialRestrictions = (policy?.assignmentIds ?? []).join(',');
     const restrictions = input(initialRestrictions, '仅允许的工位 ID，逗号分隔；清空将解除工位限制');
+    restrictions.dataset.restrictions='';restrictions.addEventListener('input',()=>{details.dataset.connectionDraft='true';});
     advanced.append(label('限制可用分工', restrictions));
     advanced.append(make('p','不需要填写记忆范围。重新生成保留工位限制，清空已有列表会解除限制。'));
     const issue = button(
       agent.state === 'pending' ? '生成并下载完整配置' : '重新生成配置（当前凭据失效）',
       async () => {
+        const epoch=state.authEpoch;
         if (
           agent.state !== 'pending' &&
           !(await confirmAction('重新签发会撤销当前凭据。请在宿主中替换后重连；是否继续？'))
@@ -196,7 +212,8 @@
         const restrictionsChanged = assignmentIds.join(',') !== initialRestrictions;
         if (policy?.assignmentIds?.length && restrictionsChanged && !assignmentIds.length &&
           !(await confirmAction('清空后此凭据可以选择该 agent 的所有已授权工位。确认解除工位限制？'))) return;
-        const epoch=state.authEpoch;
+        if(epoch!==state.authEpoch||!state.logged||!details.isConnected)return;
+        if(details.dataset.configurationStale)throw Error('配置已更新，草稿仍保留。请先核对并重新读取配置。');
         const response = await api('credential', {
           id: agent.id,identityMode:selectedMode,
           expectedRevision: agent.revision,
@@ -211,7 +228,9 @@
         await refresh();
       }
     );
-    issue.disabled = !state.data.credentialIssuance || state.data.credentialPolicyError;
+    issue.dataset.issueCredential='';
+    issue.disabled = !state.data.credentialIssuance || state.data.credentialPolicyError || Boolean(policy?.ambiguous);
+    if(policy?.ambiguous){restrictions.disabled=true;details.append(make('p','此宿主有 '+policy.credentialCount+' 份独立凭据，页面不合并权限或重新签发。请在私有配置中分别管理，或为每份配置登记独立连接。现有接入是否可用以宿主状态为准。'));}
     if (state.data.credentialPolicyError) details.append(make('p', '当前权限配置读取失败，已暂停签发。请先检查服务配置，避免覆盖未知权限。'));
     details.append(issue);
     if (!state.data.credentialIssuance)
@@ -230,45 +249,80 @@
     details.append(advanced);
     box.append(details);
   }
+  function roleChoices(){const loaded=new Map((state.data?.characters?.roles??[]).map(r=>[r.id,r]));return (state.data?.choices?.roles??state.data?.characters?.roles??[]).map(r=>loaded.get(r.id)??r);}
+  function agentChoices(){return state.data?.choices?.agents??state.data?.agents??[];}
+  function directoryFooter(container,kind,page,label='',after){
+    if(!page||page.loaded>=page.total)return;
+    const row=make('div');row.className='office-directory-page';
+    row.append(make('small',`${label?label+' · ':''}已加载 ${page.loaded} / 共 ${page.total}。搜索使用已加载的条目。`));
+    if(page.nextCursor)row.append(button('加载更多'+label,async()=>{
+      if(state.directoryLoading)return;
+      const epoch=state.authEpoch,previous=state.directoryThrough[kind];state.directoryLoading=true;
+      state.directoryThrough={...state.directoryThrough,[kind]:page.nextCursor};
+      try{await refresh();if(epoch===state.authEpoch)await after?.();}
+      catch(error){if(epoch===state.authEpoch)state.directoryThrough={...state.directoryThrough,[kind]:previous};throw error;}
+      finally{if(epoch===state.authEpoch)state.directoryLoading=false;}
+    }));container.append(row);
+  }
+  function restoreProjections(data,previous){
+    for(const key of ['choices','connectionTemplates']){
+      if(data[key]?.unchanged!==true)continue;
+      if(typeof data[key+'Revision']!=='string'||!previous?.[key]||previous[key].unchanged===true||previous[key+'Revision']!==data[key+'Revision'])throw Error('页面缓存与服务状态不一致，请刷新页面重新读取。');
+      data[key]=previous[key];
+    }
+    return data;
+  }
   async function refresh() {
-    const epoch=state.authEpoch, next=await api('state');
-    if(epoch!==state.authEpoch)return;
-    state.data = next;
+    const epoch=state.authEpoch,ticket=++state.directoryGeneration,previous=state.data, next=await api('state',{directoryThrough:state.directoryThrough,selectedOfficeId:state.office?.office.id,choicesRevision:previous?.choicesRevision,connectionTemplatesRevision:previous?.connectionTemplatesRevision});
+    if(epoch!==state.authEpoch||ticket!==state.directoryGeneration)return;
+    state.data = restoreProjections(next,previous);
     // A refresh can update the directory without replacing an open profile draft.
     state.logged = true;startObserver();
     el('officeLogin').hidden = true;
     el('officeSettings').hidden = false;
     state.initializedView = true;
-    el('officeShellStatus').textContent=!state.data.release?.version?'服务版本未提供，请更新并重启服务':state.data.release.version!==UI_VERSION?'页面与服务版本不同，请刷新':'管理已连接 · v'+UI_VERSION;
-    el('officeNavRoomCount').textContent=String(state.data.offices.length);
+    el('officeShellStatus').textContent=!state.data.release?.version?'服务版本未提供，请更新并重启服务':state.data.release.version!==UI_VERSION?'页面与服务版本不同，请刷新':'人类管理已连接 · v'+UI_VERSION;
+    el('officeNavRoomCount').textContent=String(state.data.directory?.offices.total??state.data.offices.length);
     el('officeLoginStatus').textContent = '已登录用户管理';
     el('officeEndpoint').elements.mcpUrl.value = state.data.settings.mcpUrl ?? '';
-    if(!state.agentPrincipalEdited){const principals=[...new Set(state.data.agents.map(a=>a.principal).concat((state.data.characters?.roles??[]).map(r=>r.principal)))];if(principals.length===1)el('officeAgentForm').elements.principal.value=principals[0];}
+    if(!state.agentPrincipalEdited){const principals=[...new Set(agentChoices().map(a=>a.principal).concat(roleChoices().map(r=>r.principal)))];if(principals.length===1)el('officeAgentForm').elements.principal.value=principals[0];}
     renderDiagnostics();
     el('officeInstance').textContent =
       '实例 ' +
       state.data.settings.instanceId +
       ' · 握手记录来自此数据库；记录存在不代表宿主当前仍在运行。';
-    el('officeAgentCount').textContent = state.data.agents.length + ' 个连接';
+    el('officeAgentCount').textContent = (state.data.directory?.agents.total??state.data.agents.length) + ' 个连接';
     renderCharacters(state.data.characters);
     if(!state.data.characters)throw Error('角色信息读取失败，请重新加载页面。');
-    const box = el('officeAgentList');
-    box.replaceChildren();
+    renderAgents();
+    if (state.office && state.data.selectedOffice?.id===state.office.office.id && state.data.selectedOffice.exists===false) {
+      await clearDeletedRoom(state.office.office.id);
+      notice('当前办公室已被删除。');
+    }
+    renderRoomChoices();
+    refreshSeatChoices();
+    renderProjects();
+
+  }
+  function agentStatus(agent){return agent.state==='disabled'?'接入已停用':agent.state==='pending'?'等待配置凭据':agent.discovered_at?'已观测工具发现':agent.last_seen?'已观测连接握手':'尚未观测连接';}
+  function renderAgents(){
+    const box = el('officeAgentList'),previous=new Map([...box.children].filter(n=>n.dataset.connectorId).map(n=>[n.dataset.connectorId,n])),next=[];
     for (const agent of state.data.agents) {
+      const signature=JSON.stringify([agent.revision,state.data.credentialPolicies?.[agent.id],state.data.credentialIssuance,state.data.credentialPolicyError,state.data.connectionTemplates?.[agent.id]]),old=previous.get(agent.id);
+      if(old){old.querySelector('[data-agent]').textContent=agentStatus(agent);const seen=old.querySelector('[data-last-seen]');if(seen)seen.textContent=agent.last_seen?'最近握手 '+new Date(agent.last_seen).toLocaleString():'尚未观察到握手';}
+      if(old?.dataset.signature===signature){next.push(old);continue;}
+      const draft=old?.querySelector('[data-connection-draft]');
+      if(draft){
+        draft.dataset.configurationStale='true';const issue=old.querySelector('[data-issue-credential]');if(issue)issue.disabled=true;
+        if(!old.querySelector('[data-configuration-warning]')){
+          const warning=make('p','连接设置已更新，未保存的草稿仍保留。请核对后重新读取配置。');warning.dataset.configurationWarning='';
+          old.append(warning,button('重新读取配置（放弃草稿）',async()=>{const current=old.querySelector('[data-connection-draft]');if(current)delete current.dataset.connectionDraft;old.dataset.signature='';await refresh();}));
+        }
+        next.push(old);continue;
+      }
       const card = make('article');
-      card.className = 'office-agent';
-      const badge = make(
-        'span',
-        agent.state === 'disabled'
-          ? '已停用'
-          : agent.state === 'pending'
-            ? '待配置凭据'
-            : agent.discovered_at
-              ? '协作工具已发现'
-              : agent.last_seen
-                ? '已收到连接'
-                : '待接入'
-      );
+      card.className = 'office-agent';card.dataset.connectorId=agent.id;card.dataset.signature=signature;
+      const badge=make('span',agentStatus(agent));
       badge.className = 'office-pill';
       badge.dataset.agent = agent.id;
       card.append(
@@ -276,8 +330,7 @@
         badge,
         make('p',hostNames[agent.host]??'HTTP MCP')
       );
-      if (agent.last_seen)
-        card.append(make('p', '最近握手 ' + new Date(agent.last_seen).toLocaleString()));
+      const seen=make('p',agent.last_seen?'最近握手 '+new Date(agent.last_seen).toLocaleString():'尚未观察到握手');seen.dataset.lastSeen='';card.append(seen);
       if (agent.state === 'disabled')
         card.append(make('p', '已停用。历史连接记录不代表仍有权限。'));
       connectionDetails(agent, card);
@@ -300,18 +353,13 @@
         notice(result.credentialCleanupPending?'连接已删除，访问已撤销。私有凭据文件清理未完成，请检查配置文件权限或稍后重试管理删除。':'宿主连接已删除，访问已撤销。',Boolean(result.credentialCleanupPending));
       });remove.className='office-danger';card.append(remove);
       card.append(button('查看删除影响',()=>window.MindPondOfficeCollaboration?.deleteImpact?.('agent',agent.id)));
-      box.append(card);
+      next.push(card);
     }
+    for(const child of [...box.children])if(!next.includes(child))child.remove();
+    next.forEach((card,index)=>{if(box.children[index]!==card)box.insertBefore(card,box.children[index]??null);});
     if (!state.data.agents.length)
       box.append(make('p', '还没有宿主连接。填写名称、账户和宿主即可登记。'));
-    if (state.office && !state.data.offices.some(room=>room.id===state.office.office.id)) {
-      await clearDeletedRoom(state.office.office.id);
-      notice('当前办公室已被删除。');
-    }
-    renderRoomChoices();
-    refreshSeatChoices();
-    renderProjects();
-
+    directoryFooter(box,'agents',state.data.directory?.agents);
   }
   function renderDiagnostics(){
     const box=el('officeDiagnostics');box.replaceChildren(make('h3','连接诊断'));
@@ -321,18 +369,18 @@
       const roleList=(state.data.characters?.roles??[]).filter(r=>r.connection?.connectorId===agent.id);
       const policy=state.data.credentialPolicies?.[agent.id];
       const row=make('article');row.className='office-item';
-      row.append(make('strong',agent.name),make('p',`接入：${states[agent.state]??agent.state} · 已批准角色 ${roleList.length} 个`),make('p',agent.last_seen?'最近握手：'+new Date(agent.last_seen).toLocaleString():'尚未观察到握手'),make('p',agent.discovered_at?'工具发现：'+new Date(agent.discovered_at).toLocaleString():'尚未观察到协作工具发现'));
-      row.append(make('p',policy?`协作连接策略已读取；办公室限制：${policy.assignmentIds===null?'未额外限制':policy.assignmentIds.length+' 个工位'}。角色记忆通过独立 Memory 连接访问。`:state.data.credentialPolicyError?'凭据策略读取失败，请检查私有配置权限。':'此 Web 进程未发现对应凭据策略；不据此推断 MCP 进程未配置。'));
+      row.append(make('strong',agent.name),make('p',`接入：${states[agent.state]??agent.state} · 当前绑定角色 ${agent.roleCount??roleList.length} 个`),make('p',agent.last_seen?'最近握手：'+new Date(agent.last_seen).toLocaleString():'尚未观察到握手'),make('p',agent.discovered_at?'工具发现：'+new Date(agent.discovered_at).toLocaleString():'尚未观察到协作工具发现'));
+      row.append(make('p',policy?.ambiguous?'此宿主有多份独立凭据，各自保留身份与权限；快捷签发已停用。':policy?`协作连接策略已读取；办公室限制：${policy.assignmentIds===null?'未额外限制':policy.assignmentIds.length+' 个工位'}。角色记忆通过独立 Memory 连接访问。`:state.data.credentialPolicyError?'凭据策略读取失败，请检查私有配置权限。':'此 Web 进程未发现对应凭据策略；不据此推断 MCP 进程未配置。'));
       for(const report of (state.data.hostReports??[]).filter(h=>roleList.some(r=>r.id===h.role_id&&r.binding_id===h.binding_id))){const p=JSON.parse(report.payload);row.append(make('p',`宿主自检：${p.client} · 角色 ${roleList.find(r=>r.id===report.role_id)?.name??report.role_id} · 服务端实等 ${(p.measuredWaitMs/1000).toFixed(1)} 秒 · ${p.clientReceived?'宿主已确认收到结果':'尚未确认收到结果'} · ${Date.now()-report.observed_at>120000?'当前运行未知':'最近有通信证据'}`));}
       row.append(button('下载宿主自检指引',()=>download('在需要验证的聊天中调用 office_host action=probe，waitMs=300000。收到 probeId 后调用 action=confirm、probeId 和 clientRoundTripMs。或在该宿主环境使用 mindpond-office-doctor --url <MCP地址> --token-env <秘密环境变量名> --session <原会话标识> --long-wait。不要把凭据发到聊天。不同客户端须分别实测。',agent.id+'-doctor.txt')));
       for(const warning of state.data.connectionTemplates?.[agent.id]?.warnings??[])row.append(make('p',warning));
       box.append(row);
     }
-    box.append(make('p','角色记忆只对当前绑定的角色开放。人类添加的知识是保留来源的独立副本；成员可读取办公室知识；私人记忆与文件不会随成员资格共享。'));
+    box.append(make('p','绑定角色的聊天只访问自身和当前有权限的办公室记忆；已识别且未绑定角色的聊天按人类权限访问全部记忆。缺少可靠身份时会明确报错。成员资格不共享私人记忆或文件。'));
   }
   function renderRoomChoices() {
     const box = el('officeRoomList'); box.replaceChildren();
-    el('officeNavRoomCount').textContent=String(state.data?.offices.length??0);
+    el('officeNavRoomCount').textContent=String(state.data?.directory?.offices.total??state.data?.offices.length??0);
     const rooms = state.data?.offices ?? [], query = state.roomQuery.trim().toLocaleLowerCase();
     const matches = rooms.filter(room => !query || [room.title, room.goal, room.id].join(' ').toLocaleLowerCase().includes(query));
     for (const room of matches) {
@@ -349,7 +397,8 @@
       }
       box.append(row);
     }
-    if (!matches.length) box.append(make('p', rooms.length ? '没有匹配的办公室。' : '还没有办公室。可以直接创建一个空房间。'));
+    directoryFooter(box,'offices',state.data?.directory?.offices);
+    if (!matches.length) box.append(make('p', rooms.length ? '已加载的办公室中没有匹配项。' : '还没有办公室。可以直接创建一个空房间。'));
   }
   function refreshSeatChoices() {
     for (const row of el('officeSeatRows').children) {
@@ -365,12 +414,11 @@
     }
   }
   function seatChoices() {
-    return (state.data?.characters?.roles ?? []).filter(r => r.state === 'active')
-      .map(r => ({ value: r.id, name: r.name + ' · ' + r.introduction.slice(0, 40) }));
+    return roleChoices().filter(r => r.state === 'active').map(r=>({value:r.id,name:r.name+(r.introduction?' · '+r.introduction.slice(0,40):'')}));
   }
   function chatLabel(record) {
     const chat=record.chat??(record.native_chat_id?{source:record.chat_source,id:record.native_chat_id}:null);
-    const host=state.data?.agents?.find(a=>a.id===(record.connector_id??record.connectorId));
+    const host=agentChoices().find(a=>a.id===(record.connector_id??record.connectorId))??{name:record.connector_name??record.name,host:record.host};
     return {chat,name:host?.name??record.name??'宿主连接',source:hostNames[chat?.source==='connection'?host?.host:chat?.source??host?.host]??'HTTP MCP'};
   }
   function chatLocator(record) {
@@ -380,7 +428,7 @@
     else if(chat){
       const id=input(chat.id);id.readOnly=true;id.setAttribute('aria-label',source+' 聊天 ID');id.className='office-chat-id';
       box.append(label('真实聊天 ID',id),button('复制聊天 ID',async()=>{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(chat.id);notice('已复制聊天 ID。');}else{id.focus();id.select();notice('已选中聊天 ID，请按 Ctrl+C 复制。');}}));
-      box.append(make('p',chat.source==='codex'?'在 Codex 的聊天记录中核对这个 threadId；命令行可用 codex resume '+chat.id:'在 OpenCode 中核对这个 sessionID；命令行可用 opencode --session '+chat.id));
+      box.append(make('p',chat.source==='codex'?'在 Codex 的聊天记录或宿主提供的会话信息中核对这个 threadId。':'在 OpenCode 的会话信息中核对这个 sessionID。'));
     }else box.append(make('p','暂未取得真实聊天 ID。请在目标聊天调用 role_sync 更新信息；不要用聊天关联哈希猜测会话。'));
     return box;
   }
@@ -395,10 +443,10 @@
   }
   function renderCharacters(data) {
     if (!data) return;
-    const pending = el('officeApplications'), list = el('officeCharacterList');
+    const pending = el('officeApplications');
     const selected=new Map([...pending.querySelectorAll('[data-request-id]')].map(card=>[card.dataset.requestId,card.querySelector('select')?.value]));
-    pending.replaceChildren(); list.replaceChildren();
-    const awaiting=data.pending.length+(data.connections?.length??0);
+    pending.replaceChildren();
+    const awaiting=(data.directory?.pending.total??data.pending.length)+(data.directory?.connections.total??data.connections?.length??0);
     el('officePendingCount').textContent = awaiting;
     el('officeNavPending').textContent=String(awaiting);el('officeNavPending').hidden=!awaiting;
     for (const app of data.pending) {
@@ -410,7 +458,7 @@
     if (!awaiting) pending.append(make('p', '没有待审核申请或待激活聊天。'));
     for(const request of data.connections??[]){
       const card=make('article'),select=document.createElement('select');card.className='office-activation-card';card.dataset.requestId=request.id;
-      const roles=data.roles.filter(r=>r.state==='active'&&r.principal===request.principal);
+      const roles=roleChoices().filter(r=>r.state==='active'&&r.principal===request.principal);
       const {chat,source,name}=chatLabel(request);
       select.setAttribute('aria-label','为 '+source+' 聊天选择角色');select.append(new Option('请选择已有角色',''));
       for(const role of roles)select.append(new Option(role.name,role.id));
@@ -427,27 +475,30 @@
       if(!roles.length)card.append(make('p','此账户尚无可用角色。可以让该聊天申请角色，再在这里批准。'));
       const detail=document.createElement('details');detail.append(make('summary','诊断信息'),make('p','请求编号：'+request.id),make('p','宿主连接：'+request.connector_id));card.append(detail);pending.append(card);
     }
+    directoryFooter(pending,'pending',data.directory?.pending,'角色申请');
+    directoryFooter(pending,'connections',data.directory?.connections,'连接激活');
     renderRoleDirectory();
     const form = el('officeRoleLink');
     for (const name of ['sender', 'recipient']) {
       const select = form.elements[name], old = select.value;select.replaceChildren();
-      for (const r of data.roles.filter(r => r.state === 'active')) { const o = make('option', r.name + ' · ' + r.principal);o.value = r.id;select.append(o); }
+      for (const r of roleChoices().filter(r => r.state === 'active')) { const o = make('option', r.name + ' · ' + r.principal);o.value = r.id;select.append(o); }
       if ([...select.options].some(o => o.value === old)) select.value = old;
     }
     const links=el('officeRoleLinks');links.replaceChildren();
-    const nameOf=id=>data.roles.find(r=>r.id===id)?.name??id;
+    const nameOf=id=>roleChoices().find(r=>r.id===id)?.name??id;
     for(const link of data.links??[]) {
       const row=make('p',nameOf(link.sender)+' → '+nameOf(link.recipient)+' ');
       row.append(button('撤销这个方向',async()=>{await api('role/link',{...link,enabled:false});await refresh();}));links.append(row);
     }
     if(!data.links?.length)links.append(make('p','尚无跨账户授权；同账户默认可通信。'));
-    const events=el('officeRoleEvents');events.replaceChildren();
+    const events=el('officeRoleEvents'),openEvents=new Set([...events.querySelectorAll('details[open]')].map(n=>n.dataset.eventSeq));events.replaceChildren();
     for(const event of data.events) {
-      const row=make('details');row.append(make('summary',new Date(event.ts).toLocaleString()+' · '+event.kind),make('pre',JSON.stringify(event.body,null,2)));events.append(row);
+      const row=make('details');row.dataset.eventSeq=String(event.seq);row.open=openEvents.has(String(event.seq));row.append(make('summary',new Date(event.ts).toLocaleString()+' · '+event.kind),make('pre',JSON.stringify(event.body,null,2)));events.append(row);
     }
-    const messages = el('officeRoleMessages');messages.replaceChildren();
+    const messages = el('officeRoleMessages'),openMessages=new Set([...messages.querySelectorAll('details[open]')].map(n=>n.dataset.messageId));messages.replaceChildren();
     for (const m of data.messages) {
       const card = make('details'), summary = make('summary', `${m.sender_name ?? nameOf(m.sender)} → ${m.recipient_name ?? nameOf(m.recipient)} · ${m.kind} · ${mailStates[m.state]??m.state}`);
+      card.dataset.messageId=m.id;card.open=openMessages.has(m.id);
       card.append(summary, make('p', new Date(m.created_at).toLocaleString() + ' · ' + m.id), window.MindPondOfficeMarkdown.render(m.body));
       if(m.bodyTruncated)card.append(make('p','此处是正文摘要。'));
       if(m.completion)card.append(make('h4','处理反馈'),window.MindPondOfficeMarkdown.render(m.completion));
@@ -467,7 +518,7 @@
   const hostNames={codex:'Codex',opencode:'OpenCode',claude:'Claude Code','generic-http-mcp':'HTTP MCP'};
   function roleConnectionLabel(role){
     const c=role.connection;
-    return c?`${hostNames[c.chat?.source??c.host]??'HTTP MCP'} · ${c.name} · ${c.chat&&c.chat.source!=='connection'?'逐聊天身份':'连接共享身份'}${c.hostState==='active'?'':' · 宿主已停用'}`:'未连接聊天';
+    return c?`${hostNames[c.chat?.source??c.host]??'HTTP MCP'} · ${c.name} · ${c.chat?.source==='connection'?'连接共享身份':c.chat?.source?'逐聊天身份':'聊天标识未记录'}${c.hostState==='active'?'':' · 宿主已停用'}`:'未连接聊天';
   }
   let roleConnectionGeneration=0;
   async function switchRoleConnection(record){
@@ -477,17 +528,18 @@
     const dialog=el('officeRoleConnection'),body=el('officeRoleConnectionBody');body.replaceChildren(make('p','读取可用聊天…'));
     dialog.showModal();
     try{
-      const data=await api('role/state',{});
+      const data=await api('role/state',{directoryThrough:state.directoryThrough});
       if(generation!==roleConnectionGeneration||epoch!==state.authEpoch||!state.logged||!dialog.open)return;
       const role=data.roles.find(r=>r.id===record.id&&r.state==='active');if(!role)throw Error('角色已变化，请刷新角色目录。');
       body.replaceChildren(make('h3',role.name),make('p','当前连接：'+roleConnectionLabel(role)),make('p','账户：'+role.principal+'。目标宿主连接须登记在同一账户下。'),make('p','先在目标连接调用 role_sync，再核对宿主名称及身份范围。逐聊天模式还需核对真实聊天 ID。'));
       const select=document.createElement('select'),targetInfo=make('div');select.append(new Option('请选择目标连接或聊天',''));
       const requests=[...(data.chats??[]).map(r=>({...r,targetId:r.runtime_id})),...(data.connections??[]).filter(r=>!(data.chats??[]).some(c=>c.runtime_id===r.runtime_id)).map(r=>({...r,targetId:r.id,requestId:r.id}))].filter(r=>r.principal===role.principal);
-      for(const request of requests){const host=state.data.agents.find(a=>a.id===request.connector_id);if(!host)continue;const option=new Option(`${hostNames[request.chat_source==='connection'?host.host:request.chat_source??host.host]??'HTTP MCP'} · ${host.name} · ${request.chat_source==='connection'?'连接共享身份':request.native_chat_id??'激活编号 '+request.id}${request.role_id===role.id?' · 当前连接':request.role_id?' · 已连接「'+request.role_name+'」':host.state!=='active'?' · 宿主已停用':' · 可连接'}`,request.targetId);option.disabled=Boolean(request.role_id)||host.state!=='active';select.append(option);}
+      for(const request of requests){const host=agentChoices().find(a=>a.id===request.connector_id)??{id:request.connector_id,name:request.connector_name??request.connector_id,host:request.host,state:request.host_state};const option=new Option(`${hostNames[request.chat_source==='connection'?host.host:request.chat_source??host.host]??'HTTP MCP'} · ${host.name} · ${request.chat_source==='connection'?'连接共享身份':request.native_chat_id??'激活编号 '+request.id}${request.role_id===role.id?' · 当前连接':request.role_id?' · 已连接「'+request.role_name+'」':host.state!=='active'?' · 宿主已停用':' · 可连接'}`,request.targetId);option.disabled=Boolean(request.role_id)||host.state!=='active';select.append(option);}
+      for(const kind of ['chats','connections'])directoryFooter(body,kind,data.directory?.[kind],kind==='chats'?'聊天记录':'连接激活',()=>{if(dialog.open&&generation===roleConnectionGeneration)return switchRoleConnection(role);});
       const error=make('p','');error.className='office-inspector-error';error.setAttribute('role','alert');error.hidden=true;
       const save=button('确认切换连接',async()=>{
         const request=requests.find(r=>r.targetId===select.value);if(!request)throw Error('请选择目标连接或聊天');
-        const host=state.data.agents.find(a=>a.id===request.connector_id);
+        const host=agentChoices().find(a=>a.id===request.connector_id)??{id:request.connector_id,name:request.connector_name??request.connector_id,host:request.host,state:request.host_state};
         if(!await confirmAction(`请核对目标${request.chat_source==='connection'?'连接名称 '+host?.name:'聊天 ID '+(request.native_chat_id??request.id)}。将「${role.name}」切换到「${host?.name??request.connector_id}」后，原聊天解除角色绑定，成为人类聊天；角色专用凭据撤销，知识、消息和办公室分工保留。`))return;
         if(generation!==roleConnectionGeneration||epoch!==state.authEpoch||!dialog.open)return;
         dialog.dataset.saving='true';save.disabled=true;select.disabled=true;el('officeRoleConnectionClose').disabled=true;
@@ -505,7 +557,7 @@
     const focused = document.activeElement?.closest('.office-character-card')?.dataset.roleId;
     list.replaceChildren();
     const roles = filteredRoles();
-    el('officeRoleCount').textContent = `${roles.length} / ${state.data?.characters?.roles.length ?? 0} 个角色`;
+    el('officeRoleCount').textContent = `当前匹配 ${roles.length} · 已加载 ${state.data?.characters?.roles.length??0} / 共 ${state.data?.characters?.directory?.roles.total??state.data?.characters?.roles.length??0} 个角色`;
     for (const role of roles) {
       const card = button('', () => openRoleInspector(role));
       card.className = 'office-character-card';
@@ -521,6 +573,7 @@
       card.append(heading, status, make('span', roleConnectionLabel(role), 'office-role-connection'), make('p', role.introduction), make('small', `${role.principal} · ${places ? places + ' 个工位' : '未安排办公室'}`));
       list.append(card);
     }
+    directoryFooter(list,'roles',state.data?.characters?.directory?.roles);
     list.scrollTop = scrollTop;
     if (focused) [...list.children].find(n => n.dataset.roleId === focused)?.focus({preventScroll: true});
     if (!roles.length) {
@@ -541,7 +594,7 @@
   async function deleteCharacter(record) {
     const draft=state.roleDraft, epoch=state.authEpoch;
     if (!draft || draft.saving) return;
-    if (!(await confirmAction(`永久删除角色「${record.name}」？这会删除角色资料、会话绑定、接续摘要、工作任务及其历史、角色收发的私信，撤销所有工位权限，并取消该角色参与的未完成任务。办公室历史材料与操作审计保留。删除后无法恢复。`,{destructive:true,title:'永久删除角色'}))) return;
+    if (!(await confirmAction(`永久删除角色「${record.name}」？这会删除角色资料、会话绑定、接续摘要、工作任务及其历史、角色收发的私信、相关临时讨论、角色脚本和退会通知草稿，撤销所有工位权限，并取消该角色参与的未完成任务。办公室历史材料与操作审计保留。删除后无法恢复。`,{destructive:true,title:'永久删除角色'}))) return;
     if (epoch!==state.authEpoch || !state.logged || state.roleDraft!==draft) return;
     draft.saving=true;
     const fields=[...el('officeRoleInspectorBody').querySelectorAll('input,textarea,button')];
@@ -556,7 +609,7 @@
   }
   async function deleteRoom(record) {
     const epoch=state.authEpoch;
-    if (!(await confirmAction(`永久删除办公室「${record.title}」？该办公室的消息、文本材料、容器、任务及历史记录会一并删除，所有工位访问立即失效。角色本身、其他办公室和个人记忆保留。此操作无法撤销。`,{destructive:true,title:'永久删除办公室'}))) return;
+    if (!(await confirmAction(`永久删除办公室「${record.title}」？该办公室的消息、文本材料、容器、任务及历史记录、临时讨论、共享脚本和退会通知草稿会一并删除，所有工位访问立即失效。角色本身、其他办公室和个人记忆保留。此操作无法撤销。`,{destructive:true,title:'永久删除办公室'}))) return;
     if (epoch!==state.authEpoch || !state.logged) return;
     await api('office/delete',{id:record.id,expectedRevision:record.revision});
     if (epoch!==state.authEpoch) return;
@@ -616,7 +669,7 @@
       const workTab=button('接续工作',()=>selectView('work')),profileTab=button('角色资料',()=>selectView('profile')),scriptTab=button('专属脚本',()=>selectView('scripts'));
       function selectView(view){profile.hidden=view!=='profile';working.hidden=view!=='work';scripts.hidden=view!=='scripts';for(const [button,name] of [[workTab,'work'],[profileTab,'profile'],[scriptTab,'scripts']])button.setAttribute('aria-pressed',String(view===name));if(view==='scripts'&&!libraryMounted){libraryMounted=true;const epoch=state.authEpoch;window.MindPondOfficeResources?.library({container:scripts,scope:{roleId:record.id},api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===epoch,notice,confirmAction,download});}}
       tabs.append(workTab,profileTab,scriptTab);body.insertBefore(tabs,profile);body.insertBefore(working,profile);body.insertBefore(scripts,profile);selectView('work');initialFocus=workTab;
-      const continuityEpoch=state.authEpoch;window.MindPondRoleContinuity?.mount({container:working,role:record,offices:state.data.offices,api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===continuityEpoch,notice,confirmAction});
+      const continuityEpoch=state.authEpoch;window.MindPondRoleContinuity?.mount({container:working,role:record,offices:state.data.choices?.offices??state.data.offices,api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===continuityEpoch,notice,confirmAction});
     }
     form.addEventListener('input', () => {draft.dirty = true;state.roleEditing = true;save.textContent = application ? '批准这个角色' : '保存修改';});
     const actions = make('div');actions.className = 'office-dialog-actions';
@@ -895,7 +948,7 @@
     const members = el('officeProjectMembers'),
       selected = [...members.selectedOptions].map((o) => o.value);
     members.replaceChildren();
-    for (const a of state.data.agents) {
+    for (const a of agentChoices()) {
       const option = make('option', a.name);
       option.value = a.id;
       option.selected = selected.includes(a.id);
@@ -909,19 +962,15 @@
     pick.append(none);
     const box = el('officeProjectList');
     box.replaceChildren();
+    for(const p of state.data.choices?.projects??state.data.projects??[]){if(p.enabled){const option=make('option',p.title);option.value=p.id;pick.append(option);}}
     for (const p of state.data.projects ?? []) {
-      if (p.enabled) {
-        const option = make('option', p.title);
-        option.value = p.id;
-        pick.append(option);
-      }
       const n = make('article');
       n.className = 'office-item';
       n.append(
         make('strong', p.title + ' · ' + (p.enabled ? '已启用' : '已停用')),
         make(
           'p',
-          p.members.map((id) => state.data.agents.find((a) => a.id === id)?.name ?? id).join(' / ')
+          p.members.map((id) => agentChoices().find((a) => a.id === id)?.name ?? id).join(' / ')
         ),
         button('修改成员', () => {
           state.editingProject = p;
@@ -941,6 +990,7 @@
       );
       box.append(n);
     }
+    directoryFooter(box,'projects',state.data.directory?.projects,'项目');
     if ([...pick.options].some((o) => o.value === old)) pick.value = old;
   }
   function addSeat(data) {
@@ -1002,7 +1052,7 @@
 
   }
   function seatName(id) {
-    return state.office?.seats.find((s) => s.id === id)?.label ?? state.data?.characters?.roles.find(r=>r.id===id)?.name ?? id ?? '用户';
+    return state.office?.seats.find((s) => s.id === id)?.label ?? roleChoices().find(r=>r.id===id)?.name ?? id ?? '用户';
   }
   function fileCondition(seat) {
     const observation = state.office?.access?.find((a) => a.seatId === seat.id);
@@ -1011,7 +1061,7 @@
   }
   function characterForSeat(seat) {
     const mapping=state.data?.characters?.mappings.find(m=>m.seat_id===seat.id);
-    return state.data?.characters?.roles.find(r=>r.id===mapping?.role_id);
+    return roleChoices().find(r=>r.id===mapping?.role_id);
   }
   function openOfficeDetail() {
     const dialog = el('officeDetailDialog');
@@ -1096,9 +1146,9 @@
       summary.append(badge,make('strong',`${m.senderName} → ${m.recipientName}`),make('small',new Date(m.sentAt).toLocaleString()));
       row.append(summary,window.MindPondOfficeMarkdown.render(m.body));
       if(m.bodyTruncated)row.append(make('p','此处为摘要。打开完整消息查看全部正文。'));
-      if(m.metadata?.recovery)row.append(make('p','人类已中止本次处理 · '+m.metadata.recovery.reason));
       if(m.state==='processing')row.append(button('中止 / 重新安排',()=>window.MindPondOfficeOperations?.recover(m)));
       if(m.result)row.append(make('h4','处理反馈'),window.MindPondOfficeMarkdown.render(m.result));
+      if(m.resultTruncated)row.append(make('p','处理反馈为摘要。打开完整消息查看全部反馈。'));
       row.append(button('打开完整消息',async()=>{const room=state.office.office.id,generation=state.generation;const r=await api('message',{officeId:room,messageId:m.id});if(generation===state.generation&&state.logged)showDetail('消息 · '+(mailStates[r.message.state]??r.message.state),r.message);}));
       row.append(button('查看相关经验',()=>window.MindPondOfficeCollaboration?.openLearning?.(m.id)));
       row.append(button('查看后续回复',()=>loadMail({threadId:m.id,reset:true})));
@@ -1193,8 +1243,8 @@
       );
     const removeOffice=button('永久删除办公室',()=>deleteRoom(o));removeOffice.className='office-danger';
     controls.append(button('查看删除影响',()=>window.MindPondOfficeCollaboration?.deleteImpact?.('office',o.id)),removeOffice);
-    const people=el('officeMessagePerson');if(people){const selected=people.value;people.replaceChildren(new Option('全部人物',''),...(state.data.characters?.roles??[]).map(r=>new Option(r.name,r.id)));people.value=selected;}
-    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, data.facilities?.activity?.map(r=>[Boolean(r.hostSeenAt&&Date.now()-r.hostSeenAt<120000),Boolean(r.presenceAt&&Date.now()-r.presenceAt<120000)]), state.data.characters?.roles.map(r => [r.id, r.name, r.state])]);
+    const people=el('officeMessagePerson');if(people){const selected=people.value;people.replaceChildren(new Option('全部人物',''),...roleChoices().map(r=>new Option(r.name,r.id)));people.value=selected;}
+    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, data.facilities?.activity?.map(r=>[Boolean(r.hostSeenAt&&Date.now()-r.hostSeenAt<120000),Boolean(r.presenceAt&&Date.now()-r.presenceAt<120000)]), roleChoices().map(r => [r.id, r.name, r.state])]);
     if (state.deskSnapshot !== deskSnapshot) {
       state.deskSnapshot = deskSnapshot;
       const focusedSeat = document.activeElement?.closest('[data-seat]')?.dataset.seat;
@@ -1235,7 +1285,7 @@
             : activity?.discussionTitle
             ? '讨论中：'+activity.discussionTitle
             : processing
-            ? `正在处理 ${processing} 条消息`
+            ? `已领取 ${processing} 条消息（待反馈）`
             : wait
               ? '最近报告：等待回复（窗口内）'
               : task
@@ -1247,22 +1297,22 @@
           shared
             ? `自报共享副本 · ${access.group ?? '未分组'}`
             : access?.mode === 'separate_clone'
-              ? '独立仓库副本'
+              ? '自报：独立仓库副本'
               : access?.mode === 'text_only'
-                ? '仅文本中转'
+                ? '自报：仅文本中转'
                 : '文件条件待确认'
         )
       );
       const pending=Number(activity?.pending??0);
       const presence=activity?.presence?JSON.parse(activity.presence):null;
-      if(presence){if(Date.now()-activity.presenceAt<120000)node.dataset.phase=presence.phase;body.append(make('small','最近角色报告（'+new Date(activity.presenceAt).toLocaleTimeString()+'）：'+({working:'处理事情',waiting_reply:'等待对方反馈',needs_user:'需要用户补充信息',learning:'整理经验',resting:'休息',unknown:'状态未确认'})[presence.phase]));}
-      body.append(make('small',activity?.hostSeenAt&&Date.now()-activity.hostSeenAt<120000?'最近有宿主通信证据':'宿主运行状态未知'));
+      if(presence){if(Date.now()-activity.presenceAt<120000)node.dataset.phase=presence.phase;body.append(make('small','角色自报（'+new Date(activity.presenceAt).toLocaleTimeString()+'）：'+({working:'处理事情',waiting_reply:'等待对方反馈',needs_user:'需要用户补充信息',learning:'整理经验',resting:'休息',unknown:'状态未确认'})[presence.phase]));}
+      body.append(make('small',activity?.hostSeenAt&&Date.now()-activity.hostSeenAt<120000?'服务端观测：最近有通信':'服务端观测：当前宿主运行未知'));
       const station=window.MindPondOfficeScene.props(person);
       if(!disabled&&(task||processing))person.dataset.facing='desk';
       const papers=station.querySelector('.office-paper-stack');
       papers.style.setProperty('--paper-count',Math.min(12,pending));papers.hidden=!pending;
       if(pending){papers.textContent=String(pending);body.append(make('small',`待处理消息 ${pending} 条`));}
-      if(activity?.waitingUntil>Date.now())body.append(make('small','正在等待消息（等待窗口内）'));
+      if(activity?.waitingUntil>Date.now())body.append(make('small','服务端记录：等待消息中'));
       body.title=[...body.children].map(n=>n.textContent).join('\n');
       node.append(station, body);
       desks.append(node);
@@ -1499,6 +1549,9 @@
       renderOffice();
       if(state.mail?.room===data.office.id&&!state.mailLoading&&old.facilities?.revision!==state.office.facilities?.revision)await loadMail({refresh:true});
       if (isLive) animate(data.events);
+    } catch(error){
+      if(error.code==='not_found'&&generation===state.generation&&state.logged){const id=state.office.office.id,epoch=state.authEpoch,status=await api('state',{selectedOfficeId:id,directoryThrough:state.directoryThrough,roleAfterSeq:state.data?.characters?.revision});if(generation!==state.generation||epoch!==state.authEpoch)return;if(status.selectedOffice?.id===id&&status.selectedOffice.exists===false){await clearDeletedRoom(id);notice('当前办公室已被删除。');}else throw error;}
+      else throw error;
     } finally {
       if (generation === state.generation) state.loading = false;
     }
@@ -1522,35 +1575,24 @@
       if (state.logged && !document.hidden) {
         try {
           const owner = state.data;
-          const data = await api('state', { roleAfterSeq: owner?.characters?.revision });
+          const data = await api('state', { roleAfterSeq: owner?.characters?.revision,roleDirectoryRevision:owner?.characters?.directoryRevision,choicesRevision:owner?.choicesRevision,connectionTemplatesRevision:owner?.connectionTemplatesRevision,directoryThrough:state.directoryThrough,selectedOfficeId:state.office?.office.id });
           if (epoch !== state.authEpoch || !state.logged) return;
           // A manual refresh may have completed while this poll was in flight.
           // Never replace it with a stale response, or erase profile form edits.
           if (state.data !== owner) { state.observerDirty=true;return; }
+          restoreProjections(data,owner);
           const changed = data.characters && !data.characters.unchanged;
-          const changedRooms = Array.isArray(data.offices) && JSON.stringify(data.offices)!==JSON.stringify(owner?.offices);
+          const changedRooms = Array.isArray(data.offices) && (JSON.stringify(data.offices)!==JSON.stringify(owner?.offices)||JSON.stringify(data.directory?.offices)!==JSON.stringify(owner?.directory?.offices));
           if (!changed) data.characters = owner?.characters;
           state.data = data;
           if (changed) { renderCharacters(data.characters); refreshSeatChoices(); }
-          for (const badge of el('officeAgentList').querySelectorAll('[data-agent]')) {
-            const a = data.agents.find((a) => a.id === badge.dataset.agent);
-            if (a)
-              badge.textContent =
-                a.state === 'disabled'
-                  ? '已停用'
-                  : a.state === 'pending'
-                    ? '待配置凭据'
-                    : a.discovered_at
-                      ? '协作工具已发现'
-                      : a.last_seen
-                        ? '已收到连接'
-                        : '待接入';
-          }
-          if (state.office && Array.isArray(data.offices) && !data.offices.some(room=>room.id===state.office.office.id)) {
+          if(JSON.stringify(data.agents)!==JSON.stringify(owner?.agents)||JSON.stringify(data.directory?.agents)!==JSON.stringify(owner?.directory?.agents)||data.connectionTemplatesRevision!==owner?.connectionTemplatesRevision||JSON.stringify(data.credentialPolicies)!==JSON.stringify(owner?.credentialPolicies)||data.credentialPolicyError!==owner?.credentialPolicyError||data.credentialIssuance!==owner?.credentialIssuance){renderAgents();el('officeAgentCount').textContent=(data.directory?.agents.total??data.agents.length)+' 个连接';}
+          if (state.office && data.selectedOffice?.id===state.office.office.id && data.selectedOffice.exists===false) {
             await clearDeletedRoom(state.office.office.id);
             notice('当前办公室已在其他页面被删除。');
           }
           if (changedRooms) renderRoomChoices();
+          if(JSON.stringify(data.projects)!==JSON.stringify(owner?.projects)||JSON.stringify(data.directory?.projects)!==JSON.stringify(owner?.directory?.projects)||JSON.stringify(data.choices?.agents)!==JSON.stringify(owner?.choices?.agents))renderProjects();
           await updateOffice();
           if(state.appView==='officeSetup')renderDiagnostics();
           if (state.pollFailed) {
@@ -1614,9 +1656,8 @@
   });
   submit('officeRoomForm', async (data) => {
     const seats = [...el('officeSeatRows').children].map((n) => {
-      const choice=n.querySelector('[name=roleId]').value;
-      const roleId=choice;
-      const character=state.data.characters?.roles.find(r=>r.id===roleId);
+      const roleId=n.querySelector('[name=roleId]').value;
+      const character=roleChoices().find(r=>r.id===roleId);
       return ({
       id: n.dataset.id,
       roleId,
@@ -1668,7 +1709,7 @@
       state.generation++;
       state.logged = false;window.MindPondOfficeOperations?.reset?.();
       clearTimeout(state.poll);
-      state.data = null;
+      state.data = null;state.directoryThrough={};state.directoryGeneration++;state.directoryLoading=false;
       state.office = null;
       window.MindPondOfficeCollaboration?.reset?.();window.MindPondOfficeResources?.reset?.();
       state.events = [];

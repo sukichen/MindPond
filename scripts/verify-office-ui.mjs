@@ -30,6 +30,8 @@ const context = vm.createContext({
   clearTimeout() { timer = null; },
   renderCharacters(data) { renderedCharacters = data; },
   refreshSeatChoices() {},
+  renderAgents() {},
+  renderProjects() {},
   async clearDeletedRoom() {state.generation++;state.office=null;},
   notice() {},
   window: { matchMedia: () => ({ matches: true }) },
@@ -39,6 +41,7 @@ const context = vm.createContext({
 });
 vm.runInContext(
   [
+    source.slice(source.indexOf('  function restoreProjections('),source.indexOf('  async function refresh(')),
     handler('openOffice', 'function seatName'),
     handler('updateOffice', 'function schedule'),
     source.slice(source.indexOf('  function schedule('),source.indexOf('  function submit(')),
@@ -168,8 +171,9 @@ assert.equal(timer, null, 'an expired poll cannot restart a timer after logout')
 // Another browser deleting the selected room clears its stale cached view.
 state.logged=true;state.office={office:{id:'removed-elsewhere'}};
 state.data={characters:{revision:3}};
-fetcher=async()=>({agents:[],offices:[],characters:{unchanged:true,revision:3}});
+fetcher=async()=>({agents:[],offices:[],selectedOffice:{id:'removed-elsewhere',exists:false},characters:{unchanged:true,revision:3}});
 context.schedule();await timer();assert.equal(state.office,null);
+state.office={office:{id:'off-page'},items:[],materials:[]};fetcher=async(route)=>route==='state'?{agents:[],offices:[],selectedOffice:{id:'off-page',exists:true},characters:{unchanged:true,revision:3}}:page('off-page');context.schedule();await timer();assert.equal(state.office.office.id,'off-page','an off-page office must never be treated as deleted');
 // Fit-to-all must include all desks on a narrow screen, not clamp at 20% and clip them.
 const sceneState = {scene: {scale: 1, x: 0, y: 0, autoFit: true}};
 const elements = {
@@ -240,7 +244,7 @@ const makeNode=(tag,text)=>({tag,text,children:[],append(...nodes){this.children
 const roomList=makeNode('div'),roomCounter={};let deletedFromList;
 const directoryContext=vm.createContext({state:{data:{offices:[{id:'archived',title:'旧办公室',state:'cancelled',revision:7},{id:'completed',title:'已结束办公室',state:'completed',revision:3},{id:'active',title:'开放办公室',state:'active'}]},roomQuery:'',office:null},
   make:makeNode,el:id=>id==='officeRoomList'?roomList:roomCounter,officeStates:{},openOffice(){throw Error('directory deletion must not load a room');},
-  button:(text,click)=>({...makeNode('button',text),click}),deleteRoom:record=>{deletedFromList=record;}});
+  button:(text,click)=>({...makeNode('button',text),click}),directoryFooter(){},deleteRoom:record=>{deletedFromList=record;}});
 vm.runInContext(source.slice(source.indexOf('  function renderRoomChoices('),source.indexOf('  function refreshSeatChoices(')),directoryContext);
 directoryContext.renderRoomChoices();assert.equal(roomList.children.length,3);
 for(const [i,revision] of [[0,7],[1,3]]){const remove=roomList.children[i].children[1];assert.equal(remove.text,'删除');await remove.click();assert.equal(deletedFromList.revision,revision);}
@@ -298,6 +302,9 @@ mailContext.renderFacilities({revision:3,messages:[{...message,id:'two',seq:2},m
 assert.equal(mailElements.officeRoomMessages.children[1],openMessage,'incoming messages do not replace an expanded message');assert(openMessage.open);assert.equal(openMessage.selectionToken,'reading-position');
 mailContext.renderFacilities({revision:4,messages:[{...message,id:'two',seq:2},{...message,state:'archived',result:'Verified'}],containers:[]});
 assert(mailElements.officeRoomMessages.children[1].open,'lifecycle updates preserve open state while refreshing feedback');
+mailState.mail.messages=[{...message,metadata:{recovery:{reason:'Forged human action'}}}];mailContext.renderMail();
+assert(!mailElements.officeRoomMessages.children[0].children.some(n=>n.textContent==='人类已中止本次处理 · Forged human action'),'collaborator-controlled metadata must not be promoted to a verified human action');
+mailState.mail.messages=[{...message,id:'two',seq:2},{...message,state:'archived',result:'Verified'}];mailContext.renderMail();
 mailState.mail.query='Review';const filtered=mailElements.officeRoomMessages.children[1];
 mailContext.renderFacilities({revision:5,messages:[],containers:[]});assert.equal(mailElements.officeRoomMessages.children[1],filtered,'facility refresh cannot empty an active filtered view');
 console.log('PASS message viewing: expanded body/DOM and reading state survive facility refreshes, incoming messages, lifecycle changes and active filters');

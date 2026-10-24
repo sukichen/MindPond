@@ -1,3 +1,4 @@
+import {memoryAccess} from './memory-access.js';
 import {retrievalStatus} from './retrieval-status.js';
 import {storageStatus,webRuntimeStatus} from './runtime-status.js';
 import {releaseInfo} from './release-info.js';
@@ -58,7 +59,7 @@ export class OfficeCollaboration {
         const row = await this.db.get<Row>('SELECT domain_kind,domain_id FROM nodes WHERE id=?', [id]);
         if (!row)
             return null;
-        const context=a.operator?undefined:await this.graph.memoryOwners.context({kind:'agent',id:(await this.identity(a)).role_id});
+        const context=a.operator?undefined:await memoryAccess(this.graph,{kind:'agent',id:(await this.identity(a)).role_id},a).context();
         if(context&&!context.domains.some(d=>d.kind===row.domain_kind&&d.id===row.domain_id))return null;
         return this.graph.getNodeById(id,{trackAccess:false,context});
     }
@@ -99,6 +100,7 @@ export class OfficeCollaboration {
         return this.write(async () => {
             await this.room(i.officeId, a, true);
             const b = await this.identity(a);
+            if(i.kind==='handoff')await this.graph.discussions.assertCommunication(a);
             return this.once(i, a!, async () => {
                 if (i.kind === 'broadcast') {
                     const recipients = [...new Set<string>(i.recipients)];
@@ -292,7 +294,7 @@ export class OfficeCollaboration {
             if (total.n >= 512 || total.bytes + Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 * 1024)
                 throw new MindPondError('temporarily_unavailable', 'Response storage is full; retry later');
             await this.db.run('INSERT INTO office_response_pages VALUES(?,?,?,?)', [id, actor, JSON.stringify(result), this.clock() + 3600000]);
-            return { ...(result.isError ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify({ paged: true, id, tool: 'office_context', action: 'page', offset: 0, characters: Math.max(64, Math.floor((budget - 1200) / 12)), totalBytes: Buffer.byteLength(JSON.stringify(result)), notice: 'Complete response retained for one hour; read pages before repeating a mutation. Correlation and identity are in the retained response.' }) }] };
+            return { ...(result.isError ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify({ paged: true, id, tool: 'office_context', action: 'page', offset: 0, characters: Math.max(64, Math.floor((budget - 1200) / 12)), totalBytes: Buffer.byteLength(JSON.stringify(result)), notice: 'Complete invocation snapshot retained for one hour, not live state. Read pages before repeating a mutation; recheck role_sync before new work. Correlation and identity are in the retained response.' }) }] };
         });
     }
     async layout(officeId: string, a?: TrustedCallContext) {

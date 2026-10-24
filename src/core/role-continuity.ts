@@ -1,3 +1,4 @@
+import {memoryAccess,type MemoryAuthority} from './memory-access.js';
 /** Role-owned working state. Exact recovery, not similarity retrieval or a
  * transcript dump. Semantic lessons remain in the canonical memory graph. */
 import {z} from 'zod';
@@ -25,7 +26,7 @@ export const continuityTasksSchema=z.object({officeId:id.optional(),state:z.enum
 export const continuityHistorySchema=z.object({officeId:id.optional(),taskId:id.optional(),beforeSeq:z.number().int().positive().optional(),limit:z.number().int().min(1).max(20).default(5),contextBudgetBytes:z.number().int().min(2048).max(65536).default(32768)}).strict();
 export const continuityArchiveSchema=z.object({tasks:z.array(z.object({id,expectedRevision:z.number().int().positive()}).strict()).min(1).max(20),key:text(256),reason:text(1000)}).strict();
 type Row=Record<string,any>;
-export interface ContinuityAccess {roleId:string;human?:boolean;authorize?:()=>Promise<void>}
+export interface ContinuityAccess {roleId:string;human?:boolean;authorize?:()=>Promise<void>;authority?:MemoryAuthority}
 const terminal=(status:string)=>['done','cancelled'].includes(status);
 const denied=()=>new MindPondError('scope_denied','Working state is outside this role’s current office access');
 const version=()=>new MindPondError('stale_version','Working state changed. Read memory_resume or the task/history before retrying.');
@@ -47,8 +48,8 @@ export class RoleContinuityStore{
   const role=await this.db.get<Row>('SELECT id,name,introduction,state,revision FROM character_roles WHERE id=?',[a.roleId]);
   if(!role)throw new MindPondError('not_found','Role no longer exists');
   if(!a.human)await this.graph.memoryOwners.role(a.roleId);
-  const offices=await this.graph.memoryOwners.offices(a.human?undefined:a.roleId);
-  const ctx=a.human?undefined:await this.graph.memoryOwners.context({kind:'agent',id:a.roleId});
+  const memory=memoryAccess(this.graph,a.human?{kind:'user',id:'default'}:{kind:'agent',id:a.roleId},a.authority);
+  const offices=await memory.offices(),ctx=await memory.context();
   const checks=new Map<string,boolean>();
   const allowed=(scope:string)=>a.human||!scope||offices.some(o=>o.id===scope);
   const references=async(payload:Row,scope:string):Promise<boolean>=>{

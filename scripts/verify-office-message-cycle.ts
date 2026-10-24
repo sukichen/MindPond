@@ -42,12 +42,14 @@ try{
   await assert.rejects(graph.building.message({...finish,key:'different-completion'},b),/cannot be completed twice/);
   const replay:any=await receive.run(receive.schema.parse({key:'take-one',limit:1}),b);
   assert.equal(replay.messages[0].state,'archived','retry never presents completed work as processing');
+  assert.match(replay.nextAction,/already archived/,'replayed receipts must not tell the LLM to process finished work');
+  assert(!('result' in replay.messages[0]),'a replay must not present the old pending result as current completion feedback');
   activity=(await graph.building.snapshot('room',admin)).activity.find((x:any)=>x.roleId===b.roleId);assert.equal(activity.processing,1,'finishing one of two messages keeps working');
   const result=await graph.building.wait({replyTo:message.messageId,waitMs:100},a);assert.equal(result.status,'matched');assert.equal(result.message.kind,'completion');
   assert.equal(result.message.body,finish.result);assert.equal((await graph.building.message({action:'get',messageId:message.messageId},a)).message.result,finish.result);
   await graph.building.message({action:'take',messageId:done.feedbackMessageId,key:'take-feedback'},a);
   const receipt=await graph.building.message({action:'finish',messageId:done.feedbackMessageId,result:'Feedback evaluated',key:'finish-feedback'},a);
-  assert.equal(receipt.feedbackMessageId,null,'handling a completion receipt cannot create a feedback loop');
+  assert.equal(receipt.feedbackMessageId,null,'handling a completion receipt cannot create a feedback loop');assert.equal(receipt.feedbackDelivery,'not_required');
   await graph.building.message({action:'finish',messageId:two.messageId,result:'Second task done',key:'finish-two'},b);
   assert.equal((await graph.building.snapshot('room',admin)).activity.find((x:any)=>x.roleId===b.roleId).processing,0,'last completion releases working state');
   const three=await send('race');
@@ -78,5 +80,10 @@ try{
   const expectedIds=new Set([message.messageId,done.feedbackMessageId]);
   assert(replayPage.events.every((e:any)=>expectedIds.has(e.body.messageId)),'topic replay excludes unrelated messages and actions');
   const revision=await graph.building.observationRevision(admin);await send('observer');assert(await other.building.observationRevision(admin)>revision,'notification revision observes cross-process commits');
+  const unavailable=await send('sender-unavailable');await graph.building.message({action:'take',messageId:unavailable.messageId,key:'take-unavailable'},b);
+  await graph.roles.configure({roleId:a.roleId,expectedRevision:1,name:'a',introduction:'Synthetic fixture',state:'disabled'},admin);
+  const unnotified=await graph.building.message({action:'finish',messageId:unavailable.messageId,key:'finish-unavailable',result:'Verified result retained for the unavailable sender'},b);
+  assert.equal(unnotified.state,'archived');assert.equal(unnotified.feedbackMessageId,null);assert.equal(unnotified.feedbackDelivery,'sender_unavailable','successful processing must not imply feedback was delivered');
+  assert.equal((await graph.building.message({action:'get',messageId:unavailable.messageId},b)).message.result,'Verified result retained for the unavailable sender');
   console.log('PASS message lifecycle: default take, read-only observation, persistent recovery, two-item busy state, exact-once feedback, no receipt loop, concurrent claim, search/thread ACLs, UTF-8 budget and complete body restoration');
 }finally{await other.close();await graph.close();await fs.rm(dir,{recursive:true,force:true});}

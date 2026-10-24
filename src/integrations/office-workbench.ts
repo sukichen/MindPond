@@ -1,3 +1,4 @@
+import {conditionalProjection} from '../core/conditional-projection.js';
 import {releaseInfo} from '../core/release-info.js';
 import {discussionSchema} from '../core/office-discussions.js';
 import {managedScriptSchema} from '../core/office-scripts.js';
@@ -18,8 +19,8 @@ import {
   officeConfigurationSchema,
   projectConfigurationSchema
 } from '../core/office-tools.js';
-import { issueNetworkGrant, readNetworkConfiguration, revokeNetworkAgent } from './network-config.js';
-import { MindPondError, httpStatus, toStructuredError } from '../core/errors.js';
+import { issueNetworkGrant, readNetworkConfiguration, revokeNetworkAgent, singleAgentGrant } from './network-config.js';
+import { MindPondError, httpStatus, toStructuredError, httpError } from '../core/errors.js';
 import { parseContainerInput } from '../core/building-tools.js';
 import { roleReviewSchema, roleConfigureSchema, roleLinkSchema } from '../core/role-tools.js';
 import {continuityReadSchema,continuityCheckpointSchema,continuityTaskWriteSchema,continuityTasksSchema,continuityHistorySchema,continuityArchiveSchema} from '../core/role-continuity.js';
@@ -52,8 +53,9 @@ export function officeWorkbench(
   });
   router.post('/login', async (req, res, next) => {
     try {
+    if(!req.body||typeof req.body!=='object'||Array.isArray(req.body)){res.status(400).json(httpError('invalid_input','Login requires a JSON object with the configured management credentials.'));return;}
     if (!sameOrigin(req)) {
-      res.status(403).json({ error: 'Open the workbench on its own origin' });
+      res.status(403).json(httpError('scope_denied','Open the workbench on its own origin'));
       return;
     }
     // A reverse proxy may mount this UI under /mindpond (or another prefix).
@@ -63,20 +65,20 @@ export function officeWorkbench(
       .refine(value => !value.split('/').some(part => part === '.' || part === '..'))
       .safeParse(req.body.cookiePath ?? '/api/office-admin');
     if (!cookiePath.success) {
-      res.status(400).json({ error: 'Invalid management cookie path' });
+      res.status(400).json(httpError('invalid_input','Invalid management cookie path'));
       return;
     }
     const address = req.ip ?? 'unknown',
       now = Date.now(),
       attempt = attempts.get(address);
     if (attempt && attempt.until > now && attempt.n >= 10) {
-      res.status(429).json({ error: 'Too many login attempts; try again in one minute' });
+      res.status(429).json(httpError('temporarily_unavailable','Too many login attempts; try again in one minute'));
       return;
     }
     if (attempts.size > 256)
       for (const [key, v] of attempts) if (v.until <= now) attempts.delete(key);
     if (attempts.size >= 1024 && !attempts.has(address)) {
-      res.status(429).json({ error: 'Login capacity reached' });
+      res.status(429).json(httpError('temporarily_unavailable','Login capacity reached'));
       return;
     }
     attempts.set(address, {
@@ -97,12 +99,12 @@ export function officeWorkbench(
     }
     if (options.apiKey && !equal(req.body.apiKey, options.apiKey)) authorized = false;
     if (!authorized) {
-      res.status(403).json({ error: '请填写用户管理凭据；agent 的 MCP token 不能登录管理页面。' });
+      res.status(403).json(httpError('scope_denied','请填写用户管理凭据；agent 的 MCP token 不能登录管理页面。'));
       return;
     }
     const key = randomBytes(32).toString('base64url');
     if (!await graph.offices.managementSession('create',sessionHash(key),authorityHash,operator)) {
-      res.status(429).json({ error: 'Too many management sessions' });
+      res.status(429).json(httpError('temporarily_unavailable','Too many management sessions'));
       return;
     }
     res.cookie('mindpond_office_admin', key, {
@@ -123,11 +125,11 @@ export function officeWorkbench(
       .find((s) => s.startsWith('mindpond_office_admin='))
       ?.slice('mindpond_office_admin='.length);
     if (!key || key.length > 128 || !await graph.offices.managementSession('get',sessionHash(key),authorityHash,operator)) {
-      res.status(401).json({ error: '请先登录协作管理。' });
+      res.status(401).json(httpError('scope_denied','请先登录协作管理。'));
       return;
     }
     if (req.method !== 'GET' && !sameOrigin(req)) {
-      res.status(403).json({ error: 'Cross-origin management write rejected' });
+      res.status(403).json(httpError('scope_denied','Cross-origin management write rejected'));
       return;
     }
     next();
@@ -141,7 +143,7 @@ export function officeWorkbench(
         const e = toStructuredError(error);
         res
           .status(httpStatus(e.code))
-          .json({ error: e.message, code: e.code, nextAction: e.nextAction });
+          .json({error:e.message,...e});
       }
     });
   // Notifications carry only a revision. All content still passes authenticated
@@ -150,12 +152,12 @@ export function officeWorkbench(
   let observerTimer:ReturnType<typeof setInterval>|undefined,observing=false,observersClosed=false;
   router.get('/events',async(req,res,next)=>{
     try{
-      if(observersClosed){res.status(503).end();return;}
-      if(observers.size>=32){res.status(429).end();return;}
+      if(observersClosed){res.status(503).json(httpError('temporarily_unavailable','Observation service is closing'));return;}
+      if(observers.size>=32){res.status(429).json(httpError('temporarily_unavailable','Observation capacity reached'));return;}
       const raw=(req.headers.cookie??'').split(';').map(s=>s.trim()).find(s=>s.startsWith('mindpond_office_admin='))!.slice('mindpond_office_admin='.length);
       const revision=await graph.building.observationRevision(operator);
-      if(observersClosed){res.status(503).end();return;}
-      if(observers.size>=32){res.status(429).end();return;}
+      if(observersClosed){res.status(503).json(httpError('temporarily_unavailable','Observation service is closing'));return;}
+      if(observers.size>=32){res.status(429).json(httpError('temporarily_unavailable','Observation capacity reached'));return;}
       res.set({'Content-Type':'text/event-stream','Cache-Control':'no-store','X-Accel-Buffering':'no'});res.flushHeaders();
       res.write(`event: ready\ndata: ${revision}\n\n`);
       observers.set(res,{key:sessionHash(raw),revision,heartbeat:Date.now()});
@@ -178,29 +180,34 @@ export function officeWorkbench(
     if (raw) await graph.offices.managementSession('delete',sessionHash(raw.trim().slice('mindpond_office_admin='.length)),authorityHash,operator);
     return { ok: true };
   });
+  const directoryWindows=z.object(Object.fromEntries(['agents','projects','offices','roles','pending','chats','connections'].map(k=>[k,z.string().min(1).max(512).optional()]))).strict();
   route('/state', async (req) => {
+    const windows=directoryWindows.parse(req.body.directoryThrough??{});
+    const known=z.object({choicesRevision:z.string().regex(/^[a-f0-9]{64}$/).optional(),connectionTemplatesRevision:z.string().regex(/^[a-f0-9]{64}$/).optional()}).parse(req.body);
     let credentialPolicyError = false;
     const credentialPolicies: Record<string, unknown> = {};
     if (options.configFile) {
       try {
         const config = await readNetworkConfiguration(options.configFile);
-        for (const grant of config.grants) if (grant.agentId)
-          credentialPolicies[grant.agentId] = {
-            domains: grant.domains, assignmentIds: grant.assignmentIds ?? null
-          };
+        for(const grant of config.grants)if(grant.agentId){
+          const count=((credentialPolicies[grant.agentId] as any)?.credentialCount??0)+1;
+          credentialPolicies[grant.agentId]=count>1?{credentialCount:count,ambiguous:true}:{credentialCount:1,domains:grant.domains,assignmentIds:grant.assignmentIds??null};
+        }
       } catch (error) {
         credentialPolicyError = (error as NodeJS.ErrnoException).code !== 'ENOENT';
       }
     }
-    const registry = await graph.offices.registry(operator), settings = await graph.offices.settings(operator);
+    const registry = await graph.offices.registry(operator,windows), settings = await graph.offices.settings(operator);
+    const choices=conditionalProjection(await graph.offices.choices(operator),known.choicesRevision);
+    const templates=conditionalProjection(settings.mcpUrl?Object.fromEntries(registry.agents.map((a:any)=>[a.id,officeConnection({host:a.host,id:a.id,url:settings.mcpUrl})])):{},known.connectionTemplatesRevision);
     return {
-      ...registry, settings, release:releaseInfo(),capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
-      connectionTemplates: settings.mcpUrl ? Object.fromEntries(registry.agents.map((a: any) => [a.id, officeConnection({host:a.host,id:a.id,url:settings.mcpUrl,identityMode:a.host==='codex'?'native':'connection'})])) : {},
-      characters: await graph.roles.state(operator, req.body.roleAfterSeq),
+      ...registry, choices:choices.value,choicesRevision:choices.revision, selectedOffice:req.body.selectedOfficeId?{id:z.string().min(1).max(160).parse(req.body.selectedOfficeId),exists:await graph.offices.officeExists(req.body.selectedOfficeId,operator)}:null, settings, release:releaseInfo(),capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
+      connectionTemplates:templates.value,connectionTemplatesRevision:templates.revision,
+      characters: await graph.roles.state(operator, req.body.roleAfterSeq,windows,req.body.roleDirectoryRevision),
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
   });
-  route('/connection-template',async req=>{const i=z.object({agentId:z.string().min(1).max(128),identityMode:z.enum(['connection','native'])}).strict().parse(req.body);const {agents}=await graph.offices.registry(operator),agent=agents.find((a:any)=>a.id===i.agentId);if(!agent)throw new MindPondError('not_found','Connection not found');const settings=await graph.offices.settings(operator);if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address first');return officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:i.identityMode});});
+  route('/connection-template',async req=>{const i=z.object({agentId:z.string().min(1).max(128),identityMode:z.enum(['connection','native'])}).strict().parse(req.body);const agent=await graph.offices.agent(i.agentId,operator);if(!agent)throw new MindPondError('not_found','Connection not found');const settings=await graph.offices.settings(operator);if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address first');return officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:i.identityMode});});
   route('/settings', (req) => graph.offices.settings(operator, req.body.mcpUrl));
   officeAdminServices(graph,route,operator);
   route('/agent', (req) =>
@@ -216,7 +223,7 @@ export function officeWorkbench(
     return result;
   });
   route('/role/review', req => graph.roles.review(roleReviewSchema.parse(req.body), operator));
-  route('/role/state', req => graph.roles.state(operator,req.body.afterSeq));
+  route('/role/state', req => graph.roles.state(operator,req.body.afterSeq,directoryWindows.parse(req.body.directoryThrough??{}),req.body.directoryRevision));
   route('/role/message',req=>graph.roles.messagePreview(messageReference.parse(req.body),operator));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
   route('/role/continuity',req=>{const {roleId,...input}=continuityReadSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.resume({roleId,human:true},input);});
@@ -316,22 +323,16 @@ export function officeWorkbench(
           .optional()
       })
       .parse(req.body);
-    const registry = await graph.offices.registry(operator),
-      agent = registry.agents.find((v: any) => v.id === input.id);
+    const agent = await graph.offices.agent(input.id,operator);
     if (!agent || agent.revision !== input.expectedRevision)
       throw new MindPondError('stale_version','Agent 设置已变更，请刷新。');
     if (input.assignmentIds?.length) {
-      const all = await Promise.all(
-        registry.offices.map((o: any) => graph.offices.get({ officeId: o.id, limit: 1 }, operator))
-      );
-      const owned = new Set(
-        all.flatMap((o) =>
-          o.seats.filter((s: any) => s.agent_id === agent.id && s.enabled).map((s: any) => s.id)
-        )
-      );
+      const owned = new Set((await graph.offices.agentSeats(agent.id,operator)).map(s=>s.id));
       if (input.assignmentIds.some((id) => !owned.has(id)))
         throw new MindPondError('invalid_input','只能限制到此 agent 已获授权的分工。');
     }
+    const currentConfig=await readNetworkConfiguration(options.configFile).catch(()=>null);
+    if(currentConfig)singleAgentGrant(currentConfig,agent.id); // Before changing this host's availability.
     const settings=await graph.offices.settings(operator);
     if(input.identityMode){if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address before generating a configuration');officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:input.identityMode});}
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-issue-'));

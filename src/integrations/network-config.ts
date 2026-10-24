@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { normalizeDomain, type MemoryDomainRef } from '../core/domain.js';
 import { parseMcpToolProfile, type McpToolProfile } from '../core/mcp-tool-profile.js';
+import {MindPondError} from '../core/errors.js';
 export interface NetworkGrant {
   principal: string;
   tokenHash: string;
@@ -16,6 +17,14 @@ export interface NetworkGrant {
 export interface NetworkConfiguration {
   version: 1 | 2;
   grants: NetworkGrant[];
+}
+/** The one-connection provisioning shortcut cannot choose between distinct
+ * credential identities/policies. Existing independently managed grants remain
+ * supported by the MCP gateway; never silently merge them during rotation. */
+export function singleAgentGrant(config:NetworkConfiguration,agentId:string){
+  const matches=config.grants.filter(grant=>grant.agentId===agentId);
+  if(matches.length>1)throw new MindPondError('invalid_input','此宿主有多份独立凭据，快捷签发无法确定应保留哪份身份和权限。请在私有配置中分别管理，或为各份配置登记独立宿主连接；现有凭据保持不变。');
+  return matches[0];
 }
 /** Account-only markers do not become host registrations during grant migration. */
 export function networkHostId(grant:NetworkGrant){return grant.agentId?.startsWith('legacy:')?undefined:grant.agentId;}
@@ -156,7 +165,7 @@ export async function issueNetworkGrant(options: {
       config.grants.some((g) => g.agentId === options.agentId && g.principal !== options.principal)
     )
       throw new Error('Agent belongs to another account');
-    const previous = config.grants.find(
+    const previous = options.agentId ? singleAgentGrant(config,options.agentId) : config.grants.find(
       (g) =>
         g.principal === options.principal && (!options.agentId || g.agentId === options.agentId)
     );
@@ -174,6 +183,10 @@ export async function issueNetworkGrant(options: {
     const token = randomBytes(32).toString('base64url');
     await fs.writeFile(tokenFile, token + '\n', { flag: 'wx', mode: 0o600 });
     wroteToken = true;
+    let credentialId=previous?.credentialId??options.agentId;
+    // User-chosen credential names may coincide with a new host ID. Preserve
+    // established identities and choose a distinct name only for a new grant.
+    if(options.agentId&&!previous)while(config.grants.some(g=>g.credentialId===credentialId))credentialId='credential-'+randomBytes(16).toString('hex');
     const grant: NetworkGrant = {
       principal: options.principal,
       tokenHash: tokenDigest(token),
@@ -182,7 +195,7 @@ export async function issueNetworkGrant(options: {
       ...(options.agentId
         ? {
             agentId: options.agentId,
-            credentialId: options.agentId,
+            credentialId,
             ...(assignmentIds ? { assignmentIds } : {})
           }
         : {})

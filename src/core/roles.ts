@@ -1,3 +1,4 @@
+import {adminDirectory,type DirectoryWindows} from './admin-directory.js';
 import {migrateOfficeRoleModel} from './office-model-migration.js';
 /** Persistent characters bound to an authenticated HTTP-MCP runtime context.
  * Session labels are correlation values, never credentials. Operator approval
@@ -344,28 +345,32 @@ export class RoleStore {
     await this.db.run(`UPDATE office_sessions SET state='closed' WHERE id IN (${sessions})`, [roleId]);
     await this.db.run(`UPDATE office_items SET status='open',revision=revision+1,epoch=epoch+1,lease_hash=NULL,lease_until=NULL,session_id=NULL WHERE status='claimed' AND session_id IN (${sessions})`, [roleId]);
   }
-  async registry(a?: TrustedCallContext) {
+  async registry(a?: TrustedCallContext, windows:DirectoryWindows={}) {
     this.admin(a);
     // Capture BEFORE reading rows: another process may commit while we read.
     // A stale snapshot then leaves a newer revision to fetch on the next poll.
     const revision=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM role_events'))!.n;
-    const rows = await this.db.all<Row[]>(`SELECT r.*,b.id binding_id,b.epoch,b.last_seen,b.connector_id,b.runtime_id,a.name connector_name,a.host,a.state host_state,c.source chat_source,c.native_chat_id,
+    const directoryRevision=await this.directoryRevision(windows);
+    const rolePage = await adminDirectory(this.db,`SELECT r.*,b.id binding_id,b.epoch,b.last_seen,r.id directory_key,b.connector_id,b.runtime_id,a.name connector_name,a.host,a.state host_state,c.source chat_source,c.native_chat_id,
       EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
       FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
-      LEFT JOIN office_agents a ON a.id=b.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=b.runtime_id AND c.connector_id=b.connector_id AND c.principal=b.principal ORDER BY r.created_at,r.id LIMIT 500`);
+      LEFT JOIN office_agents a ON a.id=b.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=b.runtime_id AND c.connector_id=b.connector_id AND c.principal=b.principal`,'1',[],windows.roles);
+    const rows=rolePage.rows;
     const roles=rows.map(({connector_id,connector_name,runtime_id,host,host_state,chat_source,native_chat_id,...role})=>({...role,connection:role.binding_id?{
       connectorId:connector_id,name:connector_name??connector_id,host,hostState:host_state,chat: native_chat_id?{source:chat_source,id:native_chat_id}:null,chatRef:runtime_id,bindingId:role.binding_id,lastSeen:role.last_seen
     }:null}));
-    const pending = await this.db.all("SELECT p.*,c.source chat_source,c.native_chat_id FROM role_applications p LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal WHERE p.state='pending' ORDER BY p.created_at LIMIT 100");
+    const pending=await adminDirectory(this.db,"SELECT p.*,p.id directory_key,c.source chat_source,c.native_chat_id,a.name connector_name,a.host,a.state host_state FROM role_applications p JOIN office_agents a ON a.id=p.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal","p.state='pending'",[],windows.pending);
     const mappings = await this.db.all('SELECT * FROM role_seats');
     const links = await this.db.all('SELECT sender,recipient FROM role_links ORDER BY sender,recipient');
     const messages = (await this.db.all<Row[]>(`SELECT m.*,s.state,s.taken_at,s.completed_at,s.completion FROM role_messages m JOIN role_message_states s ON s.message_id=m.id ORDER BY m.seq DESC LIMIT 100`)).map(m=>({...m,state:messageState(m.state),body:previewText(m.body,700),bodyTruncated:Buffer.byteLength(m.body)>700}));
     const events = await this.db.all('SELECT seq,role_id,kind,body,ts FROM role_events ORDER BY seq DESC LIMIT 100');
-    const chats=await this.db.all(`SELECT c.runtime_id,c.principal,c.connector_id,c.source chat_source,c.native_chat_id,c.last_seen,a.name connector_name,a.host,a.state host_state,b.role_id,r.name role_name
+    const chats=await adminDirectory(this.db,`SELECT c.runtime_id directory_key,c.runtime_id,c.principal,c.connector_id,c.source chat_source,c.native_chat_id,c.last_seen,a.name connector_name,a.host,a.state host_state,b.role_id,r.name role_name
       FROM role_chat_sessions c JOIN office_agents a ON a.id=c.connector_id
       LEFT JOIN role_bindings b ON b.runtime_id=c.runtime_id AND b.principal=c.principal AND b.connector_id=c.connector_id AND b.state='active'
-      LEFT JOIN character_roles r ON r.id=b.role_id ORDER BY c.last_seen DESC,c.runtime_id LIMIT 500`);
-    return { revision, roles, pending, chats, connections:await this.db.all("SELECT p.*,c.source chat_source,c.native_chat_id FROM role_connection_requests p LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal WHERE p.last_seen>? ORDER BY p.last_seen DESC LIMIT 100",[this.clock()-86400000]), mappings, links, messages, events: events.map((e: Row) => ({ ...e, body: JSON.parse(e.body) })) };
+      LEFT JOIN character_roles r ON r.id=b.role_id`,'1',[],windows.chats);
+    const connections=await adminDirectory(this.db,"SELECT p.*,p.id directory_key,c.source chat_source,c.native_chat_id,a.name connector_name,a.host,a.state host_state FROM role_connection_requests p JOIN office_agents a ON a.id=p.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=p.runtime_id AND c.connector_id=p.connector_id AND c.principal=p.principal","p.last_seen>?",[this.clock()-86400000],windows.connections);
+    return {revision,directoryRevision,roles,pending:pending.rows,chats:chats.rows,connections:connections.rows,mappings,links,messages,events:events.map((e:Row)=>({...e,body:JSON.parse(e.body)})),
+      directory:{roles:rolePage.page,pending:pending.page,chats:chats.page,connections:connections.page}};
   }
   async messagePreview(id:string|{messageId?:string;seq?:number},a?:TrustedCallContext){
     this.admin(a);
@@ -373,11 +378,19 @@ export class RoleStore {
     const row=await this.db.get<Row>('SELECT m.*,s.state,s.taken_at,s.completed_at,s.completion FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE ((? IS NOT NULL AND m.id=?) OR (? IS NOT NULL AND m.seq=?))',[input.messageId??null,input.messageId??null,input.seq??null,input.seq??null]);
     if(!row)fail('Message not found','not_found');return {message:{...row!,state:messageState(row!.state)}};
   }
-  async state(a?: TrustedCallContext, afterSeq?: number) {
+  private async directoryRevision(windows:DirectoryWindows){
+    const counts=await this.db.get(`SELECT (SELECT COUNT(*) FROM character_roles) roles,(SELECT COUNT(*) FROM role_applications WHERE state='pending') pending,(SELECT COUNT(*) FROM role_chat_sessions) chats,(SELECT COUNT(*) FROM role_connection_requests WHERE last_seen>?) connections`,[this.clock()-86400000]);
+    // Host edits have their own audit stream, not role_events. Include its
+    // indexed revision so linked names/status do not stay stale until role activity.
+    const hosts=await this.db.get(`SELECT (SELECT MAX(id) FROM memory_action_log WHERE action='collaboration_office_agent_configured') configured,(SELECT MAX(id) FROM memory_action_log WHERE action='collaboration_office_agent_deleted') deleted`);
+    return digest({counts,windows,hosts});
+  }
+  async state(a?: TrustedCallContext, afterSeq?: number, windows:DirectoryWindows={}, afterDirectory?:string) {
     this.admin(a);
     if(afterSeq!==undefined&&(!Number.isSafeInteger(afterSeq)||afterSeq<0))fail('Invalid role state cursor','invalid_input');
+    if(afterDirectory!==undefined&&(typeof afterDirectory!=='string'||afterDirectory.length>128))fail('Invalid directory revision','invalid_input');
     const revision=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM role_events'))!.n;
-    return afterSeq===revision?{unchanged:true,revision}:this.registry(a);
+    return afterSeq===revision&&((afterDirectory===undefined&&!Object.keys(windows).length)||afterDirectory===await this.directoryRevision(windows))?{unchanged:true,revision}:this.registry(a,windows);
   }
   async configureOffice(i: Row, a?: TrustedCallContext) {
     this.admin(a);

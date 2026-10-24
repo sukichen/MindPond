@@ -56,9 +56,10 @@ try{
  await deny('office_script',{...script,locked:false,key:'unlock'},'scope_denied');
  console.log('PASS script libraries: MCP discovery, role/office isolation, safe names, complete Unicode downloads/SHA-256, CAS, idempotency, foreign ID fencing and human locks');
 
+ await deny('office_message',{action:'send',officeId:'room',recipient:roles[3].roleId,body:'Must not cross office membership',key:'outside-office-recipient'},'scope_denied');
  const mail=await call('office_message',{action:'send',officeId:'room',recipient:roles[0].roleId,body:'Ordinary work stays at the seat',key:'ordinary'},'b');
  const create={action:'create',officeId:'room',title:'Resolve one fixture question',question:'Private temporary question sentinel',doneWhen:'Two participants agree on a verified next step',participants:[roles[1].roleId],key:'meeting'};
- const room=await call('office_discussion',create);const roomId=room.room.id;assert.equal((await call('office_discussion',create)).room.id,roomId);
+ const room=await call('office_discussion',create);const roomId=room.room.id;await deny('office_discussion',{action:'get',id:roomId,officeId:'outside-room'},'not_found');await deny('office_discussion',{action:'wait',id:roomId,officeId:'outside-room',waitMs:100},'not_found');await deny('office_discussion',{action:'close',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:roomId,officeId:'outside-room',expectedRevision:room.room.revision},'not_found');assert.equal((await call('office_discussion',create)).room.id,roomId);
  const facility=await graph.building.snapshot('room',admin),facilityDelta=await graph.building.snapshot('room',admin,facility.revision);
  assert.equal(facilityDelta.unchanged,true);assert.equal(facilityDelta.meetings[0].id,roomId);assert.equal(facilityDelta.activity.find((r:any)=>r.roleId===roles[0].roleId).discussionId,roomId);assert.equal(facilityDelta.meetings[0].members.find((m:any)=>m.roleId===roles[1].roleId).state,'invited');assert(!JSON.stringify(facilityDelta.meetings).includes(create.question),'scene metadata must not include temporary transcript/question bodies');
  assert.equal((await call('role_sync')).discussions.active.id,roomId);assert.equal((await graph.building.snapshot('room',admin)).activity.find((r:any)=>r.roleId===roles[0].roleId).discussionTitle,create.title);assert.equal((await call('role_sync',{},'b')).discussions.invitations[0].id,roomId);
@@ -68,20 +69,23 @@ try{
  const firstPost=await call('office_discussion',{action:'post',id:roomId,body:'Private temporary post sentinel',key:'post'});
  assert.equal((await call('office_discussion',{action:'get',id:roomId},'b')).posts.length,0,'invited roles must join before reading posts');
  await deny('office_discussion',{action:'post',id:roomId,body:'Not joined',key:'no'},'scope_denied','b');
- await deny('office_discussion',{action:'get',id:roomId},'not_found','c');assert.equal((await call('office_discussion',{action:'list',officeId:'room'},'c')).rooms.length,0);
+ await deny('office_discussion',{action:'get',id:roomId},'not_found','c');await deny('office_discussion',{action:'wait',id:roomId,waitMs:100},'not_found','c');assert.equal((await call('office_discussion',{action:'list',officeId:'room'},'c')).rooms.length,0);
  await deny('office_discussion',{action:'get',id:roomId},'scope_denied','outside');
  await call('office_discussion',{action:'join',id:roomId},'b');
  let finished=false;const waiting=call('office_discussion',{action:'wait',id:roomId,afterSeq:firstPost.seq,waitMs:3000}).then(r=>{finished=true;return r;});await new Promise(r=>setTimeout(r,150));assert(!finished,'discussion wait must stay open instead of returning unchanged attention');
  await call('office_discussion',{action:'post',id:roomId,body:'Verified next step sentinel',key:'peer-post'},'b');const matched=await waiting;assert.equal(matched.status,'matched');assert.equal(matched.post.body,'Verified next step sentinel');
  const parallel=await call('office_discussion',{...create,participants:[roles[1].roleId],title:'Independent question',key:'parallel'},'c');
  await deny('office_discussion',{action:'join',id:parallel.room.id},'invalid_input','b');
- await call('office_discussion',{action:'leave',id:roomId},'b');await call('office_discussion',{action:'join',id:parallel.room.id},'b');
- await call('office_discussion',{action:'leave',id:parallel.room.id},'b');await call('office_discussion',{action:'join',id:roomId},'b');assert((await call('office_discussion',{action:'get',id:roomId},'b')).posts.length);await call('office_discussion',{action:'leave',id:roomId},'b');await call('office_discussion',{action:'join',id:parallel.room.id},'b');
+ await call('office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:roomId},'b');await call('office_discussion',{action:'join',id:parallel.room.id},'b');
+ await call('office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:parallel.room.id},'b');await call('office_discussion',{action:'join',id:roomId},'b');assert((await call('office_discussion',{action:'get',id:roomId},'b')).posts.length);await call('office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:roomId},'b');await call('office_discussion',{action:'join',id:parallel.room.id},'b');
  const stale=await call('office_discussion',{action:'get',id:roomId});
  const domain=await graph.memoryOwners.domain({kind:'office',id:'room'}),memory=await graph.saveMemory('A selected verified conclusion, independent of the temporary transcript',{domain});
  await call('office_discussion',{action:'export',id:roomId,memoryId:memory.id});
- await deny('office_discussion',{action:'close',id:roomId,expectedRevision:stale.room.revision},'stale_version');
- const current=await call('office_discussion',{action:'get',id:roomId});await call('office_discussion',{action:'close',id:roomId,expectedRevision:current.room.revision});
+ await deny('office_discussion',{action:'close',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:roomId,expectedRevision:stale.room.revision},'stale_version');
+ const unrelated=await graph.officeCollaboration.boundResponse({content:[{type:'text',text:'Unrelated response sentinel '.repeat(400)}]},2048,admin);
+ const unrelatedId=JSON.parse(unrelated.content[0].text).id;assert(unrelatedId);
+ const current=await call('office_discussion',{action:'get',id:roomId});await call('office_discussion',{action:'close',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:roomId,expectedRevision:current.room.revision});
+ assert((await graph.officeCollaboration.responsePage({id:unrelatedId,characters:100},admin)).text.includes('Unrelated response sentinel'),'closing one discussion must not invalidate unrelated response pages');
  assert.equal((await db.get('SELECT COUNT(*) n FROM office_discussion_posts WHERE room_id=?',[roomId])).n,0);assert.equal((await db.get('SELECT COUNT(*) n FROM office_discussion_exports WHERE room_id=?',[roomId])).n,0);
  assert(await graph.getNodeById(memory.id));assert.equal((await call('office_discussion',create)).closed,true,'retrying create must not resurrect deleted content');
  for(const table of ['role_events','memory_action_log','office_response_pages']){const rows=JSON.stringify(await db.all('SELECT * FROM '+table));assert(!rows.includes('Private temporary question sentinel')&&!rows.includes('Private temporary post sentinel'),'transcripts must not leak into durable logs/caches');}
@@ -103,22 +107,28 @@ try{
  embedding.generateEmbedding=async content=>{if(content==='Close-race conclusion'){begin();await released;}return stub.call(embedding,content);};
  try{
   const pending=manage('discussion-memory',{id:closing.room.id,expectedRevision:closing.room.revision,content:'Close-race conclusion',key:'close-race'});
-  await started;await call('office_discussion',{action:'close',id:closing.room.id,expectedRevision:closing.room.revision});release();assert.equal((await pending).body.code,'not_found');
+  await started;await call('office_discussion',{action:'close',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:closing.room.id,expectedRevision:closing.room.revision});release();assert.equal((await pending).body.code,'not_found');
   assert.equal((await db.get('SELECT COUNT(*) n FROM nodes WHERE content=?',['Close-race conclusion'])).n,0,'closing during embedding must roll back the selected memory and its receipt');
  }finally{release();embedding.generateEmbedding=stub;}
  console.log('PASS human routes: authenticated/CSRF fenced script management and selected independent office-memory export');
 
  // More than one attention page must never hide focus or bypass ordinary-mail priority.
- await call('office_discussion',{action:'leave',id:parallel.room.id},'c');
+ await call('office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:parallel.room.id},'c');
  for(let n=0;n<5;n++){
   const officeId='busy-office-'+n;
   await graph.roles.configureOffice({id:officeId,title:'Invitation load fixture '+n,state:'active',expectedRevision:0,seats:[{id:'busy-a-'+n,roleId:roles[0].roleId,label:'A',role:'member'},{id:'busy-c-'+n,roleId:roles[2].roleId,label:'C',role:'member'}]},admin);
-  for(let k=0;k<13;k++){const r=await call('office_discussion',{...create,officeId,participants:[roles[0].roleId],key:'invite-'+n+'-'+k},'c');await call('office_discussion',{action:'leave',id:r.room.id},'c');}
+  for(let k=0;k<14;k++){const r=await call('office_discussion',{...create,officeId,participants:[roles[0].roleId],key:'invite-'+n+'-'+k},'c');await call('office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:r.room.id},'c');}
  }
  const focused=await call('office_discussion',{...create,key:'focus-after-invitations'});
  assert.equal((await call('role_sync',{responseBudgetBytes:65536})).discussions.active.id,focused.room.id,'invitation limit must not hide an active discussion');
  await deny('office_receive',{action:'take',key:'overloaded-focus'},'invalid_input');
- await call('office_discussion',{action:'close',id:focused.room.id,expectedRevision:focused.room.revision});
+ await call('office_discussion',{action:'close',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:focused.room.id,expectedRevision:focused.room.revision});
+ const visibleInvite=await call('office_discussion',{...create,participants:[roles[0].roleId],key:'visible-after-hidden-invites'},'c');
+ const bound=await db.get("SELECT * FROM role_bindings WHERE role_id=? AND state='active'",[roles[0].roleId]);
+ const unfiltered=await db.all("SELECT r.id FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state IN ('joined','invited') ORDER BY (m.state='joined') DESC,r.created_at,r.id LIMIT 66",[roles[0].roleId]);assert(!unfiltered.some((r:any)=>r.id===visibleInvite.room.id),'the original unfiltered window must actually exclude the permitted invitation in this fixture');
+ const narrowAttention=await graph.discussions.attention({v:1,principal:bound.principal,agentId:bound.connector_id,runtimeId:bound.runtime_id,roleId:bound.role_id,roleBindingId:bound.id,roleBindingEpoch:bound.epoch,assignmentIds:['seat-0'],transport:'http-mcp',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+ assert(narrowAttention.invitations.some((r:any)=>r.id===visibleInvite.room.id),'inaccessible invitations cannot fill the preview window and hide accessible invitations');
+ await call('office_discussion',{action:'close',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:visibleInvite.room.id,expectedRevision:visibleInvite.room.revision},'c');
  for(let n=0;n<5;n++)await graph.roles.deleteOffice({id:'busy-office-'+n,expectedRevision:1},admin);
  console.log('PASS high invitation volume: active focus remains visible and ordinary mail stays deferred');
 
@@ -139,8 +149,8 @@ try{
  await graph.roles.configureOffice({id:'room',title:'Fixture office',state:'active',expectedRevision:1,seats:[seats[2]]},admin);
  await deny('office_script',{action:'get',officeId:'room',id:shared.id},'scope_denied','new-target');await deny('office_discussion',{action:'get',id:parallel.room.id},'scope_denied','b');
  await graph.roles.configureOffice({id:'outside-room',title:'Another office',state:'active',expectedRevision:1,seats:[{id:'outside-seat',roleId:roles[3].roleId,label:'Outside',role:'member'},{id:'moved-b-seat',roleId:roles[1].roleId,label:'New duty',role:'member'}]},admin);
- const movedFocus=await call('office_discussion',{...create,officeId:'outside-room',participants:[roles[3].roleId],key:'moved-focus'},'b');assert(movedFocus.room.id,'moving offices must release an inaccessible old focus even without role_sync');await call('office_discussion',{action:'leave',id:movedFocus.room.id},'b');assert.equal((await call('role_sync',{},'b')).discussions.active,null);
- await db.run('UPDATE office_discussions SET expires_at=? WHERE id=?',[Date.now()-1,parallel.room.id]);assert(!(await graph.building.snapshot('room',admin)).meetings.some((r:any)=>r.id===parallel.room.id),'expired rooms leave the scene even before the cleanup timer');await graph.discussions.sweep();assert.equal((await db.get('SELECT COUNT(*) n FROM office_discussion_posts')).n,0);
+ const movedFocus=await call('office_discussion',{...create,officeId:'outside-room',participants:[roles[3].roleId],key:'moved-focus'},'b');assert(movedFocus.room.id,'moving offices must release an inaccessible old focus even without role_sync');await call('office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:movedFocus.room.id},'b');assert.equal((await call('role_sync',{},'b')).discussions.active,null);
+ await db.run('UPDATE office_discussions SET expires_at=? WHERE id=?',[Date.now()-1,parallel.room.id]);assert(!(await graph.building.snapshot('room',admin)).meetings.some((r:any)=>r.id===parallel.room.id),'expired rooms leave the scene even before the cleanup timer');await graph.discussions.sweep();assert.equal((await db.get('SELECT COUNT(*) n FROM office_discussion_posts WHERE room_id=?',[parallel.room.id])).n,0);
  reopened=new GraphMemory('.',{dbPath:file});await reopened.init();assert.equal((await reopened.scripts.run({action:'list',roleId:roleNow.id},admin)).scripts[0].id,saved.id);assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');assert.deepEqual(await db.all('PRAGMA foreign_key_check'),[]);
  await reopened.close();reopened=undefined;
  await graph.roles.deleteOffice({id:'room',expectedRevision:2},admin);assert.equal((await db.get('SELECT COUNT(*) n FROM office_scripts WHERE office_id=?',['room'])).n,0);assert(await graph.getNodeById(memory.id));

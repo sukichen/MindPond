@@ -10,6 +10,9 @@ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-office-config-'));
 try{
   for(const host of ['codex','opencode','claude','generic-http-mcp']){
     const c=officeConnection({host,id:'example',url:'https://memory.example/mcp'});
+    assert.equal(c.identityMode,'connection');assert(c.text.includes('X-MindPond-Identity'));assert.equal(Object.keys(c.files??{}).length,0,'ordinary configurations never require a plugin');
+    const fallback=credentialConnectionDownload({host,id:'example',url:'https://memory.example/mcp',token:'synthetic-no-secret'});assert(fallback.text.includes('X-MindPond-Identity'),'implicit download mode must agree with the public template');
+    const native=officeConnection({host,id:'example',url:'https://memory.example/mcp',identityMode:'native'});assert.equal(native.identityMode,'native');assert(!native.text.includes('X-MindPond-Identity'));assert.equal(Object.keys(native.files??{}).length,host==='opencode'?1:0);
     assert(!c.text.includes('65000')&&!c.text.includes('= 65\n'));
     if(host==='codex')assert.match(c.text,/tool_timeout_sec = 360\n/);
     else if(host!=='generic-http-mcp'){
@@ -24,7 +27,7 @@ try{
   for(const client of ['codex','opencode'] as const){
     const directory=path.join(dir,client);
     await prepareRoleClientBundle({client,directory,url:'https://memory.example/mcp',sessionLabel:'fixture',tokenEnv:'MINDPOND_FIXTURE_TOKEN'});
-    const shared=officeConnection({host:client,id:'office',name:'mindpond_office',url:'https://memory.example/mcp',sessionLabel:'fixture',tokenEnv:'MINDPOND_FIXTURE_TOKEN'});
+    const shared=officeConnection({host:client,id:'office',name:'mindpond_office',url:'https://memory.example/mcp',sessionLabel:'fixture',tokenEnv:'MINDPOND_FIXTURE_TOKEN',identityMode:'native'});
     if(client==='codex')assert.equal(await fs.readFile(path.join(directory,'.codex/config.toml'),'utf8'),shared.text);
     else assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory,'opencode.json'),'utf8')).mcp,(shared.config as any).mcp);
   }

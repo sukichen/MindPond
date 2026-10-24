@@ -1,6 +1,6 @@
 # CLI 角色接入
 
-默认入口是网页“宿主连接”，配置独立的 Office 与 Memory HTTP MCP。CLI 配置包提供启动与取信快捷命令。日常直接启动所需的配置文件路径、完整双 MCP 示例、OpenCode 插件安装与凭据加载步骤见[客户端接入](client-connections.md#首次配置完成后直接启动-codex--opencode)，无需依赖指定启动脚本。
+默认入口是网页“宿主连接”，配置独立的 Office 与 Memory HTTP MCP。CLI 配置包是可选的逐聊天增强，提供启动与取信快捷命令，需要目标版本的原生身份或插件支持；它不承担普通 MCP 接入。日常直接启动所需的配置文件路径、完整双 MCP 示例、OpenCode 插件安装与凭据加载步骤见[客户端接入](client-connections.md#首次配置完成后直接启动-codex--opencode)，无需依赖指定启动脚本。
 
 ## 准备配置包
 

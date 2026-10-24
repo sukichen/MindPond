@@ -1,3 +1,4 @@
+import {adminDirectory,type DirectoryWindows} from './admin-directory.js';
 /** HTTP-MCP collaboration v2. Operational records never become memory nodes. */
 import type { Database } from 'sqlite';
 import { createHash, randomUUID } from 'node:crypto';
@@ -201,18 +202,28 @@ export class OfficeStore {
       return { id: i.id, revision: i.expectedRevision + 1 };
     });
   }
-  async registry(a?: Actor) {
+  async registry(a?: Actor, windows:DirectoryWindows={}) {
     this.admin(a);
+    const agents=await adminDirectory(this.db,"SELECT a.*,a.id directory_key,(SELECT COUNT(*) FROM role_bindings b WHERE b.connector_id=a.id AND b.state='active') roleCount,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id","a.state<>'deleted'",[],windows.agents);
+    const projects=await adminDirectory(this.db,'SELECT *,id directory_key FROM office_projects','1',[],windows.projects);
+    const offices=await adminDirectory(this.db,'SELECT *,id directory_key FROM offices','1',[],windows.offices);
+    return {agents:agents.rows,projects:projects.rows.map(p=>({...p,members:JSON.parse(p.members)})),offices:offices.rows,
+      directory:{agents:agents.page,projects:projects.page,offices:offices.page}};
+  }
+  async choices(a?:Actor){
+    this.admin(a);
+    // Lightweight, complete references for selectors. Paging rich cards must
+    // never remove an existing member from a form or hide a selected role.
     return {
-      agents: await this.db.all(
-        "SELECT a.*,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id WHERE a.state<>'deleted' ORDER BY a.created_at DESC LIMIT 128"
-      ),
-      projects: (
-        await this.db.all<Row[]>('SELECT * FROM office_projects ORDER BY title LIMIT 128')
-      ).map((p) => ({ ...p, members: JSON.parse(p.members) })),
-      offices: await this.db.all('SELECT * FROM offices ORDER BY created_at DESC LIMIT 200')
+      agents:await this.db.all("SELECT id,name,principal,host,state,revision FROM office_agents WHERE state<>'deleted' ORDER BY name,id"),
+      roles:await this.db.all('SELECT id,name,principal,state,revision FROM character_roles ORDER BY name,id'),
+      offices:await this.db.all('SELECT id,title,state FROM offices ORDER BY title,id'),
+      projects:await this.db.all('SELECT id,title,enabled FROM office_projects ORDER BY title,id')
     };
   }
+  async agent(id:string,a?:Actor){this.admin(a);return this.db.get<Row>("SELECT a.*,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id WHERE a.id=? AND a.state<>'deleted'",[id]);}
+  async officeExists(id:string,a?:Actor){this.admin(a);return !!await this.db.get('SELECT 1 FROM offices WHERE id=?',[id]);}
+  async agentSeats(id:string,a?:Actor){this.admin(a);return this.db.all<Row[]>('SELECT id FROM office_seats WHERE agent_id=? AND enabled=1',[id]);}
   async deleteAgent(i:{id:string;expectedRevision:number},a?:Actor){
     this.admin(a);
     return this.write(async()=>{

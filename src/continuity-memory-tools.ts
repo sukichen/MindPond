@@ -1,10 +1,11 @@
+import type {MemoryAuthority} from './core/memory-access.js';
 import type {GraphMemory} from './core/graph-memory.js';
 import type {MemoryOwner} from './core/memory-owners.js';
 import {MindPondError} from './core/errors.js';
 import {continuityReadSchema,continuityCheckpointSchema,continuityTaskWriteSchema,continuityTasksSchema,continuityHistorySchema,continuityArchiveSchema} from './core/role-continuity.js';
 type Actor=Extract<MemoryOwner,{kind:'agent'|'user'}>;
-export function registerContinuityMemoryTools(graph:GraphMemory,tool:(name:string,description:string,shape:any,run:(a:any,o:Actor,g:()=>Promise<void>)=>Promise<unknown>,advanced?:boolean)=>void){
- const role=(o:Actor,authorize:()=>Promise<void>)=>{if(o.kind!=='agent')throw new MindPondError('invalid_input','This chat has no bound role. Human users manage role continuity in the role details page; ordinary human memory remains available.');return {roleId:o.id,authorize};};
+export function registerContinuityMemoryTools(graph:GraphMemory,tool:(name:string,description:string,shape:any,run:(a:any,o:Actor,g:()=>Promise<void>)=>Promise<unknown>,advanced?:boolean)=>void,authority:MemoryAuthority|undefined){
+ const role=(o:Actor,authorize:()=>Promise<void>)=>{if(o.kind!=='agent')throw new MindPondError('invalid_input','This chat has no bound role. Human users manage role continuity in the role details page; ordinary human memory remains available.');return {roleId:o.id,authorize,authority};};
  tool('memory_resume','After role activation, reconnect or context loss, read exact current working summary and unfinished tasks without guessing a search query. Follow nextCursor; honor pause/stop. Historical/archived work is loaded only on demand.',continuityReadSchema.shape,async(a,o,g)=>o.kind==='user'?{mode:'human',notice:'No role is bound to this chat. Human memory includes all knowledge; manage role working state in the role details page.'}:graph.roleContinuity.resume(role(o,g),a));
  tool('memory_continuity_checkpoint','Replace one role working summary with expectedRevision (0 for first save). Atomically include up to8 versioned tasks. Record goal, verified progress, blockers, constraints, next actions and actual sources; office work requires matching officeId. Stable key retries; previous summaries stay in history.',continuityCheckpointSchema.shape,async(a,o,g)=>graph.roleContinuity.checkpoint(role(o,g),a),true);
  tool('memory_continuity_task','Create/update one role task with stable id and expectedRevision (0 for new). Status is attributed progress, not external verification. Updating an archived task restores it. Preserve its office scope and actual sources.',continuityTaskWriteSchema.shape,async(a,o,g)=>graph.roleContinuity.updateTask(role(o,g),a),true);

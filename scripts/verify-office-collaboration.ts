@@ -57,6 +57,7 @@ try {
     assert.equal((await other.building.snapshot('room',admin,counts.revision)).counts.total,counts.counts.total,'unchanged document snapshots still carry exact live totals');
     const pendingWindow=await graph.building.history({officeId:'room',state:'pending',knownIds:[first]},admin);
     assert.equal(pendingWindow.knownMessages[0].state,'archived');assert.equal(pendingWindow.knownMessages[0].matches,0,'a completed message leaves an applied pending filter');
+    assert.equal(pendingWindow.knownMessages[0].result,'Verified reference resolution','already loaded messages must refresh their completion feedback, including outside the newest page');
     const reply = await graph.building.message({ action: 'send', replyTo: first, body: 'Please check the cited revision', key: 'reply' }, b);
     assert.equal((await graph.building.message({ action: 'get', messageId: reply.messageId }, a)).quote.id, first);
     const cursor = await graph.building.receive({ action: 'list', direction: 'sent' }, a);

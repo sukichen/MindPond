@@ -3,7 +3,7 @@
  const node=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
  const bytes=n=>n==null?'未知':n>=1073741824?(n/1073741824).toFixed(1)+' GiB':n<1048576?(n/1024).toFixed(0)+' KiB':(n/1048576).toFixed(1)+' MiB';
  window.MindPondOfficeOperations={mount({getState,api,run,showDetail,notice,confirmAction,download,openOffice,refreshOffice}){
-  const panel=document.getElementById('officeOperations');let generation=0,recoveryGeneration=0,loading=false,capacityDraft=null,activeActions=0;
+  let generation=0,recoveryGeneration=0,loading=false,capacityDraft=null,activeActions=0;
   const runAction=async(fn,button)=>{activeActions++;try{return await run(fn,button);}finally{activeActions--;}};
   const button=(text,fn)=>{const b=node('button',text);b.type='button';b.onclick=()=>runAction(fn,b);return b;};
   const current=(ticket,epoch)=>ticket===generation&&getState().logged&&getState().authEpoch===epoch&&getState().appView==='officeOperations';
@@ -17,13 +17,12 @@
    const reason=node('textarea');reason.required=true;reason.maxLength=1000;reason.rows=3;reason.placeholder='说明中止原因，以及已经完成、尚需核对的部分';
    const label=node('label','恢复说明');label.append(reason);form.append(label,node('p','原处理将明确标记为人类中止并通知发件人；重新安排会创建新消息。请先核对外部成果，避免重复执行。'));
    const target=node('select');target.setAttribute('aria-label','重新安排给');
-   const offices=getState().data?.characters,officeSeats=getState().office?.office.id===room?new Set(getState().office.seats.map(s=>s.id)):null;
-   const members=officeSeats?new Set((offices?.mappings??[]).filter(m=>officeSeats.has(m.seat_id)).map(m=>m.role_id)):new Set((offices?.roles??[]).filter(r=>r.state==='active').map(r=>r.id));
-   for(const role of offices?.roles??[])if(role.state==='active'&&members.has(role.id)){const option=node('option',role.name);option.value=role.id;target.append(option);}
-   target.value=m.recipient;form.append(node('label','重新安排给'),target);
+   const recipients=room?full.recoveryRecipients??[]:((getState().data?.choices?.roles??getState().data?.characters?.roles)??[]).filter(r=>r.state==='active');
+   for(const role of recipients){const option=node('option',role.name);option.value=role.id;target.append(option);}
+   target.value=recipients.some(r=>r.id===m.recipient)?m.recipient:recipients[0]?.id??'';form.append(node('label','重新安排给'),target);
    const key=crypto.randomUUID(),submit=async action=>{
     if(!valid()||!form.isConnected)throw Error('页面或登录状态已变化。请复制说明，重新打开消息后核对最新状态。');
-    if(!form.reportValidity())return;if(!await confirmAction(action==='retry'?'中止原处理，并创建一条待处理的新消息？':'明确中止原处理，并通知发件人？'))return;
+    if(!form.reportValidity())return;if(action==='retry'&&!target.value)throw Error('没有可用的接收角色，可以仅中止处理；重新安排前请先设置办公室成员。');if(!await confirmAction(action==='retry'?'中止原处理，并创建一条待处理的新消息？':'明确中止原处理，并通知发件人？'))return;
     if(!valid()||!form.isConnected)return;
     const input={...(room?{officeId:room}:{}),messageId:m.id,action,expectedTakenAt:m.takenAt,reason:reason.value.trim(),key,...(action==='retry'?{recipient:target.value}:{})};
     // Pin payload after the first request: a lost response can be replayed safely.

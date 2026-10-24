@@ -745,3 +745,12 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-health-card p{font-size:12px;color:var(--o-muted);overflow-wrap:anywhere}.office-health-actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 28px}
 .office-recovery-form{display:grid;gap:12px;margin-top:20px}.office-recovery-form textarea{min-height:100px}.office-health-actions button{white-space:normal;text-align:left}
 .office-attention{padding:16px 18px;border:1px solid var(--o-line);border-radius:12px;background:#fff;margin:12px 0}.office-attention h3{margin-top:0}.office-attention a{color:var(--o-green);text-underline-offset:3px}
+
+/* Paged human directories: keep counts and actions readable in narrow panels. */
+.office-directory-page{grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:10px;min-width:0;padding:10px 0}
+.office-directory-page small{flex:1 1 220px;overflow-wrap:anywhere;line-height:1.6}
+.office-directory-page button{flex:0 1 auto;white-space:normal}
+
+.office-participant-request{min-width:0;padding:14px;margin:12px 0;border:1px solid var(--o-line);border-radius:10px;background:#fff}.office-participant-request textarea{display:block;box-sizing:border-box;width:100%;margin:10px 0}.office-participant-request button{white-space:normal;margin:4px 8px 4px 0}.office-participant-request strong{overflow-wrap:anywhere}
+
+.office-discussion-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px;margin:12px 0}.office-discussion-member{min-width:0;padding:12px;background:var(--o-paper,#f5f7f2);border-radius:8px;overflow-wrap:anywhere}.office-discussion-member p{margin:6px 0 0;line-height:1.7}

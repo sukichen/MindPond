@@ -27,6 +27,20 @@ export interface ErrorShape {
   details?: Record<string, unknown>;
 }
 
+const NEXT_ACTION:Record<MindPondErrorCode,string>={
+  invalid_input:'Correct the named parameters using this tool’s input schema, then retry. Do not broaden permissions.',
+  not_found:'List records visible to this identity and verify the ID and scope. Missing and inaccessible records are not permission grants.',
+  scope_denied:'Check the current identity, membership and grants. Ask the human for required approval; do not bypass the restriction.',
+  identity_required:'Configure connection identity or supported chat identity outside the conversation, then verify role_sync and memory_identity.',
+  idempotency_conflict:'Read the existing result. Retry the exact original payload/key, or use a new key for a different operation.',
+  source_revision_conflict:'Read the actual source and its current revision; correct conflicting source references before retrying.',
+  stale_lease:'Read the current task and obtain a valid lease before retrying. Do not reuse the expired lease.',
+  stale_version:'Read the current record and revision, preserve your draft, then retry with the current expected revision.',
+  material_over_budget:'Read complete pages or reduce the batch. If supported, increase the named response budget; do not silently drop content.',
+  temporarily_unavailable:'Retry with bounded backoff within user authorization, preserving the same key and payload for mutations.',
+  internal:'Report the operation and service version for diagnosis. Do not assume a mutation failed or blindly repeat it.'
+};
+
 export class MindPondError extends Error {
   readonly code: MindPondErrorCode;
   readonly field?: string;
@@ -40,8 +54,8 @@ export class MindPondError extends Error {
     this.name = 'MindPondError';
     this.code = code;
     this.field = opts.field;
-    this.retryable = opts.retryable ?? false;
-    this.nextAction = opts.nextAction;
+    this.retryable = opts.retryable ?? (code==='temporarily_unavailable');
+    this.nextAction = opts.nextAction?.trim() || NEXT_ACTION[code];
     this.retryAfterMs = opts.retryAfterMs;
     this.details = opts.details;
   }
@@ -77,10 +91,11 @@ export function toStructuredError(err: unknown): ErrorShape {
   if (err instanceof MindPondError) return err.toJSON();
   const message = err instanceof Error ? err.message : String(err);
   if(err instanceof Error&&err.name==='ZodError')return {code:'invalid_input',message,retryable:false,nextAction:'Use the tool input schema to correct the named fields.'};
+  if(/SQLITE_(?:CORRUPT|NOTADB|IOERR|CANTOPEN|FULL)|ENOENT|EACCES/.test(message))return {code:'internal',message:'The service could not safely read or write its storage. The operation outcome is unconfirmed.',retryable:false,nextAction:NEXT_ACTION.internal};
   for (const { match, shape } of LEGACY_PATTERNS) {
-    if (match.test(message)) return { ...shape, message };
+    if (match.test(message)) return { ...shape, message, nextAction:shape.nextAction??NEXT_ACTION[shape.code] };
   }
-  return { code: 'internal', message, retryable: false, nextAction: '保留诊断信息并报告；不要将其当作瞬时故障无限重试' };
+  return { code:'internal',message:'The service encountered an unexpected internal failure. The operation outcome is unconfirmed.',retryable:false,nextAction:NEXT_ACTION.internal };
 }
 
 export function httpStatus(code: MindPondErrorCode): number {
@@ -97,3 +112,6 @@ export function httpStatus(code: MindPondErrorCode): number {
     default: return 500;
   }
 }
+
+/** Preserve the HTTP error string while giving clients the same MCP guidance. */
+export function httpError(code:MindPondErrorCode,reason:string,nextAction?:string){return {error:reason,...new MindPondError(code,reason,{nextAction}).toJSON()};}

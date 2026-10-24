@@ -23,6 +23,7 @@ interface Options {
   get:(id:string,o:Actor)=>Promise<MemoryNode>;
   associationHooks:(o:Actor,g:Guard)=>MemoryWriteHooks;
   authorizeIncidentAssociations:(id:string,o:Actor,g:Guard)=>Promise<void>;
+  assertWritable:(actor:Actor,target:MemoryOwner,nodeId?:string)=>Promise<void>;
   write:any;related:z.ZodType;recallOptions:any;search:(a:any,o:Actor)=>Promise<any>;instructions:string;
 }
 export function registerOwnerMemoryActions(api:Options){
@@ -36,7 +37,7 @@ export function registerOwnerMemoryActions(api:Options){
     return {domains:[node.domain],...(node.domain.kind==='session'?{sessionId:node.domain.id}:{})};
   };
   const writable=async(nodeId:string,o:Actor,g:Guard,topology=false)=>{
-    await g();await graph.memoryOwners.assertWritable(o,await graph.memoryOwners.owner(await get(nodeId,o)),nodeId);
+    await g();await api.assertWritable(o,await graph.memoryOwners.owner(await get(nodeId,o)),nodeId);
     if(topology)await authorizeIncidentAssociations(nodeId,o,g);
   };
   tool('memory_capabilities','Discover the actual direct tools and advanced actions. Fetch one advanced schema with memory_action(describe:true).',{},async()=>({
@@ -92,7 +93,7 @@ export function registerOwnerMemoryActions(api:Options){
   });
   action('memory_export','Export authorized complete Markdown records with versions and sources. Stable cursor; not a database backup.',{...scope,afterId:id.optional(),limit:page.limit,maxBytes:z.number().int().min(1024).max(2000000).optional(),includeEvents:z.boolean().optional()},async(a,o)=>graph.exportMemory(await context(o,a.officeId)??{}, {...a,operatorAll:o.kind==='user'&&!a.officeId}));
   action('memory_save_validate','Preview saving, anchors and scored links without creating memories/tasks. Reports indexed issues and possible duplicates; saving rechecks current state.',{...api.write,anchors:z.unknown().optional(),related:api.related,...scope,idempotencyKey:key.optional()},async(a,o,g)=>{
-    const target:MemoryOwner=a.officeId?{kind:'office',id:a.officeId}:o;await g();await graph.memoryOwners.assertWritable(o,target);
+    const target:MemoryOwner=a.officeId?{kind:'office',id:a.officeId}:o;await g();await api.assertWritable(o,target);
     const dimensions=a.dimensions??[(await graph.getDimensionPolicy()).defaultDimension];
     const {officeId,...input}=a;
     const {domain,...preview}=await graph.validateMemorySave({...input,dimensions,domain:await graph.memoryOwners.domain(target,false),memberships:dimensions.map((memoryType:string)=>({spaceId:'memory',memoryType}))});

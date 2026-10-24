@@ -46,10 +46,10 @@ export class MemoryOwners {
         const r=await this.db.get('SELECT id,title,state,revision FROM offices WHERE id=?',[officeId]);
         if(!r)throw new MindPondError('not_found','Office no longer exists');return r;
     }
-    async offices(roleId?:string) {
+    async offices(roleId?:string,assignmentIds?:string[]) {
         if(!roleId)return this.db.all("SELECT o.id,o.title,o.state FROM offices o UNION ALL SELECT n.office_id id,n.title,'deleted' state FROM memory_office_namespaces n WHERE NOT EXISTS(SELECT 1 FROM offices o WHERE o.id=n.office_id) ORDER BY title,id");
         const b=await this.roleBinding(roleId);if(!b)return [];
-        const seats=await this.graph.offices.authorizedSeats({v:1,principal:b.principal,agentId:b.connector_id,runtimeId:b.runtime_id,transport:'http-mcp',roleId,roleBindingId:b.id,roleBindingEpoch:b.epoch,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+        const seats=await this.graph.offices.authorizedSeats({v:1,principal:b.principal,agentId:b.connector_id,runtimeId:b.runtime_id,transport:'http-mcp',roleId,roleBindingId:b.id,roleBindingEpoch:b.epoch,assignmentIds,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
         const ids=[...new Set(seats.map(s=>s.office_id))].sort();
         return Promise.all(ids.map(async id=>{const o=await this.office(id);return {...o,seats:seats.filter(s=>s.office_id===id).map(s=>({id:s.id,revision:s.revision})).sort((a,b)=>a.id.localeCompare(b.id))};}));
     }
@@ -73,14 +73,14 @@ export class MemoryOwners {
         if(await this.db.get("SELECT 1 FROM nodes WHERE domain_kind='personal' AND domain_id=?",[id]))throw new MindPondError('invalid_input','The role namespace conflicts with existing unassigned knowledge; human review is required.');
         if(create)await this.db.run('INSERT OR IGNORE INTO memory_role_namespaces VALUES(?,?)',[owner.id,id]);return {kind:'personal' as const,id};
     }
-    async context(owner:MemoryOwner,officeId?:string) {
+    async context(owner:MemoryOwner,officeId?:string,assignmentIds?:string[]) {
         if(owner.kind==='user'){
             if(!officeId)return undefined;
             const retained=await this.db.get('SELECT domain_id FROM memory_office_namespaces WHERE office_id=?',[officeId]);
             return {domains:[retained?{kind:'personal' as const,id:retained.domain_id}:await this.domain({kind:'office',id:officeId})]};
         }
         if(owner.kind!=='agent')throw new MindPondError('scope_denied','Memory actor must be a human or authenticated role');
-        const rooms=await this.offices(owner.id);
+        const rooms=await this.offices(owner.id,assignmentIds);
         if(officeId&&!rooms.some(o=>o.id===officeId))throw new MindPondError('scope_denied','Your role is not a permitted member of this office');
         const domains=officeId?[]:[await this.domain(owner)];
         for(const o of rooms.filter(o=>!officeId||o.id===officeId))domains.push(await this.domain({kind:'office',id:o.id}));
@@ -121,11 +121,11 @@ export class MemoryOwners {
         await this.db.run('INSERT INTO memory_action_log(ts,action,node_id,reason) VALUES(?,?,?,?)',[at,'office_memory_policy',memoryId,JSON.stringify({officeId:owner.id,locked,revision})]);
         return {locked,revision,updatedAt:at};
     });}
-    async assertWritable(actor:MemoryOwner,target:MemoryOwner,memoryId?:string){
+    async assertWritable(actor:MemoryOwner,target:MemoryOwner,memoryId?:string,assignmentIds?:string[]){
         if(actor.kind==='user')return;
         if(target.kind==='agent'&&actor.kind==='agent'&&target.id===actor.id)return;
         if(target.kind!=='office'||actor.kind!=='agent')throw new MindPondError('scope_denied','Cannot modify another owner’s knowledge');
-        const room=(await this.offices(actor.id)).find(o=>o.id===target.id);
+        const room=(await this.offices(actor.id,assignmentIds)).find(o=>o.id===target.id);
         if(!room||room.state!=='active')throw new MindPondError('scope_denied','Your role must be a current member of an active office to modify its memory');
         if(memoryId&&(await this.policy(memoryId)).locked)throw new MindPondError('scope_denied','This office memory is read-only for roles. Ask the human administrator to revise or unlock it.');
     }
