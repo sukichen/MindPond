@@ -50,6 +50,6 @@ assert.equal(owner.disabled,true);assert.equal(reason.disabled,false);assert.equ
 const savingAgain=form.onsubmit({preventDefault(){}});requests[11].resolve({});await new Promise(r=>setImmediate(r));
 assert.equal(dialog.open,false);assert.equal(requests[12].path,'role/continuity/tasks');requests[12].reject(Object.assign(Error('List unavailable'),{status:403}));await savingAgain;
 assert(all(container).some(n=>n.textContent==='记录已保存，但列表刷新失败：List unavailable'),'a successful mutation must not be reported as a failed save');
-const html=await fs.readFile(new URL('../web/collaboration.html',import.meta.url),'utf8');assert(html.includes('office-continuity.js?v=continuity-review-20261022'));
+const html=await fs.readFile(new URL('../web/collaboration.html',import.meta.url),'utf8');const release=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));assert(html.includes('office-continuity.js?v=production-'+release.version));
 const office=await fs.readFile(new URL('../web/office.js',import.meta.url),'utf8');assert(office.includes('state.authEpoch===continuityEpoch'));assert(!office.includes('state.authenticated'));
 console.log('PASS real continuity UI: manager target, navigation, stale response fences, pagination retry, in-flight edit locking, save/read failure separation and asset registration');

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import {webRuntimeStatus} from './core/runtime-status.js';
+import {releaseInfo} from './core/release-info.js';
 import {memoryMcpEndpoint,roleConnectionDownload} from './integrations/office-connection.js';
 import {createOwnerMemoryServer,ROLE_MEMORY_INSTRUCTIONS} from './role-memory-service.js';
 import {officeWorkbench} from './integrations/office-workbench.js';
@@ -138,6 +140,7 @@ const pipeline = new MemoryPipelineManager(graphMemory, undefined);
 const consolidation = new MemoryConsolidation(graphMemory, undefined);
 
 const app = express();
+app.use(webRuntimeStatus.middleware());
 app.disable('x-powered-by');
 const trustedProxy=process.env.MEMORY_TRUST_PROXY;
 if(trustedProxy){
@@ -261,7 +264,7 @@ function failErr(res: express.Response, err: unknown, fallbackStatus = 500) {
 }
 
 // ---- routes ----
-app.get('/health', (_req, res) => ok(res, { service: 'mindpond', port: PORT, mode: 'service (no LLM inside)' }));
+app.get('/health', (_req, res) => ok(res, { service: 'mindpond', version:releaseInfo().version, port: PORT, mode: 'service (no LLM inside)' }));
 const humanOperator={v:1 as const,operator:true,principal:'human',issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
 async function humanOwnerFilter(req:express.Request,src:Record<string,any>){
   if(!src.ownerRoleId&&!src.ownerOfficeId)return undefined;

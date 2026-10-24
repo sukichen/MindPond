@@ -60,6 +60,8 @@ for (const name of new Set(sourceFiles)) {
     }
   }
 }
+// Static browser code must identify its own build so a stale page is detectable.
+if(!fs.readFileSync(path.join(root,'web/office.js'),'utf8').includes("UI_VERSION='"+pkg.version+"'"))failures.push('web/office.js: browser version differs from package.json');
 // Do not run prepack recursively. Scan the exact npm file list and compiled output.
 const packed = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { cwd: root, maxBuffer: 8_000_000 }).toString())[0];
 for (const { path: name } of packed.files) {

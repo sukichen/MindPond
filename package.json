@@ -1,6 +1,6 @@
 {
   "name": "mindpond",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Standalone graph memory for agents: scoped knowledge, multi-anchor ripple retrieval and recoverable organization.",
   "type": "module",
   "main": "dist/index.js",
@@ -34,7 +34,7 @@
     "verify:custom-dimensions": "tsx scripts/verify-custom-dimensions.ts",
     "verify:task-memory": "tsx scripts/verify-task-memory.ts",
     "docs:prompts": "tsx scripts/export-host-prompts.ts",
-    "check": "npm run build && npm run verify:graph-ripple && npm run verify:graph-dimensions && npm run verify:dimension-bridges && npm run verify:custom-dimensions && npm run verify:anchors && tsx scripts/export-host-prompts.ts --check && npm run verify:degree-cap && npm run verify:layered-memory-graph && npm run verify:memory-capabilities && npm run verify:role-continuity && npm run verify:save-policy && npm run verify:save-index-sync && npm run verify:multi-agent && npm run verify:lightweight && npm run verify:network-mcp && npm run verify:collaboration && npm run verify:collaboration-wait && npm run verify:office && npm run verify:roles && npm run verify:office-building && npm run verify:office-resources && npm run verify:office-deletion && npm run verify:office-replay && npm run verify:save-preview && npm run verify:organization-driver && npm run verify:errors && npm run verify:trusted-context && npm run verify:legacy-consolidation && npm run verify:organize-request && npm run verify:growth && npm run verify:host-runner && npm run verify:extraction && npm run verify:lifecycle && npm run verify:legacy-domain-links && npm run verify:domains && npm run verify:domain-migration && npm run verify:domain-synthesis && npm run verify:domain-entries && npm run verify:session-lifecycle && npm run verify:recall-feedback && npm run verify:task-memory && npm run verify:wide-memory-loop && npm run verify:opencode-native && npm run verify:context-assembly && npm run verify:memory-revisions && npm run verify:quality-harness && npm run verify:request-workbench && npm run verify:context && npm run verify:workbench && npm run verify:protocol-discovery && npm run verify:space-ripple && npm run smoke && npm run eval:ripple && tsx scripts/verify-agent-api.ts && npm run verify:memory-ui && npm run verify:owner-workbench && npm run verify:production-role-memory && npm run verify:production-safety && npm run verify:production-boundaries && npm run verify:database-maintenance && npm run verify:embedding-profiles && npm run verify:licenses && npm run verify:release",
+    "check": "npm run build && npm run verify:graph-ripple && npm run verify:graph-dimensions && npm run verify:dimension-bridges && npm run verify:custom-dimensions && npm run verify:anchors && tsx scripts/export-host-prompts.ts --check && npm run verify:degree-cap && npm run verify:layered-memory-graph && npm run verify:memory-capabilities && npm run verify:role-continuity && npm run verify:save-policy && npm run verify:save-index-sync && npm run verify:multi-agent && npm run verify:lightweight && npm run verify:production-usability && npm run verify:generic-connection && npm run verify:network-mcp && npm run verify:collaboration && npm run verify:collaboration-wait && npm run verify:office && npm run verify:roles && npm run verify:office-building && npm run verify:office-resources && npm run verify:office-deletion && npm run verify:office-replay && npm run verify:save-preview && npm run verify:organization-driver && npm run verify:errors && npm run verify:trusted-context && npm run verify:legacy-consolidation && npm run verify:organize-request && npm run verify:growth && npm run verify:host-runner && npm run verify:extraction && npm run verify:lifecycle && npm run verify:legacy-domain-links && npm run verify:domains && npm run verify:domain-migration && npm run verify:domain-synthesis && npm run verify:domain-entries && npm run verify:session-lifecycle && npm run verify:recall-feedback && npm run verify:task-memory && npm run verify:wide-memory-loop && npm run verify:opencode-native && npm run verify:context-assembly && npm run verify:memory-revisions && npm run verify:quality-harness && npm run verify:request-workbench && npm run verify:context && npm run verify:workbench && npm run verify:protocol-discovery && npm run verify:space-ripple && npm run smoke && npm run eval:ripple && tsx scripts/verify-agent-api.ts && npm run verify:memory-ui && npm run verify:owner-workbench && npm run verify:production-role-memory && npm run verify:production-safety && npm run verify:production-boundaries && npm run verify:database-maintenance && npm run verify:embedding-profiles && npm run verify:licenses && npm run verify:release",
     "verify:agent-api": "npm run build && tsx scripts/verify-agent-api.ts",
     "eval:ripple": "tsx scripts/eval-ripple.ts --strict",
     "verify:growth": "tsx scripts/verify-growth.ts",
@@ -105,7 +105,11 @@
     "verify:owner-workbench": "tsx scripts/verify-owner-workbench.ts",
     "verify:role-continuity": "tsx scripts/verify-role-continuity.ts && node scripts/verify-continuity-ui.mjs",
     "verify:office-resources": "tsx scripts/verify-office-resources.ts && node scripts/verify-office-resources-ui.mjs",
-    "verify:office-meetings": "node scripts/verify-office-meetings.mjs"
+    "verify:office-meetings": "node scripts/verify-office-meetings.mjs",
+    "verify:generic-connection": "tsx scripts/verify-generic-connection.ts",
+    "release:offline": "node scripts/offline-release.mjs",
+    "benchmark:production": "tsx scripts/benchmark-production.ts",
+    "verify:production-usability": "tsx scripts/verify-runtime-status.ts && node scripts/verify-production-operations-ui.mjs && node scripts/verify-offline-release.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
@@ -175,8 +179,8 @@
     "docs/role-cli.md",
     "docs/office-building.md",
     "web/guide/01-login.jpg",
-    "web/guide/02-connection.jpg",
-    "web/guide/03-mcp.jpg",
+    "web/guide/27-standard-registration.jpg",
+    "web/guide/28-standard-configuration.jpg",
     "web/guide/04-approve.jpg",
     "web/guide/05a-room-name.jpg",
     "web/guide/05b-invite.jpg",
@@ -214,7 +218,11 @@
     "web/guide/26-role-continuity.jpg",
     "web/office-resources.js",
     "docs/discussions-and-scripts.md",
-    "web/office-meetings.js"
+    "web/office-meetings.js",
+    "web/office-operations.js",
+    "docs/production-plan.md",
+    "docs/production-acceptance.md",
+    "scripts/offline-release.mjs"
   ],
   "license": "MIT",
   "repository": {

@@ -101,21 +101,22 @@ export class RoleStore {
     return b;
   }
   private async badge(a: TrustedCallContext, b: Row) {
-    return { chat:a.nativeChatId&&['codex_metadata','opencode_metadata'].includes(a.runtimeMode??'')?{source:a.runtimeMode==='codex_metadata'?'codex':'opencode',id:a.nativeChatId}:null,roleId: b.role_id, bindingId: b.id, bindingEpoch: b.epoch, name: b.name, introduction: b.introduction, profileRevision: b.profile_revision, bindingMode: a.runtimeMode ?? 'connection', isolation: 'Authenticated connector plus session correlation; shared credentials/configuration do not isolate mutually untrusted chats.', primaryAssignmentId: b.primary_seat ?? null };
+    return { chat:a.nativeChatId&&['codex_metadata','opencode_metadata'].includes(a.runtimeMode??'')?{source:a.runtimeMode==='codex_metadata'?'codex':'opencode',id:a.nativeChatId}:null,roleId: b.role_id, bindingId: b.id, bindingEpoch: b.epoch, name: b.name, introduction: b.introduction, profileRevision: b.profile_revision, bindingMode: a.runtimeMode ?? 'connection',bindingScope:a.runtimeMode==='credential'?'configured_connection':'chat_correlation', isolation: 'Authenticated connector plus session correlation; shared credentials/configuration do not isolate mutually untrusted chats.', primaryAssignmentId: b.primary_seat ?? null };
   }
   async identity(a?: TrustedCallContext) {
     const b = await this.binding(a, false);
     return b ? this.badge(a!, b) : null;
   }
   async observeChat(a:TrustedCallContext){
-    const actor=this.actor(a),source=actor.runtimeMode==='codex_metadata'?'codex':actor.runtimeMode==='opencode_metadata'?'opencode':null;
-    if(!source||!actor.nativeChatId)return;
-    if(roleRuntimeId(actor.principal,actor.agentId,source,actor.nativeChatId)!==actor.runtimeId)fail('Native chat correlation does not match the authenticated runtime','invalid_input');
+    const actor=this.actor(a),source=actor.runtimeMode==='credential'?'connection':actor.runtimeMode==='codex_metadata'?'codex':actor.runtimeMode==='opencode_metadata'?'opencode':null;
+    const identifier=source==='connection'?(actor.credentialId??actor.agentId):actor.nativeChatId;
+    if(!source||!identifier)return;
+    if(roleRuntimeId(actor.principal,actor.agentId,source==='connection'?'credential':source,identifier)!==actor.runtimeId)fail('Native chat correlation does not match the authenticated runtime','invalid_input');
     return this.write(async()=>{
       if(!await this.offices.agentAuthority(actor))fail('Host credential disabled','scope_denied');
       const old=await this.db.get<Row>('SELECT * FROM role_chat_sessions WHERE runtime_id=?',[actor.runtimeId]);
       if(old&&this.clock()-old.last_seen<60000)return;
-      await this.db.run('INSERT INTO role_chat_sessions VALUES(?,?,?,?,?,?) ON CONFLICT(runtime_id) DO UPDATE SET last_seen=excluded.last_seen',[actor.runtimeId,actor.principal,actor.agentId,source,actor.nativeChatId,this.clock()]);
+      await this.db.run('INSERT INTO role_chat_sessions VALUES(?,?,?,?,?,?) ON CONFLICT(runtime_id) DO UPDATE SET last_seen=excluded.last_seen',[actor.runtimeId,actor.principal,actor.agentId,source,identifier,this.clock()]);
       await this.event(null,'chat_observed',{connectorId:actor.agentId});
     });
   }

@@ -1,8 +1,9 @@
+import {releaseInfo} from '../core/release-info.js';
 import {discussionSchema} from '../core/office-discussions.js';
 import {managedScriptSchema} from '../core/office-scripts.js';
 /** Browser-only operator control plane. This router is never mounted on /mcp. */
 import express from 'express';
-import { officeConnection, OFFICE_CAPABILITIES } from './office-connection.js';
+import { officeConnection, credentialConnectionDownload, OFFICE_CAPABILITIES } from './office-connection.js';
 import { officeAdminServices } from './office-admin-services.js';
 import { z } from 'zod';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -193,12 +194,13 @@ export function officeWorkbench(
     }
     const registry = await graph.offices.registry(operator), settings = await graph.offices.settings(operator);
     return {
-      ...registry, settings, capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
-      connectionTemplates: settings.mcpUrl ? Object.fromEntries(registry.agents.map((a: any) => [a.id, officeConnection({host:a.host,id:a.id,url:settings.mcpUrl})])) : {},
+      ...registry, settings, release:releaseInfo(),capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
+      connectionTemplates: settings.mcpUrl ? Object.fromEntries(registry.agents.map((a: any) => [a.id, officeConnection({host:a.host,id:a.id,url:settings.mcpUrl,identityMode:a.host==='codex'?'native':'connection'})])) : {},
       characters: await graph.roles.state(operator, req.body.roleAfterSeq),
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
   });
+  route('/connection-template',async req=>{const i=z.object({agentId:z.string().min(1).max(128),identityMode:z.enum(['connection','native'])}).strict().parse(req.body);const {agents}=await graph.offices.registry(operator),agent=agents.find((a:any)=>a.id===i.agentId);if(!agent)throw new MindPondError('not_found','Connection not found');const settings=await graph.offices.settings(operator);if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address first');return officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:i.identityMode});});
   route('/settings', (req) => graph.offices.settings(operator, req.body.mcpUrl));
   officeAdminServices(graph,route,operator);
   route('/agent', (req) =>
@@ -252,6 +254,7 @@ export function officeWorkbench(
   const mailSchema=z.object({officeId:officeConfigurationSchema.shape.id,knownIds:officeConfigurationSchema.shape.id.array().max(200).optional(),beforeSeq:z.number().int().min(1).optional(),state:z.enum(['pending','processing','archived','all']).optional(),query:z.string().trim().min(1).max(200).optional(),correspondent:officeConfigurationSchema.shape.id.optional(),threadId:officeConfigurationSchema.shape.id.optional(),since:z.number().int().min(0).optional(),until:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(50).optional(),contextBudgetBytes:z.number().int().min(2048).max(65536).optional()}).strict();
   route('/messages', req=>graph.building.history(mailSchema.parse(req.body),operator));
   const messageReference=z.object({messageId:officeConfigurationSchema.shape.id.optional(),seq:z.number().int().positive().optional()}).strict().refine(i=>(i.messageId===undefined)!==(i.seq===undefined),'Choose exactly one messageId or seq');
+  route('/message/recover',req=>graph.building.recoverMessage(z.object({officeId:z.string().min(1).max(160).optional(),messageId:z.string().min(1).max(160),action:z.enum(['cancel','retry']),expectedTakenAt:z.number().int().nonnegative().nullable(),reason:z.string().trim().min(1).max(1000),recipient:z.string().min(1).max(160).optional(),key:z.string().min(1).max(256)}).strict().refine(i=>i.action==='retry'||i.recipient===undefined,'Only retry accepts a recipient').parse(req.body),operator));
   route('/message',req=>{const input=z.object({officeId:officeConfigurationSchema.shape.id,messageId:officeConfigurationSchema.shape.id.optional(),seq:z.number().int().positive().optional()}).strict().refine(i=>(i.messageId===undefined)!==(i.seq===undefined),'Choose exactly one messageId or seq').parse(req.body);return graph.building.messagePreview(input,operator);});
   route('/view', async (req) => ({
     ...(await graph.offices.get(
@@ -305,6 +308,7 @@ export function officeWorkbench(
       .pick({ id: true, expectedRevision: true })
       .extend({
         personalId: agentConfigurationSchema.shape.principal.optional(),
+        identityMode:z.enum(['connection','native']).optional(),
         assignmentIds: officeConfigurationSchema.shape.seats
           .unwrap()
           .element.shape.id.array()
@@ -328,6 +332,8 @@ export function officeWorkbench(
       if (input.assignmentIds.some((id) => !owned.has(id)))
         throw new MindPondError('invalid_input','只能限制到此 agent 已获授权的分工。');
     }
+    const settings=await graph.offices.settings(operator);
+    if(input.identityMode){if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address before generating a configuration');officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:input.identityMode});}
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-issue-'));
     // DB pending/disabled is authoritative in the gateway: a file write alone cannot activate access.
     await graph.offices.configureAgent(
@@ -353,8 +359,9 @@ export function officeWorkbench(
         { ...agent, expectedRevision: agent.revision + 1, state: 'active' },
         operator
       );
+      const token=(await fs.readFile(file,'utf8')).trim();
       return {
-        token: (await fs.readFile(file, 'utf8')).trim(),
+        token,...(settings.mcpUrl&&input.identityMode?{download:credentialConnectionDownload({host:agent.host,id:agent.id,url:settings.mcpUrl,token,identityMode:input.identityMode})}:{}),
         agentId: agent.id,
         notice: '仅这次响应含凭据。请保存到宿主秘密设置，不发送给 agent。重新签发会替换当前凭据。'
       };

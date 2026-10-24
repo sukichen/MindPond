@@ -1,3 +1,5 @@
+import {RuntimeStatus} from '../core/runtime-status.js';
+import {releaseInfo} from '../core/release-info.js';
 import express from 'express';
 import {createOwnerMemoryServer} from '../role-memory-service.js';
 import {hostChatIdentity,verifyHostSession} from './host-correlation.js';
@@ -20,6 +22,7 @@ interface Connection {
   service: ReturnType<typeof createMemoryMcpServer>;
   grant: NetworkGrant;
   logicalSession: string;
+  connectionIdentity: boolean;
   memory: boolean;
   lastUsed: number;
   active: number;
@@ -37,7 +40,8 @@ export function createNetworkMcpApp(
   }
 ) {
   if (!options.allowedHosts.length) throw new Error('Explicit allowedHosts are required');
-  const app = express();
+  const app = express(),runtime=new RuntimeStatus();
+  app.use(runtime.middleware());
   app.disable('x-powered-by');
   const connections = new Map<string, Connection>();
   let pending = 0,
@@ -163,6 +167,9 @@ export function createNetworkMcpApp(
         res.status(503).json({ error: 'Server is closing' });
         return;
       }
+      const identityHeader=req.header('x-mindpond-identity');
+      if(identityHeader!==undefined&&identityHeader!=='connection'){res.status(400).json({error:'X-MindPond-Identity must be connection when supplied',code:'invalid_input'});return;}
+      const connectionIdentity=identityHeader==='connection';
       const logicalSession = req.header('x-mindpond-session') ?? '';
       if (logicalSession && !/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u.test(logicalSession)) {
         res.status(400).json({ error: 'Invalid host session label' });
@@ -177,7 +184,7 @@ export function createNetworkMcpApp(
           !c || c.memory!==memory ||
           c.grant.tokenHash !== grant.tokenHash ||
           JSON.stringify(c.grant) !== JSON.stringify(grant) ||
-          c.logicalSession !== logicalSession
+          c.logicalSession !== logicalSession || c.connectionIdentity !== connectionIdentity
         ) {
           res.status(404).json({ error: 'MCP session not found for this account' });
           return;
@@ -224,7 +231,7 @@ export function createNetworkMcpApp(
             credentialId: grant.credentialId,
             assignmentIds: grant.assignmentIds,
             connectionId: id,
-            ...(pinnedBinding?{runtimeId:pinnedBinding.runtime_id,runtimeMode:'host_header' as const}:logicalSession ? {
+            ...(pinnedBinding?{runtimeId:pinnedBinding.runtime_id,runtimeMode:connectionIdentity?'credential' as const:'host_header' as const}:connectionIdentity?{runtimeId:roleRuntimeId(grant.principal,agentId!,'credential',grant.credentialId??agentId!),runtimeMode:'credential' as const}:logicalSession ? {
               runtimeId: roleRuntimeId(grant.principal, agentId ?? grant.credentialId ?? 'legacy', 'header', logicalSession),
               runtimeMode: 'host_header' as const
             } : agentId ? {runtimeId:roleRuntimeId(grant.principal,agentId,'connection',id!),runtimeMode:'connection' as const} : {}),
@@ -264,7 +271,7 @@ export function createNetworkMcpApp(
           service,
           transport,
           grant,
-          logicalSession,memory,
+          logicalSession,memory,connectionIdentity,
           lastUsed: Date.now(),
           active: 0,
           waitSignals
@@ -310,6 +317,9 @@ export function createNetworkMcpApp(
           const params=message.params,args=params?.arguments??{};
           if(params?._meta)delete params._meta['mindpond/verifiedSessionID'];
           if(args.hostContext!==undefined){const session=verifyHostSession(args.hostContext,params.name,args,req.header('authorization')?.replace(/^Bearer /,'')??'');delete args.hostContext;params._meta={...params._meta,'mindpond/verifiedSessionID':session};}
+          // Explicit connection scope is selected in host configuration, never tool arguments.
+          // Both MCP endpoints derive one stable identity from the authenticated credential.
+          if(c.connectionIdentity)continue; // Preserve progress/task metadata for standard MCP clients.
           const session=hostChatIdentity(params?._meta);
           if(pinnedMemoryRole&&session){const r=await graph.memoryOwners.role(pinnedMemoryRole.role_id);const b=await graph.roles.identity({v:1,principal:r.principal,agentId:r.connector_id,transport:'http-mcp',runtimeId:roleRuntimeId(r.principal,r.connector_id,session.source,session.id),issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});if((b&&b.roleId!==r.id)||(!b&&params.name!=='role_sync'))throw new MindPondError('scope_denied','This chat is not bound to the credential’s role; call Office role_sync to request user activation');}
         }
@@ -369,11 +379,15 @@ export function createNetworkMcpApp(
       else res.status(500).json({code:'internal',error:'MCP request failed',retryable:false,nextAction:'Report the failure with the operation and service version.'});
     }
   );
+  const reportId=randomUUID();let reporting:Promise<unknown>|undefined;
+  const report=()=>{if(closing||reporting)return;reporting=graph.officeCollaboration.runtimeReport(reportId,{release:releaseInfo(),runtime:runtime.snapshot(),connections:connections.size,pending,maxConnections:max,maxPerAccount:perAccount}).catch(()=>{}).finally(()=>{reporting=undefined;});};
+  const reportTimer=setInterval(report,30000);reportTimer.unref();report();
   return {
     app,
     async close(listener?: HttpServer) {
       closing = true;
-      clearInterval(timer);
+      clearInterval(timer);clearInterval(reportTimer);
+      await reporting;await graph.officeCollaboration.runtimeReport(reportId,null).catch(()=>{});
       // Abort outstanding long polls before waiting for HTTP requests to drain.
       for (const connection of connections.values()) {
         connection.service.beginShutdown();

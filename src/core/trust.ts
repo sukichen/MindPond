@@ -28,7 +28,7 @@ export interface TrustedCallContext {
   runtimeId?: string;
   /** Native harness ID from host metadata, never model tool arguments. */
   nativeChatId?: string;
-  runtimeMode?: 'host_header' | 'codex_metadata' | 'opencode_metadata' | 'connection';
+  runtimeMode?: 'host_header' | 'codex_metadata' | 'opencode_metadata' | 'connection' | 'credential';
   roleId?: string;
   roleBindingId?: string;
   roleBindingEpoch?: number;

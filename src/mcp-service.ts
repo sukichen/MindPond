@@ -1,3 +1,4 @@
+import {RELEASE_VERSION} from './core/release-info.js';
 import {MAX_MCP_INPUT_ELEMENTS} from './core/mcp-limits.js';
 import {hostChatIdentity} from './integrations/host-correlation.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
@@ -83,7 +84,7 @@ const toolProfile = baseTrusted.agentId?'office':parseMcpToolProfile(options.too
 const taskStore=options.enableTasks!==false&&baseTrusted.agentId&&baseTrusted.runtimeId?graphMemory.officeTaskStore(baseTrusted):undefined;
 const server = new McpServer({
   name: 'agent-memory',
-  version: '0.1.0',
+  version: RELEASE_VERSION,
 }, { maxToolInputElements:MAX_MCP_INPUT_ELEMENTS,instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+(toolProfile==='office'?'':'\n'+OFFICE_MEMORY_BOOTSTRAP):MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
 
 const exposedTools: string[] = [];
@@ -114,15 +115,16 @@ function tool(name: string, description: string, shape: any, handler: (args: any
     try {
       await options.authorizeWait?.();
       let current:TrustedCallContext={...baseTrusted};
-      const native = hostChatIdentity(extra._meta);
+      const native = current.runtimeMode==='credential'?undefined:hostChatIdentity(extra._meta);
       // The authenticated harness supplies this on every call. Installation
       // headers and model arguments must not override a real chat identity.
-      if (native && current.transport === 'http-mcp' && current.agentId) {
+      if (native && current.runtimeMode!=='credential' && current.transport === 'http-mcp' && current.agentId) {
         current.runtimeId=roleRuntimeId(current.principal,current.agentId,native.source,native.id);
         current.runtimeMode=native.mode;
         current.nativeChatId=native.id;
         await graphMemory.roles.observeChat(current);
       }
+      if(current.runtimeMode==='credential'&&!options.pinnedRoleId)await graphMemory.roles.observeChat(current);
       // Bind per-call session context to the authenticated chat.
       if(current.runtimeMode==='opencode_metadata'||current.runtimeMode==='codex_metadata') current.sessionId='net-native:'+current.runtimeId;
       auditContext=current;

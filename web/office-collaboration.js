@@ -182,36 +182,6 @@
                 detail.append(node('p', `当前正在处理 ${recent.processing} 条消息，待处理 ${recent.pending} 条。`));
             detail.append(button('查看办公室通信', async () => setRoomTab('officeMessagePanel')), button('查看材料', async () => setRoomTab('officeMaterialPanel')), button('查看经验与交接', async () => { setRoomTab(panel.id); await refresh(true); }));
         }
-        const settings = document.getElementById('officeSettings');
-        settings.append(button('运行健康、积压与备份', async () => {
-            const data = await api('operations', { action: 'status' });
-            showDetail('运行维护', { ...data, body: '## 运行健康\n\n数据库完整性：' + (data.integrity.healthy ? '检查通过' : '发现问题，请检查原始记录') + '。\n\n### 消息积压\n' + data.backlog.map(r => '- ' + ({ queued:'待处理',pending: '待处理', processing: '处理中', archived: '已处理' })[r.state] + ': ' + r.count).join('\n') + '\n\n### 共享等待容量\n每账户 ' + data.capacity.maxPerPrincipal + ' 路，数据库共 ' + data.capacity.maxGlobal + ' 路。超过名额先排队，超时后保留恢复条件。\n\n### 私有备份\n最近保留 ' + data.backups.length + ' 份备份。创建后可检查校验和、数据库完整性与恢复命令。备份存储在本机。' });
-            const detail = document.getElementById('officeDetail');
-            const capacity = node('form');
-            capacity.className = 'office-fields';
-            const account = node('input'), global = node('input');
-            account.type = global.type = 'number';
-            account.min = global.min = '1';
-            account.max = '128';
-            global.max = '1024';
-            account.value = data.capacity.maxPerPrincipal;
-            global.value = data.capacity.maxGlobal;
-            for (const [title, input] of [['每账户等待名额', account], ['数据库总等待名额', global]]) {
-                const label = node('label', title);
-                label.append(input);
-                capacity.append(label);
-            }
-            const save = node('button', '保存共享容量');
-            save.type = 'submit';
-            capacity.append(save);
-            capacity.onsubmit = e => { e.preventDefault(); void run(async () => { const result = await api('operations', { action: 'capacity', maxPerPrincipal: Number(account.value), maxGlobal: Number(global.value) }); notice('共享等待容量已保存，后续排队按新容量调度。'); showDetail('共享容量', result); }); };
-            detail.append(capacity);
-            detail.append(button('创建私有数据库备份', async () => { const backup = await api('operations', { action: 'backup' }); showDetail('备份恢复检查', await api('operations', { action: 'checkBackup', id: backup.id })); }));
-            for (const backup of data.backups)
-                detail.append(button('检查备份 ' + new Date(backup.created_at).toLocaleString(), async () => showDetail('备份恢复检查', await api('operations', { action: 'checkBackup', id: backup.id }))));
-            detail.append(button('预览清理 30 天前的临时运行记录', async () => { const preview = await api('operations', { action: 'retentionPreview', days: 30 }); showDetail('临时记录清理预览', preview); document.getElementById('officeDetail').append(button('确认清理临时记录', async () => { if (await confirmAction('仅清理过期响应页、已结束等待和过期宿主报告；消息、材料、记忆、交接及审计记录保留。'))
-                showDetail('清理结果', await api('operations', { action: 'retentionApply', days: 30 })); })); }));
-        }));
         toolbar.append(button('记录当前办公室布局', async () => {
             if (document.getElementById('officeScene').classList.contains('is-replaying'))
                 throw Error('请先回到实时办公室，再记录布局。');

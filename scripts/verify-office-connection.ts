@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import {randomBytes} from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { officeConnection, OFFICE_CAPABILITIES } from '../src/integrations/office-connection.js';
+import { officeConnection, credentialConnectionDownload, OFFICE_CAPABILITIES } from '../src/integrations/office-connection.js';
 import { prepareRoleClientBundle } from '../src/integrations/role-client-bundle.js';
 import { officeWaitCapacity } from '../src/core/office-wait-policy.js';
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-office-config-'));
@@ -17,6 +18,7 @@ try{
       assert(!server.headers.Authorization.includes('actual-secret'));
     }else assert(c.text.includes('at least 360 seconds'));
   }
+  for(const host of ['codex','opencode','claude','generic-http-mcp']){const sampleToken=randomBytes(32).toString('base64url'),download=credentialConnectionDownload({host,id:'example',url:'https://memory.example/mcp',token:sampleToken,identityMode:'connection'});assert(download.text.includes(sampleToken));assert(download.text.includes('X-MindPond-Identity'));if(host==='codex'){assert.equal((download.text.match(/^http_headers = /gm)??[]).length,2);assert(!download.text.includes('bearer_token_env_var'));}else if(host!=='generic-http-mcp'){const config=JSON.parse(download.text);for(const server of Object.values(config.mcp??config.mcpServers) as any[])assert.equal(server.headers.Authorization,'Bearer '+sampleToken);}}
   const longId=officeConnection({host:'codex',id:'a'.repeat(128),url:'https://memory.example/mcp'});assert(longId.env.length<=128&&longId.name.length<=128);
   assert.equal(OFFICE_CAPABILITIES.wait.maxMs,300000);assert.equal(OFFICE_CAPABILITIES.wait.wakesStoppedHost,false);
   for(const client of ['codex','opencode'] as const){

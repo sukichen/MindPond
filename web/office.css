@@ -737,3 +737,11 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-canvas.is-list .office-meeting-wing,.office-scene.is-replaying .office-meeting-wing{display:none}
 .office-meeting-locations{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#f4f8ee;border-bottom:1px solid var(--o-line);flex:none}.office-meeting-locations[hidden]{display:none}.office-meeting-locations button{font-size:11px!important;padding:5px 9px!important;min-height:30px!important;max-width:min(100%,240px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .office-canvas.is-list .office-meeting-locations{display:none}.office-person[data-meeting][data-facing=up] .avatar-head>:not(.avatar-back-head){display:none}
+
+/* Operational cards share the application's spacing and remain readable in narrow panes. */
+.office-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:14px;margin:20px 0}
+.office-health-card{min-width:0;padding:18px;border:1px solid var(--o-line);border-radius:12px;background:var(--o-soft)}
+.office-health-card h3{margin:0 0 10px;color:var(--o-muted)}.office-health-card strong{display:block;font-size:18px;line-height:1.5;overflow-wrap:anywhere}
+.office-health-card p{font-size:12px;color:var(--o-muted);overflow-wrap:anywhere}.office-health-actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 28px}
+.office-recovery-form{display:grid;gap:12px;margin-top:20px}.office-recovery-form textarea{min-height:100px}.office-health-actions button{white-space:normal;text-align:left}
+.office-attention{padding:16px 18px;border:1px solid var(--o-line);border-radius:12px;background:#fff;margin:12px 0}.office-attention h3{margin-top:0}.office-attention a{color:var(--o-green);text-underline-offset:3px}

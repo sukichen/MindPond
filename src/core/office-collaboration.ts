@@ -1,3 +1,6 @@
+import {retrievalStatus} from './retrieval-status.js';
+import {storageStatus,webRuntimeStatus} from './runtime-status.js';
+import {releaseInfo} from './release-info.js';
 /** Optional collaboration records. Room membership grants shared office knowledge, never private role knowledge or host control. */
 import type { Database } from 'sqlite';
 import type { GraphMemory } from './graph-memory.js';
@@ -20,6 +23,13 @@ const hash = (value: unknown) => createHash('sha256').update(stableJSON(value)).
 async function fileHash(filename: string) { const digest = createHash('sha256'); for await (const chunk of createReadStream(filename))
     digest.update(chunk); return digest.digest('hex'); }
 export class OfficeCollaboration {
+    private integrityCache?:{at:number;result:Awaited<ReturnType<typeof auditDatabase>>};
+    private integrityPending?:Promise<Awaited<ReturnType<typeof auditDatabase>>>;
+    private async integrityStatus(force=false){
+        if(!force&&this.integrityCache&&this.clock()-this.integrityCache.at<300000)return this.integrityCache;
+        if(!this.integrityPending)this.integrityPending=this.write(()=>auditDatabase(this.db)).then(result=>{this.integrityCache={at:this.clock(),result};return result;}).finally(()=>{this.integrityPending=undefined;});
+        await this.integrityPending;return this.integrityCache!;
+    }
     constructor(private db: Database, private graph: GraphMemory, private write: <T>(f: () => Promise<T>) => Promise<T>, private databasePath: string, private clock = Date.now) { }
     async init() {
         await this.db.exec(`
@@ -371,8 +381,18 @@ export class OfficeCollaboration {
             return { version: 'mindpond.office-export.v2', officeId: i.officeId, snapshotId, snapshotAt: snapshot!.created_at, sha256: snapshot!.sha256, section: i.section, rows: rows.slice(0, 100).map(r => JSON.parse(r.payload)), nextOffset: rows.length > 100 ? (i.offset ?? 0) + 100 : null, scope: 'Consistent one-hour snapshot. Export every section/page; private memories and credentials are excluded.' };
         });
     }
+    async runtimeReport(id:string,payload:unknown){
+        return this.write(async()=>{
+            const key='runtime:'+id,at=this.clock();
+            if(payload===null){await this.db.run('DELETE FROM office_meta WHERE key=?',[key]);return;}
+            await this.db.run("DELETE FROM office_meta WHERE key LIKE 'runtime:%' AND CAST(json_extract(value,'$.expiresAt') AS INTEGER)<?",[at]);
+            if((await this.db.get("SELECT COUNT(*) n FROM office_meta WHERE key LIKE 'runtime:%' AND key<>?",[key])).n>=32)return;
+            await this.db.run('INSERT INTO office_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',[key,JSON.stringify({observedAt:at,expiresAt:at+120000,payload})]);
+        });
+    }
     async operations(i: Row, a?: TrustedCallContext): Promise<Row> {
         this.admin(a);
+        if(i.action==='checkDatabase'){const audit=await this.integrityStatus(true);return {observedAt:audit.at,...audit.result};}
         if (i.action === 'capacity') {
             const limits = officeWaitCapacity({ MINDPOND_OFFICE_WAIT_PER_ACCOUNT: String(i.maxPerPrincipal), MINDPOND_OFFICE_WAIT_GLOBAL: String(i.maxGlobal) });
             await this.db.run("INSERT INTO office_meta(key,value) VALUES('waitCapacity',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(limits)]);
@@ -401,6 +421,21 @@ export class OfficeCollaboration {
                 await db.close();
             }
         }
+        if(i.action==='restoreDrill'){
+            const checked=await this.operations({action:'checkBackup',id:i.id},a);
+            if(!checked.healthy||!checked.digestMatches)throw new MindPondError('invalid_input','Backup integrity or digest check failed; restore drill refused');
+            const directory=await fs.mkdtemp(path.join(path.dirname(checked.restore.backupFile),'.restore-drill-'));
+            try{
+                await fs.chmod(directory,0o700);const destination=path.join(directory,'restored.db'),reservation=await fs.open(destination,'wx',0o600);await reservation.close();
+                const source=await open({filename:checked.restore.backupFile,driver:sqlite3.Database,mode:sqlite3.OPEN_READONLY});
+                try{await source.run('VACUUM INTO ?',[destination]);}finally{await source.close();}
+                const copy=await open({filename:destination,driver:sqlite3.Database,mode:sqlite3.OPEN_READONLY});
+                let healthy=false;try{healthy=(await auditDatabase(copy)).healthy;}finally{await copy.close();}
+                if(!healthy)throw new MindPondError('internal','Restored copy failed integrity checks');
+                const result={backupId:i.id,checkedAt:this.clock(),healthy:true,scope:'Restored temporary database copy only. Running database, credentials, external files and older application compatibility were not changed or verified.'};
+                await this.write(async()=>{await this.db.run("INSERT INTO office_meta(key,value) VALUES('lastRestoreDrill',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[JSON.stringify(result)]);});return result;
+            }finally{await fs.rm(directory,{recursive:true,force:true});}
+        }
         if (i.action === 'retentionPreview' || i.action === 'retentionApply')
             return this.write(async () => {
                 const cutoff = this.clock() - (i.days ?? 30) * 86400000;
@@ -413,7 +448,8 @@ export class OfficeCollaboration {
                 }
                 return { counts, cutoff, applied: i.action === 'retentionApply', preserved: 'Messages, materials, memories, handoffs, evidence and audit events are retained.' };
             });
-        return { version: 'mindpond.office-operations.v1', observedAt: this.clock(), integrity: await auditDatabase(this.db), capacity: JSON.parse((await this.db.get("SELECT value FROM office_meta WHERE key='waitCapacity'"))?.value ?? JSON.stringify(officeWaitCapacity())), backlog: await this.db.all('SELECT state,COUNT(*) count FROM role_message_states GROUP BY state'), waits: await this.db.all('SELECT principal,state,COUNT(*) count,MIN(expires_at) nearestExpiry FROM office_wait_queue WHERE expires_at>? GROUP BY principal,state', [this.clock()]), hosts: await this.observations(a), backups: await this.db.all('SELECT id,created_at,sha256 FROM office_backup_records ORDER BY created_at DESC LIMIT 30'), protocolTasks: 'Experimental MCP Tasks are advertised for fixed authenticated host sessions. Check the actual client negotiation. Shared harness connections use ordinary message recovery.' };
+        const audit=await this.integrityStatus(),retrieval=retrievalStatus();
+        return { retrievalRuntime:{primary:{state:retrieval.primary.state,reason:retrieval.primary.reason??null},chinese:{state:retrieval.chinese.state}},integrityObservedAt:audit.at,restoreDrill:JSON.parse((await this.db.get("SELECT value FROM office_meta WHERE key='lastRestoreDrill'"))?.value??'null'),mcpProcesses:(await this.db.all("SELECT value FROM office_meta WHERE key LIKE 'runtime:%' AND CAST(json_extract(value,'$.expiresAt') AS INTEGER)>?",[this.clock()])).map(r=>JSON.parse(r.value)),release:releaseInfo(),runtime:webRuntimeStatus.snapshot(),storage:await storageStatus(this.databasePath),retrieval:this.graph.retrievalCoverage(),processing:await this.db.all("SELECT m.id,m.office_id officeId,m.sender_name senderName,m.recipient_name recipientName,s.taken_at takenAt,o.title officeTitle FROM role_message_states s JOIN role_messages m ON m.id=s.message_id LEFT JOIN offices o ON o.id=m.office_id WHERE s.state='processing' ORDER BY s.taken_at,m.id LIMIT 50"),schemaVersion:(await this.db.get('PRAGMA user_version')).user_version,version: 'mindpond.office-operations.v1', observedAt: this.clock(), integrity: audit.result, capacity: JSON.parse((await this.db.get("SELECT value FROM office_meta WHERE key='waitCapacity'"))?.value ?? JSON.stringify(officeWaitCapacity())), backlog: await this.db.all('SELECT state,COUNT(*) count FROM role_message_states GROUP BY state'), waits: await this.db.all('SELECT principal,state,COUNT(*) count,MIN(expires_at) nearestExpiry FROM office_wait_queue WHERE expires_at>? GROUP BY principal,state', [this.clock()]), hosts: await this.observations(a), backups: await this.db.all('SELECT id,created_at,sha256 FROM office_backup_records ORDER BY created_at DESC LIMIT 30'), protocolTasks: 'Experimental MCP Tasks are advertised for fixed authenticated host sessions. Check the actual client negotiation. Shared harness connections use ordinary message recovery.' };
     }
     async observations(a?: TrustedCallContext) { this.admin(a); return this.db.all('SELECT role_id,binding_id,payload,observed_at FROM office_host_reports'); }
 }
