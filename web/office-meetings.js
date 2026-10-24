@@ -15,22 +15,32 @@
   const node=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   class Meetings{
     constructor(scene,{openDiscussion=()=>{},navigation=null,focusArea=()=>{}}={}){
-      Object.assign(this,{scene,root:scene.root,rooms:new Map(),positions:new Map(),homes:new Map(),targets:new Map(),office:null,epoch:0,moving:null,replay:false,openDiscussion,navigation,focusArea,initialized:false});
+      Object.assign(this,{scene,root:scene.root,rooms:new Map(),positions:new Map(),homes:new Map(),targets:new Map(),retries:new Map(),office:null,epoch:0,moving:null,replay:false,openDiscussion,navigation,focusArea,initialized:false});
       this.layer=node('div','office-meeting-wing');this.root.append(this.layer);scene.meetings=this;
     }
     box(n){const root=this.root.getBoundingClientRect(),r=n.getBoundingClientRect(),s=this.scene.scale();return rect((r.left-root.left)/s,(r.top-root.top)/s,(r.right-root.left)/s,(r.bottom-root.top)/s);}
     point(n){const r=this.box(n);return {x:(r.left+r.right)/2,y:(r.top+r.bottom)/2};}
     capture(){
-      for(const [role,home] of this.homes)if(this.positions.has(role))this.positions.get(role).point=this.point(home.person);
-      if(this.moving?.target.roomId)this.positions.get(this.moving.role).roomId=this.moving.target.roomId;
+      for(const [role,home] of this.homes)if(this.positions.has(role)){
+        const position=this.positions.get(role);position.point=this.point(home.person);
+        // Membership names the destination; physical occupancy owns walls and departure chairs.
+        const touches=room=>{const g=room?.geometry,p=position.point;return g&&p.x+33>=g.x&&p.x-33<=g.x+g.width&&p.y+47>=g.y&&p.y-47<=g.y+g.height;};
+        if(!touches(this.rooms.get(position.roomId)))position.roomId=[...this.rooms.values()].find(touches)?.id??null;
+      }
+      this.retries.clear();
       this.epoch++;if(this.moving){clearInterval(this.moving.timer);this.homes.get(this.moving.role)?.node.classList.remove('is-walking');this.moving.animation.cancel();this.moving=null;}
     }
     prepareRebuild(){this.capture();this.rebuilding=true;}
     reset(){
       this.capture();for(const home of this.homes.values())this.release(home);
-      this.rooms.clear();this.positions.clear();this.homes.clear();this.targets.clear();this.layer.replaceChildren();this.layer.style.height='0px';this.layer.hidden=true;this.navigation?.replaceChildren();this.navSignature='';this.office=null;this.initialized=false;
+      this.rooms.clear();this.positions.clear();this.homes.clear();this.targets.clear();this.retries.clear();this.layer.replaceChildren();this.layer.style.height='0px';this.layer.hidden=true;this.navigation?.replaceChildren();if(this.navigation)this.navigation.hidden=true;this.navSignature='';this.office=null;this.initialized=false;this.replay=false;this.rebuilding=false;this.suspended=false;this.relocated=false;
     }
-    release(home){delete home.person.dataset.meeting;delete home.person.dataset.meetingName;home.person.style.translate='';home.node.classList.remove('is-meeting','is-walking');}
+    release(home){
+      const person=home.person;if(!person.dataset.meeting&&!home.node.classList.contains('is-meeting'))return;
+      delete person.dataset.meeting;delete person.dataset.meetingName;delete person.dataset.pose;person.style.translate='';
+      home.node.classList.remove('is-meeting','is-walking');person.dataset.posture='seated';person.dataset.facing=home.node.dataset.busy==='true'?'desk':'down';
+      window.MindPondOfficeScene.drawAction(person,window.MindPondOfficeScene.sampleAction('nod',0));
+    }
     capacity(){return Math.max(0,...[...this.rooms.values()].map(r=>r.layoutIndex+1));}
     width(base,records=[]){const count=Math.max(this.capacity(),records.length);return count?Math.max(base+120,(count>1?WIDTH*2+GAP:WIDTH)+136):base;}
     sync(officeId,records=[]){
@@ -40,7 +50,7 @@
       const nodes=[...this.root.querySelectorAll('.office-desk')].filter(n=>!n.hidden),nextHomes=new Map();
       let replaced=false;
       for(const n of nodes){const role=n.dataset.role,person=n.querySelector('.office-person');if(!role||!person)continue;const old=this.homes.get(role);if(old?.person!==person)replaced=true;nextHomes.set(role,{...old,node:n,person});}
-      if(replaced&&!this.rebuilding)this.capture();this.rebuilding=false;this.retryAt=0;
+      if(replaced&&!this.rebuilding)this.capture();this.rebuilding=false;
       this.homes=nextHomes;
       for(const [role,home] of this.homes){
         // Measure the unshifted seated sprite; the walking anchor is below its own tucked chair.
@@ -58,7 +68,7 @@
         for(const m of r.members??[])if(!room.slots.has(m.roleId)){const used=new Set(room.slots.values());room.slots.set(m.roleId,Array.from({length:8},(_,i)=>i).find(i=>!used.has(i)));}
         room.title.textContent=r.title;room.title.title=r.title;room.label.textContent=(r.members??[]).filter(m=>m.state==='joined'&&this.homes.has(m.roleId)).length+' 人讨论中 · 普通消息留在工位';
       }
-      for(const [id,room] of this.rooms)if(!live.has(id)){room.closed=true;room.label.textContent='讨论已结束 · 正在返回工位';}
+      for(const [id,room] of this.rooms)if(!live.has(id)){room.closed=true;room.label.textContent='讨论已结束 · 等待人物离开';}
       const targets=new Map();
       for(const room of this.rooms.values())if(!room.closed)for(const m of room.record.members??[])if(m.state==='joined'&&this.homes.has(m.roleId))targets.set(m.roleId,room.id);
       // New avatar nodes still sit at their desks; their DOM boxes are not the captured live positions.
@@ -106,7 +116,9 @@
         if(!away){this.release(home);continue;}
         const p=home.person;p.dataset.meeting=target.roomId??position.roomId??'returning';p.dataset.meetingName=p.dataset.name??'';home.node.classList.add('is-meeting');
         p.style.translate=(position.point.x-home.seated.x)+'px '+(position.point.y-home.seated.y)+'px';
-        p.dataset.posture=this.moving?.role===role?'standing':'seated';p.dataset.facing=target.roomId?this.target(role).point.facing??'down':(home.node.dataset.busy==='true'?'desk':'down');
+        const slot=this.rooms.get(position.roomId)?.geometry.slots[this.rooms.get(position.roomId)?.slots.get(role)],atMeeting=slot&&distance(position.point,slot)<=1,atHome=distance(position.point,home.seated)<=1;
+        const walking=this.moving?.role===role;p.dataset.posture=walking||!atMeeting&&!atHome?'standing':'seated';
+        if(!walking){if(atMeeting)p.dataset.facing=slot.facing;else if(atHome)p.dataset.facing=!target.roomId&&home.node.dataset.busy==='true'?'desk':'down';}
       }
     }
     settle(){
@@ -135,14 +147,17 @@
       }
       return boxes;
     }
-    furniture(){return [...this.rooms.values()].flatMap(r=>[r.geometry.table,...r.geometry.walls,...r.geometry.chairs]);}
+    furniture(){return this.replay?[]:[...this.rooms.values()].flatMap(r=>[r.geometry.table,...r.geometry.walls,...r.geometry.chairs]);}
     pump(){
-      if(this.moving||this.replay||!this.scene.active||Date.now()<(this.retryAt??0))return;
+      if(this.moving||this.replay||!this.scene.active)return;
       if(!this.scene.enabled()){this.settle();return;}
       if(this.scene.running)return;
-      const pending=[...this.homes.keys()].find(role=>{const p=this.positions.get(role),t=this.target(role);return t&&(p.roomId!==t.roomId||distance(p.point,t.point)>1);});
-      if(!pending)return;
-      void this.move(pending);
+      // One blocked role must not prevent a different role from vacating a seat or doorway.
+      for(const role of this.homes.keys()){
+        const p=this.positions.get(role),t=this.target(role);if(!t||Date.now()<(this.retries.get(role)??0)||p.roomId===t.roomId&&distance(p.point,t.point)<=1)continue;
+        const epoch=this.epoch;void this.move(role).catch(()=>{if(epoch!==this.epoch)return;this.retries.set(role,Date.now()+1500);const motion=this.moving;if(motion?.role===role){clearInterval(motion.timer);motion.animation.cancel();this.moving=null;}this.homes.get(role)?.node.classList.remove('is-walking');this.apply();if(!this.moving)this.scene.status.textContent='人物动作暂时无法播放，稍后重试。';});
+        if(this.moving)break;
+      }
     }
     async move(role){
       const home=this.homes.get(role),target=this.target(role),position=this.positions.get(role),epoch=this.epoch;
@@ -152,7 +167,7 @@
       const room=this.root.getBoundingClientRect(),scale=this.scene.scale(),nav=window.MindPondOfficeNavigation;
       const options={bounds:rect(12,28,room.width/scale-12,room.height/scale-12),obstacles:this.obstacles(role),halfWidth:33,halfHeight:47,clearance:12};
       const route=nav.planRoute(from,to,options);
-      if(!route){this.retryAt=Date.now()+1500;home.person.dataset.posture='seated';this.scene.status.textContent='会议室通道暂时被占用，人物在原位等待。';return;}
+      if(!route){this.retries.set(role,Date.now()+1500);this.apply();this.scene.status.textContent='会议室通道暂时被占用，人物在原位等待。';return;}
       const length=route.reduce((n,p,i)=>n+(i?distance(p,route[i-1]):0),0),duration=Math.max(160,length/190*1000);
       const points=[];let walked=0;for(let i=0;i<route.length;i++){if(i)walked+=distance(route[i],route[i-1]);points.push({...route[i],offset:length?walked/length:i/(route.length-1)});}
       // Rising/lowering stays clear of the tucked chair, as in the existing scene navigator.
@@ -162,12 +177,14 @@
       const motion={role,animation,route:points,target,timer:null};this.moving=motion;
       const tick=()=>{if(this.moving!==motion)return;const p=Math.min(1,Number(animation.currentTime??0)/duration),index=points.findIndex(v=>v.offset>p),a=points[Math.max(0,index-1)],b=points[index<0?points.length-1:index];const dx=b.x-a.x,dy=b.y-a.y;home.person.dataset.facing=Math.abs(dx)>Math.abs(dy)?(dx>0?'right':'left'):(dy>0?'down':'up');};tick();motion.timer=setInterval(tick,80);
       this.scene.status.textContent=(home.person.dataset.name??'角色')+(target.roomId?'正在走进会议室。':'正在返回工位，普通消息仍留在座位。');
-      try{await animation.finished;if(epoch===this.epoch)this.positions.set(role,target);}catch{/* A snapshot, resize or visibility change owns the new position. */}
-      finally{clearInterval(motion.timer);if(epoch===this.epoch){this.moving=null;animation.cancel();home.node.classList.remove('is-walking');this.apply();this.prune();this.layout();this.renderNavigation();this.pump();if(!this.moving&&!this.scene.running){if(this.scene.queue.length)void this.scene.drain(this.scene.epoch);else this.scene.status.textContent='会议室位置已同步；普通消息保留在工位。';}}}
+      let completed=false;
+      try{await animation.finished;if(epoch===this.epoch){completed=true;this.positions.set(role,target);}}
+      catch{if(epoch===this.epoch){this.retries.set(role,Date.now()+1500);this.scene.status.textContent='人物动作暂时中断，稍后重试。';}}
+      finally{clearInterval(motion.timer);if(epoch===this.epoch){this.moving=null;animation.cancel();if(completed)this.retries.clear();home.node.classList.remove('is-walking');this.apply();this.prune();this.layout();this.renderNavigation();this.pump();if(!this.moving&&!this.scene.running){if(this.scene.queue.length)void this.scene.drain(this.scene.epoch);else if(!this.retries.size)this.scene.status.textContent='会议室位置已同步；普通消息保留在工位。';}}}
     }
     tick(now){
       if(this.replay)return;this.pump();
-      for(const [role,home] of this.homes){const position=this.positions.get(role);if(!position?.roomId||this.moving?.role===role)continue;
+      for(const [role,home] of this.homes){const position=this.positions.get(role);if(!position?.roomId||this.moving?.role===role||home.person.dataset.posture!=='seated')continue;
         const clips=['nod','think','note'],clip=clips[(Math.floor(now/4200)+home.node.dataset.seat.length)%clips.length];
         home.person.dataset.pose=clip;window.MindPondOfficeScene.drawAction(home.person,window.MindPondOfficeScene.sampleAction(clip,(now%4200)/4200));
       }

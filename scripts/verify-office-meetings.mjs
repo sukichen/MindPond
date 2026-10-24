@@ -33,7 +33,7 @@ const makeSeat=(role,left)=>{
  person.getBoundingClientRect=()=>{let x=0,y=0;if(person.animation&&!person.animation.cancelled){const a=person.animation,p=a.currentTime/a.duration;const next=a.frames.findIndex(f=>f.offset>=p),b=a.frames[next<0?a.frames.length-1:next],first=a.frames[Math.max(0,next-1)];const t=b.offset===first.offset?0:(p-first.offset)/(b.offset-first.offset),xy=f=>f.translate.split(' ').map(Number.parseFloat);const from=xy(first),to=xy(b);x=from[0]+(to[0]-from[0])*t;y=from[1]+(to[1]-from[1])*t;}else [x,y]=(person.style.translate||'0 0').split(' ').map(Number.parseFloat);return rect(left+107+x,220+y,66,94);};
  chair.getBoundingClientRect=()=>rect(left+104,person.dataset.posture==='standing'?253:283,72,76);table.getBoundingClientRect=()=>rect(left+49,226,182,74);
  node.querySelector=s=>s==='.office-person'?person:s==='.office-chair'?chair:null;
- person.animate=(frames,{duration})=>{let resolve,reject;const finished=new Promise((r,j)=>{resolve=r;reject=j;});const a={frames,duration,currentTime:0,finished,resolve,cancel(){this.cancelled=true;reject(Error('cancelled'));}};person.animation=a;animations.push(a);return a;};
+ person.animate=(frames,{duration})=>{let resolve,reject;const finished=new Promise((r,j)=>{resolve=r;reject=j;});const a={frames,duration,currentTime:0,finished,resolve,reject,cancel(){this.cancelled=true;reject(Error('cancelled'));}};person.animation=a;animations.push(a);return a;};
  return {node,person,chair,table};
 };
 let seats=[makeSeat('a',30),makeSeat('b',380)];
@@ -49,7 +49,7 @@ controller.sync('office',[]);assert(controller.rooms.has('meeting'),'ended room 
 controller.sync('office',[record]);const first=controller.moving.animation;first.currentTime=first.duration*.4;const before=controller.point(seats[0].person);controller.prepareRebuild();seats=[makeSeat('a',30),makeSeat('b',380)];controller.sync('office',[record]);assert(Math.hypot(controller.positions.get('a').point.x-before.x,controller.positions.get('a').point.y-before.y)<.01,'snapshot rebuild preserves the current path position');
 const movingPoint=controller.point(seats[0].person);controller.prepareRebuild();seats=[makeSeat('a',30),makeSeat('b',380)];controller.sync('office',[{...record,members:[{roleId:'a',state:'joined'},{roleId:'b',state:'left'}]}]);assert(Math.hypot(controller.positions.get('a').point.x-movingPoint.x,controller.positions.get('a').point.y-movingPoint.y)<.01,'membership changes and DOM rebuild together must not sample new avatars at their desks');
 scene.enabled=()=>false;controller.suspend();assert.equal(controller.moving,null);assert.equal(controller.positions.get('a').roomId,'meeting','reduced motion shows actual membership without walking');
-controller.setReplay(true);assert.equal(controller.layer.hidden,true);assert.equal(seats[0].person.dataset.meeting,undefined,'current meeting membership must not contaminate historical playback');controller.setReplay(false);assert.equal(seats[0].person.dataset.meeting,'meeting');
+controller.setReplay(true);assert.equal(controller.layer.hidden,true);assert.equal(seats[0].person.dataset.meeting,undefined,'current meeting membership must not contaminate historical playback');assert.equal(controller.furniture().length,0,'hidden live rooms must not become invisible collision walls in historical playback');controller.setReplay(false);assert.equal(seats[0].person.dataset.meeting,'meeting');
 scene.enabled=()=>true;root.clientWidth=1900;root.getBoundingClientRect=()=>rect(0,0,1900,1600);
 controller.sync('office',[{...record,members:[{roleId:'a',state:'joined'},{roleId:'b',state:'left'}]}]);
 controller.sync('office',[{...record,members:[{roleId:'a',state:'left'},{roleId:'b',state:'joined'}]},{...record,id:'another-meeting',members:[{roleId:'a',state:'joined'}]}]);
@@ -59,3 +59,29 @@ controller.reset();assert.equal(intervals.size,0);assert.equal(controller.positi
 scene.list=true;seats[0].person.offsetParent=null;assert.doesNotThrow(()=>controller.sync('office',[record]),'list-view hidden sprites must never be measured');assert.equal(controller.initialized,false);
 scene.list=false;root.getClientRects=()=>[];assert.doesNotThrow(()=>controller.sync('office',[record]),'an unopened office panel must never be measured');assert.equal(controller.initialized,false);
 console.log('PASS real meeting controller: serialized entry, persistent seats, leave/close returns, snapshot continuity, reduced motion, replay isolation and teardown');
+
+function resetCase(width=1200){controller.reset();root.getClientRects=()=>[{}];root.clientWidth=width;root.getBoundingClientRect=()=>rect(0,0,width,1600);seats=[makeSeat('a',30),makeSeat('b',380)];scene.active=false;scene.list=false;scene.enabled=()=>true;controller.sync('case',[]);scene.active=true;}
+resetCase();seats[0].node.classList.add('is-walking');seats[0].person.dataset.posture='standing';seats[0].person.dataset.pose='letter';controller.sync('case',[]);
+assert(seats[0].node.classList.contains('is-walking'),'meeting refresh must preserve a normal office handoff animation it does not own');assert.equal(seats[0].person.dataset.pose,'letter');controller.reset();
+resetCase();
+const planner=nav.planRoute;let blockedGoal;
+nav.planRoute=(start,goal,options)=>{blockedGoal??={...goal};return goal.x===blockedGoal.x&&goal.y===blockedGoal.y&&controller.positions.get('b').roomId!=='meeting'?null:planner(start,goal,options);};
+try{
+ controller.sync('case',[record]);assert.equal(controller.moving?.role,'b','one blocked entrant must not prevent another person from clearing a route');
+ animations.at(-1).resolve();await new Promise(r=>setImmediate(r));assert.equal(controller.moving?.role,'a','a completed move should retry routes whose occupancy changed');animations.at(-1).resolve();await new Promise(r=>setImmediate(r));
+}finally{nav.planRoute=planner;controller.reset();}
+
+resetCase();controller.sync('case',[{...record,members:[{roleId:'a',state:'joined'},{roleId:'b',state:'invited'}]}]);
+const interrupted=controller.moving.animation,attempts=animations.length;interrupted.reject(Error('Renderer interrupted'));
+await new Promise(r=>setImmediate(r));assert.equal(controller.moving,null,'an unexpected renderer cancellation must back off, not restart immediately');assert.equal(intervals.size,0);controller.tick(Date.now());assert.equal(animations.length,attempts,'render failures cannot create an unbounded retry loop');controller.reset();
+
+resetCase(1900);scene.active=false;
+const secondRoom={...record,id:'transfer-destination',members:[{roleId:'a',state:'invited'}]};controller.sync('case',[{...record,members:[{roleId:'a',state:'joined'}]},secondRoom]);scene.active=true;
+controller.sync('case',[{...record,members:[{roleId:'a',state:'left'}]},{...secondRoom,members:[{roleId:'a',state:'joined'}]}]);
+const transfer=controller.moving;assert(transfer);transfer.animation.currentTime=transfer.animation.duration*.01;
+const sourcePoint=controller.point(seats[0].person),sourceRoom=controller.rooms.get('meeting').geometry;assert(sourcePoint.x>sourceRoom.x&&sourcePoint.x<sourceRoom.x+sourceRoom.width&&sourcePoint.y>sourceRoom.y&&sourcePoint.y<sourceRoom.y+sourceRoom.height);
+controller.prepareRebuild();seats=[makeSeat('a',30),makeSeat('b',380)];controller.sync('case',[{...secondRoom,members:[{roleId:'a',state:'joined'}]}]);
+assert(controller.rooms.has('meeting'),'closing a source room during a refreshed transfer must retain its walls until the physical occupant exits');assert.equal(controller.positions.get('a').roomId,'meeting','physical source and membership destination must remain separate');assert(controller.moving,'the source chair must not block a resumed transfer');
+const actualPlanner=nav.planRoute;nav.planRoute=()=>null;try{controller.capture();controller.apply();controller.pump();assert.equal(seats[0].person.dataset.posture,'standing','a blocked character waits standing in the corridor instead of sitting in midair');}finally{nav.planRoute=actualPlanner;}
+controller.setReplay(true);controller.reset();assert.equal(controller.replay,false,'office reset releases replay ownership');assert.equal(intervals.size,0);
+console.log('PASS adversarial transitions: blocked-entrant fairness, live occupancy retry and closed source-room retention during refreshed transfers');
