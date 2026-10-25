@@ -66,9 +66,11 @@
         if(!room){const used=new Set([...this.rooms.values()].map(r=>r.layoutIndex));let layoutIndex=0;while(used.has(layoutIndex))layoutIndex++;room={id:r.id,layoutIndex,slots:new Map(),element:node('section','office-meeting-room')};this.rooms.set(r.id,room);this.layer.append(room.element);this.buildRoom(room);}
         room.record=r;room.closed=false;
         for(const m of r.members??[])if(!room.slots.has(m.roleId)){const used=new Set(room.slots.values());room.slots.set(m.roleId,Array.from({length:8},(_,i)=>i).find(i=>!used.has(i)));}
-        room.title.textContent=r.title;room.title.title=r.title;room.label.textContent=(r.members??[]).filter(m=>m.state==='joined'&&this.homes.has(m.roleId)).length+' 人讨论中 · 普通消息留在工位';
+        room.title.textContent=r.title;room.title.title=r.title;const joined=(r.members??[]).filter(m=>m.state==='joined'&&this.homes.has(m.roleId));
+        room.label.textContent=joined.length+' 人讨论中 · 未读 '+joined.reduce((n,m)=>n+(m.unreadPosts??0),0)+' · 未处理 '+joined.reduce((n,m)=>n+(m.unprocessedPosts??0),0)+'（含未读）· 普通消息留在工位';
+        room.progress.replaceChildren(...joined.map(m=>{const badge=node('button','office-meeting-member-progress');badge.type='button';badge.dataset.role=m.roleId;badge.title='未读：尚未返回该角色；未处理：该角色尚未明确确认处理（包含未读）。点击查看讨论。';badge.onclick=()=>this.openDiscussion(room.id);badge.append(node('strong','',m.name??m.roleId),node('span','','未读 '+(m.unreadPosts??0)+' · 未处理 '+(m.unprocessedPosts??0)));const slot=geometry(0,0).slots[room.slots.get(m.roleId)];badge.style.left=(slot.x-68)+'px';badge.style.top=(slot.y<300?slot.y-126:slot.y+65)+'px';return badge;}));
       }
-      for(const [id,room] of this.rooms)if(!live.has(id)){room.closed=true;room.label.textContent='讨论已结束 · 等待人物离开';}
+      for(const [id,room] of this.rooms)if(!live.has(id)){room.closed=true;room.progress.replaceChildren();room.label.textContent='讨论已结束 · 等待人物离开';}
       const targets=new Map();
       for(const room of this.rooms.values())if(!room.closed)for(const m of room.record.members??[])if(m.state==='joined'&&this.homes.has(m.roleId))targets.set(m.roleId,room.id);
       // New avatar nodes still sit at their desks; their DOM boxes are not the captured live positions.
@@ -81,15 +83,22 @@
       const title=node('button','office-meeting-title');title.type='button';title.onclick=()=>{if(!room.closed)this.openDiscussion(room.id);};
       const label=node('p','office-meeting-label'),table=node('div','office-meeting-table');
       table.setAttribute('aria-hidden','true');table.append(node('span','office-meeting-notebook'),node('span','office-meeting-cup'));
-      const door=node('span','office-meeting-door','会议室入口');room.element.append(title,label,table,door);room.title=title;room.label=label;
+      const door=node('span','office-meeting-door','会议室入口'),progress=node('div','office-meeting-progress');room.element.append(title,label,table,door,progress);room.progress=progress;room.title=title;room.label=label;
       room.chairs=Array.from({length:8},()=>{const chair=node('span','office-meeting-chair');chair.setAttribute('aria-hidden','true');room.element.append(chair);return chair;});
       for(const cls of ['north-left','north-right','west','east','south'])room.element.append(node('span','office-meeting-wall '+cls));
     }
     renderNavigation(){
       if(!this.navigation)return;this.navigation.hidden=!this.rooms.size||this.replay;
-      const signature=JSON.stringify([...this.rooms.values()].map(r=>[r.id,r.record.title,r.closed,r.label.textContent]));if(signature===this.navSignature)return;this.navSignature=signature;this.navigation.replaceChildren();
+      const signature=JSON.stringify([...this.rooms.values()].map(r=>[r.id,r.record.title,r.closed,r.label.textContent,r.record.members]));if(signature===this.navSignature)return;this.navSignature=signature;this.navigation.replaceChildren();
       const desks=node('button','','工位区');desks.type='button';desks.onclick=()=>{const boxes=[...this.homes.values()].map(h=>this.box(h.node));if(boxes.length)this.focusArea(rect(Math.min(...boxes.map(r=>r.left))-30,Math.min(...boxes.map(r=>r.top))-50,Math.max(...boxes.map(r=>r.right))+30,Math.max(...boxes.map(r=>r.bottom))+30));};this.navigation.append(desks);
-      for(const room of this.rooms.values()){const button=node('button','','会议室 · '+room.record.title);button.type='button';button.title=room.record.title+'（'+room.label.textContent+'）';button.onclick=()=>{const g=room.geometry;this.focusArea(rect(g.x-30,g.y-60,g.x+g.width+30,g.y+g.height+30));};this.navigation.append(button);}
+      const explanation=node('small','office-meeting-progress-key','会议进度：未处理包含未读；点击人物查看发言。');this.navigation.append(explanation);
+      for(const room of this.rooms.values()){
+        const group=node('section','office-meeting-progress-group'),button=node('button','','会议室 · '+room.record.title);button.type='button';button.title=room.record.title+'（'+room.label.textContent+'）';button.onclick=()=>{const g=room.geometry;this.focusArea(rect(g.x-30,g.y-60,g.x+g.width+30,g.y+g.height+30));};group.append(button);
+        if(!room.closed)for(const member of room.record.members??[])if(member.state==='joined'){
+          const progress=node('button','office-meeting-progress-person');progress.type='button';progress.title=(member.name??member.roleId)+'：未读为尚未返回角色的发言；未处理为尚未显式确认处理，包含未读。';progress.append(node('strong','',member.name??member.roleId),node('span','','未读 '+member.unreadPosts+' · 未处理 '+member.unprocessedPosts));progress.onclick=()=>this.openDiscussion(room.id);group.append(progress);
+        }
+        this.navigation.append(group);
+      }
     }
     layout(){
       if(!this.rooms.size){this.layer.style.height='0px';this.layer.hidden=true;return;}

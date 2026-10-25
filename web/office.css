@@ -735,7 +735,7 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-meeting-chair{position:absolute;width:72px;height:60px;border-radius:14px;background:#86a39b;border:3px solid #6a8982;box-shadow:0 7px 0 #58726e,0 11px 8px #4b65542b}.office-meeting-chair::before{content:'';position:absolute;left:6px;right:6px;bottom:-8px;height:18px;border-radius:7px;background:#678982;border:2px solid #55756e}.office-meeting-chair.north::before{bottom:auto;top:-8px}
 .office-desk.is-meeting{z-index:9}.office-desk.is-meeting .office-chair{z-index:2}.office-person[data-meeting]::after{content:attr(data-meeting-name);position:absolute;left:50%;top:-24px;transform:translateX(-50%);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 8px;background:#fffdf2;border:1px solid #cad9c5;border-radius:20px;font-size:11px;color:#426151;line-height:16px;pointer-events:none}
 .office-canvas.is-list .office-meeting-wing,.office-scene.is-replaying .office-meeting-wing{display:none}
-.office-meeting-locations{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#f4f8ee;border-bottom:1px solid var(--o-line);flex:none}.office-meeting-locations[hidden]{display:none}.office-meeting-locations button{font-size:11px!important;padding:5px 9px!important;min-height:30px!important;max-width:min(100%,240px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.office-meeting-locations{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#f4f8ee;border-bottom:1px solid var(--o-line);flex:none;max-height:170px;overflow:auto;align-items:center;overscroll-behavior:contain}.office-meeting-locations[hidden]{display:none}.office-meeting-locations button{font-size:11px!important;padding:5px 9px!important;min-height:30px!important;max-width:min(100%,240px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .office-canvas.is-list .office-meeting-locations{display:none}.office-person[data-meeting][data-facing=up] .avatar-head>:not(.avatar-back-head){display:none}
 
 /* Operational cards share the application's spacing and remain readable in narrow panes. */
@@ -754,3 +754,14 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-participant-request{min-width:0;padding:14px;margin:12px 0;border:1px solid var(--o-line);border-radius:10px;background:#fff}.office-participant-request textarea{display:block;box-sizing:border-box;width:100%;margin:10px 0}.office-participant-request button{white-space:normal;margin:4px 8px 4px 0}.office-participant-request strong{overflow-wrap:anywhere}
 
 .office-discussion-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px;margin:12px 0}.office-discussion-member{min-width:0;padding:12px;background:var(--o-paper,#f5f7f2);border-radius:8px;overflow-wrap:anywhere}.office-discussion-member p{margin:6px 0 0;line-height:1.7}
+
+/* Exact per-participant meeting progress, separate from ordinary desk mail. */
+.office-meeting-member-progress{position:absolute;width:136px;min-width:0;max-height:76px;padding:6px!important;display:flex;flex-direction:column;gap:4px;background:#fffdf4!important;border:1px solid #c6d5c4!important;border-radius:9px;pointer-events:auto;font-size:11px!important;line-height:1.4;z-index:2}
+.office-meeting-member-progress strong{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.office-meeting-member-progress span{white-space:nowrap;font-variant-numeric:tabular-nums}
+
+.office-meeting-progress-key{flex:1 1 220px;color:var(--o-muted);font-size:12px}
+.office-meeting-progress-group{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0;max-width:100%;padding:4px;border:1px solid var(--o-line);border-radius:8px}
+.office-meeting-locations .office-meeting-progress-person{display:flex;gap:8px;align-items:center;max-width:100%;font-size:12px!important}
+.office-meeting-progress-person strong{min-width:0;max-width:110px;overflow:hidden;text-overflow:ellipsis}
+.office-meeting-progress-person span{flex:none;font-variant-numeric:tabular-nums}

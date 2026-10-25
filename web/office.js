@@ -1283,7 +1283,7 @@
           disabled
             ? `角色已停用${processing?' · '+processing+' 条处理中消息待恢复':''}`
             : activity?.discussionTitle
-            ? '讨论中：'+activity.discussionTitle
+            ? '讨论中：'+activity.discussionTitle+' · 未读 '+activity.discussionUnread+' · 未处理 '+activity.discussionUnprocessed+'（含未读）'
             : processing
             ? `已领取 ${processing} 条消息（待反馈）`
             : wait

@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const intervals=new Map(),animations=[];let serial=0;
 class Element{
  constructor(){this.children=[];this.dataset={};this.style={};this.className='';this.hidden=false;const classes=new Set();this.classList={add:(...v)=>v.forEach(c=>classes.add(c)),remove:(...v)=>v.forEach(c=>classes.delete(c)),contains:c=>classes.has(c),toggle:(c,on)=>on?classes.add(c):classes.delete(c)};}
- append(...nodes){for(const n of nodes){n.parent=this;this.children.push(n);}}replaceChildren(){this.children=[];}setAttribute(){}remove(){this.parent.children=this.parent.children.filter(n=>n!==this);}
+ append(...nodes){for(const n of nodes){n.parent=this;this.children.push(n);}}replaceChildren(...nodes){this.children=[];this.append(...nodes);}setAttribute(){}remove(){this.parent.children=this.parent.children.filter(n=>n!==this);}
 }
 const document={createElement:()=>new Element()},window={},source=await fs.readFile(new URL('../web/office-meetings.js',import.meta.url),'utf8');
 vm.runInNewContext(await fs.readFile(new URL('../web/office-navigation.js',import.meta.url),'utf8'),{window});
@@ -38,9 +38,12 @@ const makeSeat=(role,left)=>{
 };
 let seats=[makeSeat('a',30),makeSeat('b',380)];
 root.querySelectorAll=s=>s==='.office-desk'?seats.map(r=>r.node):s.startsWith('.office-table')?seats.flatMap(r=>[r.chair,r.table]):[];
-const scene={root,scale:()=>1,active:false,enabled:()=>true,status:{},running:false,queue:[],drain(){}},controller=new Meetings(scene);
+const scene={root,scale:()=>1,active:false,enabled:()=>true,status:{},running:false,queue:[],drain(){}},meetingNavigation=new Element(),controller=new Meetings(scene,{navigation:meetingNavigation});
 const record={id:'meeting',title:'One focused question',members:[{roleId:'a',state:'joined'},{roleId:'b',state:'joined'}]};
-controller.sync('office',[]);scene.active=true;controller.sync('office',[record]);assert.equal(animations.length,1,'one moving character reserves the corridors');
+controller.sync('office',[]);scene.active=true;controller.sync('office',[{...record,members:[{roleId:'a',name:'角色甲',state:'joined',unreadPosts:2,unprocessedPosts:3},{roleId:'b',name:'角色乙',state:'joined',unreadPosts:0,unprocessedPosts:1}]}]);
+const navTexts=()=>meetingNavigation.children.flatMap(n=>n.children??[]).flatMap(n=>n.children??[]).map(n=>n.textContent);assert(navTexts().includes('未读 2 · 未处理 3'),'unscaled navigation must expose readable per-person counts');
+const meetingRoom=controller.rooms.get('meeting');assert.equal(meetingRoom.progress.children.length,2);assert.equal(meetingRoom.progress.children[0].children[1].textContent,'未读 2 · 未处理 3');assert(meetingRoom.label.textContent.includes('未读 2 · 未处理 4'));
+controller.sync('office',[{...record,members:[{roleId:'a',state:'joined',unreadPosts:0,unprocessedPosts:1},{roleId:'b',state:'joined',unreadPosts:0,unprocessedPosts:0}]}]);assert.equal(meetingRoom.progress.children[0].children[1].textContent,'未读 0 · 未处理 1','live count changes must render even when membership is unchanged');assert(navTexts().includes('未读 0 · 未处理 1')); assert.equal(animations.length,1,'one moving character reserves the corridors');
 assert.equal(controller.moving.role,'a');assert.equal(seats[0].person.dataset.posture,'standing');assert.equal(seats[0].node.classList.contains('is-walking'),true);
 animations[0].resolve();await new Promise(r=>setImmediate(r));assert.equal(animations.length,2,'second character starts after the first takes a seat: '+scene.status.textContent+' '+JSON.stringify([...controller.positions]));assert.equal(controller.positions.get('a').roomId,'meeting');
 animations[1].resolve();await new Promise(r=>setImmediate(r));assert.equal(controller.moving,null);assert.equal(seats[0].person.dataset.posture,'seated');assert.equal(seats[0].person.dataset.facing,'down');
