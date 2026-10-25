@@ -730,12 +730,10 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 .office-meeting-wall.west{left:0;top:0;width:10px;height:720px}.office-meeting-wall.east{right:0;top:0;width:10px;height:720px}.office-meeting-wall.south{left:0;bottom:0;width:760px;height:10px}
 .office-meeting-door{position:absolute;left:270px;top:0;width:220px;height:12px;background:#c9b18c;border-bottom:3px solid #b39770;border-radius:0 0 6px 6px;text-align:center;font-size:11px;color:#64775f;line-height:34px}
 .office-meeting-table{position:absolute;left:140px;top:300px;width:480px;height:140px;border-radius:44px;background:linear-gradient(150deg,#f0d9b5,#d6b68a);border:3px solid #c9a77d;box-shadow:0 10px 0 #b69a77,0 18px 14px #61705b20}
-.office-meeting-notebook{position:absolute;left:216px;top:46px;width:46px;height:38px;border-radius:3px;background:repeating-linear-gradient(0deg,#fdfbef 0 7px,#b3c8b5 8px 9px);transform:rotate(-7deg);box-shadow:-4px 0 #9bb49f}
-.office-meeting-cup{position:absolute;left:328px;top:62px;width:24px;height:24px;border:5px solid #f8f6e6;border-radius:50%;background:#9c7959;box-shadow:4px 2px #a3b99c}
 .office-meeting-chair{position:absolute;width:72px;height:60px;border-radius:14px;background:#86a39b;border:3px solid #6a8982;box-shadow:0 7px 0 #58726e,0 11px 8px #4b65542b}.office-meeting-chair::before{content:'';position:absolute;left:6px;right:6px;bottom:-8px;height:18px;border-radius:7px;background:#678982;border:2px solid #55756e}.office-meeting-chair.north::before{bottom:auto;top:-8px}
-.office-desk.is-meeting{z-index:9}.office-desk.is-meeting .office-chair{z-index:2}.office-person[data-meeting]::after{content:attr(data-meeting-name);position:absolute;left:50%;top:-24px;transform:translateX(-50%);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 8px;background:#fffdf2;border:1px solid #cad9c5;border-radius:20px;font-size:11px;color:#426151;line-height:16px;pointer-events:none}
+.office-desk.is-meeting{z-index:9}.office-desk.is-meeting .office-chair{z-index:2}
 .office-canvas.is-list .office-meeting-wing,.office-scene.is-replaying .office-meeting-wing{display:none}
-.office-meeting-locations{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#f4f8ee;border-bottom:1px solid var(--o-line);flex:none;max-height:170px;overflow:auto;align-items:center;overscroll-behavior:contain}.office-meeting-locations[hidden]{display:none}.office-meeting-locations button{font-size:11px!important;padding:5px 9px!important;min-height:30px!important;max-width:min(100%,240px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.office-meeting-locations{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:#f4f8ee;border-bottom:1px solid var(--o-line);flex:none;align-items:center}.office-meeting-locations[hidden]{display:none}.office-meeting-locations button{font-size:11px!important;padding:5px 9px!important;min-height:30px!important;max-width:min(100%,240px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .office-canvas.is-list .office-meeting-locations{display:none}.office-person[data-meeting][data-facing=up] .avatar-head>:not(.avatar-back-head){display:none}
 
 /* Operational cards share the application's spacing and remain readable in narrow panes. */
@@ -755,13 +753,24 @@ body.office-application{height:100dvh;overflow:hidden;background:#f4f5f1;color:#
 
 .office-discussion-members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px;margin:12px 0}.office-discussion-member{min-width:0;padding:12px;background:var(--o-paper,#f5f7f2);border-radius:8px;overflow-wrap:anywhere}.office-discussion-member p{margin:6px 0 0;line-height:1.7}
 
-/* Exact per-participant meeting progress, separate from ordinary desk mail. */
-.office-meeting-member-progress{position:absolute;width:136px;min-width:0;max-height:76px;padding:6px!important;display:flex;flex-direction:column;gap:4px;background:#fffdf4!important;border:1px solid #c6d5c4!important;border-radius:9px;pointer-events:auto;font-size:11px!important;line-height:1.4;z-index:2}
-.office-meeting-member-progress strong{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.office-meeting-member-progress span{white-space:nowrap;font-variant-numeric:tabular-nums}
+/* Conference mail lives on the avatars and at their own places on the table. */
+.office-meeting-table-messages{position:absolute;inset:0}
+.office-meeting-inbox{position:absolute!important;box-sizing:border-box;width:108px;height:56px;min-height:0!important;padding:3px 6px!important;background:#fff9e9!important;border:1px solid #ccb992!important;border-radius:5px!important;box-shadow:0 3px 0 #d6c29c!important;text-align:left;pointer-events:auto;z-index:2}
+.office-meeting-inbox[data-unprocessed=true]{box-shadow:0 3px 0 #e5d1a5,0 6px 0 #bca37e!important}
+.office-meeting-inbox[data-unread=true]{border-color:#c88a56!important;background:#fff1d2!important}
+.office-meeting-person-name{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:16px;color:#36564b}
+.office-meeting-message-counts{display:grid;gap:1px}
+.office-meeting-message-count{display:flex;align-items:center;gap:4px;white-space:nowrap;font-size:13px;line-height:17px;color:#47656b}
+.office-meeting-message-icon{display:inline-flex;justify-content:center;width:16px;font-size:15px;color:#b57740}
+.office-meeting-message-count.unprocessedPosts .office-meeting-message-icon{color:#4e8190}
+.office-meeting-message-count b{margin-left:auto;font-size:18px;line-height:17px;font-variant-numeric:tabular-nums}
+.office-meeting-table-mail .office-meeting-person-name{font-size:11px;line-height:13px}.office-meeting-table-mail .office-meeting-message-count{font-size:12px}
+.office-meeting-avatar-progress{position:absolute;left:50%;bottom:calc(100% + 10px);transform:translateX(-50%);width:128px;padding:7px 10px;background:#fffdf3;border:2px solid #b7cdbb;border-radius:13px;box-shadow:0 4px 0 #9bb29d33;pointer-events:none;z-index:10}
+.office-meeting-avatar-progress::after{content:'';position:absolute;left:calc(50% - 6px);bottom:-7px;width:10px;height:10px;background:#fffdf3;border-right:2px solid #b7cdbb;border-bottom:2px solid #b7cdbb;transform:rotate(45deg)}
+.office-person[data-meeting-side=below] .office-meeting-avatar-progress{bottom:auto;top:calc(100% + 10px)}
+.office-person[data-meeting-side=below] .office-meeting-avatar-progress::after{bottom:auto;top:-7px;transform:rotate(225deg)}
+.office-meeting-avatar-mail[data-unread=true] .unreadPosts{color:#a7602f}
+.office-meeting-avatar-mail[data-unprocessed=false] .unprocessedPosts{color:#4e7a56}
 
-.office-meeting-progress-key{flex:1 1 220px;color:var(--o-muted);font-size:12px}
-.office-meeting-progress-group{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0;max-width:100%;padding:4px;border:1px solid var(--o-line);border-radius:8px}
-.office-meeting-locations .office-meeting-progress-person{display:flex;gap:8px;align-items:center;max-width:100%;font-size:12px!important}
-.office-meeting-progress-person strong{min-width:0;max-width:110px;overflow:hidden;text-overflow:ellipsis}
-.office-meeting-progress-person span{flex:none;font-variant-numeric:tabular-nums}
+.office-person[data-meeting-unread]::before{content:'✉ ' attr(data-meeting-unread);position:absolute;left:48px;top:0;min-width:24px;padding:3px 5px;border-radius:10px;background:#bf7146;color:#fffbed;border:2px solid #fff7df;font-size:14px;font-weight:700;line-height:17px;text-align:center;white-space:nowrap;z-index:11;pointer-events:none}
+.office-meeting-inbox[data-unprocessed=false]{background:#eff5e8!important;border-color:#a6bea1!important}

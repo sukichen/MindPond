@@ -8,11 +8,22 @@
     const slots=Array.from({length:8},(_,i)=>({x:x+[305,450,160,595][Math.floor(i/2)],y:y+(i%2===0?210:540),facing:i%2===0?'down':'up'}));
     return {x,y,width:WIDTH,height:HEIGHT,slots,door:{x:x+380,y},
       table:rect(x+140,y+300,x+620,y+440),
+      inboxes:slots.map((_,i)=>{const left=x+[320,440,200,560][Math.floor(i/2)]-54,top=y+(i%2===0?308:376);return rect(left,top,left+108,top+56);}),
       walls:[rect(x,y,x+270,y+10),rect(x+490,y,x+WIDTH,y+10),rect(x,y,x+10,y+HEIGHT),rect(x+WIDTH-10,y,x+WIDTH,y+HEIGHT),rect(x,y+HEIGHT-10,x+WIDTH,y+HEIGHT)],
       chairs:slots.map(p=>rect(p.x-36,p.y-35,p.x+36,p.y+25))};
   }
   const distance=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
   const node=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
+  const outstanding=value=>Number.isSafeInteger(value)&&value>=0?String(value>0):'unknown';
+  function progressContent(member,cls){
+    const content=node('span',cls),name=node('strong','office-meeting-person-name',member.name??member.roleId),counts=node('span','office-meeting-message-counts');
+    content.dataset.unread=outstanding(member.unreadPosts);content.dataset.unprocessed=outstanding(member.unprocessedPosts);
+    for(const [field,label,icon] of [['unreadPosts','未读','✉'],['unprocessedPosts','未处理','▤']]){
+      const metric=node('span','office-meeting-message-count '+field),symbol=node('span','office-meeting-message-icon',icon);symbol.setAttribute('aria-hidden','true');
+      metric.append(symbol,node('span','',label),node('b','',String(member[field]??'—')));counts.append(metric);
+    }
+    content.append(name,counts);return content;
+  }
   class Meetings{
     constructor(scene,{openDiscussion=()=>{},navigation=null,focusArea=()=>{}}={}){
       Object.assign(this,{scene,root:scene.root,rooms:new Map(),positions:new Map(),homes:new Map(),targets:new Map(),retries:new Map(),office:null,epoch:0,moving:null,replay:false,openDiscussion,navigation,focusArea,initialized:false});
@@ -37,7 +48,7 @@
     }
     release(home){
       const person=home.person;if(!person.dataset.meeting&&!home.node.classList.contains('is-meeting'))return;
-      delete person.dataset.meeting;delete person.dataset.meetingName;delete person.dataset.pose;person.style.translate='';
+      home.progress?.remove();home.progress=null;delete person.dataset.meetingSide;delete person.dataset.meeting;delete person.dataset.meetingUnread;delete person.dataset.pose;person.style.translate='';
       home.node.classList.remove('is-meeting','is-walking');person.dataset.posture='seated';person.dataset.facing=home.node.dataset.busy==='true'?'desk':'down';
       window.MindPondOfficeScene.drawAction(person,window.MindPondOfficeScene.sampleAction('nod',0));
     }
@@ -49,7 +60,7 @@
       if(this.office!==officeId){this.reset();this.office=officeId;}
       const nodes=[...this.root.querySelectorAll('.office-desk')].filter(n=>!n.hidden),nextHomes=new Map();
       let replaced=false;
-      for(const n of nodes){const role=n.dataset.role,person=n.querySelector('.office-person');if(!role||!person)continue;const old=this.homes.get(role);if(old?.person!==person)replaced=true;nextHomes.set(role,{...old,node:n,person});}
+      for(const n of nodes){const role=n.dataset.role,person=n.querySelector('.office-person');if(!role||!person)continue;const old=this.homes.get(role);if(old?.person!==person)replaced=true;nextHomes.set(role,{...old,progress:old?.person===person?old.progress:null,node:n,person});}
       if(replaced&&!this.rebuilding)this.capture();this.rebuilding=false;
       this.homes=nextHomes;
       for(const [role,home] of this.homes){
@@ -68,9 +79,16 @@
         for(const m of r.members??[])if(!room.slots.has(m.roleId)){const used=new Set(room.slots.values());room.slots.set(m.roleId,Array.from({length:8},(_,i)=>i).find(i=>!used.has(i)));}
         room.title.textContent=r.title;room.title.title=r.title;const joined=(r.members??[]).filter(m=>m.state==='joined'&&this.homes.has(m.roleId));
         room.label.textContent=joined.length+' 人讨论中 · 未读 '+joined.reduce((n,m)=>n+(m.unreadPosts??0),0)+' · 未处理 '+joined.reduce((n,m)=>n+(m.unprocessedPosts??0),0)+'（含未读）· 普通消息留在工位';
-        room.progress.replaceChildren(...joined.map(m=>{const badge=node('button','office-meeting-member-progress');badge.type='button';badge.dataset.role=m.roleId;badge.title='未读：尚未返回该角色；未处理：该角色尚未明确确认处理（包含未读）。点击查看讨论。';badge.onclick=()=>this.openDiscussion(room.id);badge.append(node('strong','',m.name??m.roleId),node('span','','未读 '+(m.unreadPosts??0)+' · 未处理 '+(m.unprocessedPosts??0)));const slot=geometry(0,0).slots[room.slots.get(m.roleId)];badge.style.left=(slot.x-68)+'px';badge.style.top=(slot.y<300?slot.y-126:slot.y+65)+'px';return badge;}));
+        const progressKey=JSON.stringify(joined.map(m=>[m.roleId,m.name,m.unreadPosts,m.unprocessedPosts,room.slots.get(m.roleId)]));
+        if(progressKey!==room.progressKey){room.progressKey=progressKey;const local=geometry(0,0);
+        room.progress.replaceChildren(...joined.map(m=>{
+          const inbox=node('button','office-meeting-inbox');inbox.type='button';inbox.dataset.role=m.roleId;inbox.dataset.unprocessed=outstanding(m.unprocessedPosts);inbox.dataset.unread=outstanding(m.unreadPosts);
+          inbox.title=(m.name??m.roleId)+'的会议消息：未读 '+m.unreadPosts+'，未处理 '+m.unprocessedPosts+'（含未读）。点击查看讨论。';inbox.onclick=()=>this.openDiscussion(room.id);
+          inbox.append(progressContent(m,'office-meeting-table-mail'));
+          const box=local.inboxes[room.slots.get(m.roleId)];inbox.style.left=(box.left-local.table.left)+'px';inbox.style.top=(box.top-local.table.top)+'px';return inbox;
+        }));}
       }
-      for(const [id,room] of this.rooms)if(!live.has(id)){room.closed=true;room.progress.replaceChildren();room.label.textContent='讨论已结束 · 等待人物离开';}
+      for(const [id,room] of this.rooms)if(!live.has(id)){room.closed=true;room.progressKey=null;room.progress.replaceChildren();room.label.textContent='讨论已结束 · 等待人物离开';}
       const targets=new Map();
       for(const room of this.rooms.values())if(!room.closed)for(const m of room.record.members??[])if(m.state==='joined'&&this.homes.has(m.roleId))targets.set(m.roleId,room.id);
       // New avatar nodes still sit at their desks; their DOM boxes are not the captured live positions.
@@ -82,8 +100,8 @@
     buildRoom(room){
       const title=node('button','office-meeting-title');title.type='button';title.onclick=()=>{if(!room.closed)this.openDiscussion(room.id);};
       const label=node('p','office-meeting-label'),table=node('div','office-meeting-table');
-      table.setAttribute('aria-hidden','true');table.append(node('span','office-meeting-notebook'),node('span','office-meeting-cup'));
-      const door=node('span','office-meeting-door','会议室入口'),progress=node('div','office-meeting-progress');room.element.append(title,label,table,door,progress);room.progress=progress;room.title=title;room.label=label;
+      const progress=node('div','office-meeting-table-messages');table.append(progress);
+      const door=node('span','office-meeting-door','会议室入口');room.element.append(title,label,table,door);room.progress=progress;room.title=title;room.label=label;
       room.chairs=Array.from({length:8},()=>{const chair=node('span','office-meeting-chair');chair.setAttribute('aria-hidden','true');room.element.append(chair);return chair;});
       for(const cls of ['north-left','north-right','west','east','south'])room.element.append(node('span','office-meeting-wall '+cls));
     }
@@ -91,15 +109,11 @@
       if(!this.navigation)return;this.navigation.hidden=!this.rooms.size||this.replay;
       const signature=JSON.stringify([...this.rooms.values()].map(r=>[r.id,r.record.title,r.closed,r.label.textContent,r.record.members]));if(signature===this.navSignature)return;this.navSignature=signature;this.navigation.replaceChildren();
       const desks=node('button','','工位区');desks.type='button';desks.onclick=()=>{const boxes=[...this.homes.values()].map(h=>this.box(h.node));if(boxes.length)this.focusArea(rect(Math.min(...boxes.map(r=>r.left))-30,Math.min(...boxes.map(r=>r.top))-50,Math.max(...boxes.map(r=>r.right))+30,Math.max(...boxes.map(r=>r.bottom))+30));};this.navigation.append(desks);
-      const explanation=node('small','office-meeting-progress-key','会议进度：未处理包含未读；点击人物查看发言。');this.navigation.append(explanation);
       for(const room of this.rooms.values()){
-        const group=node('section','office-meeting-progress-group'),button=node('button','','会议室 · '+room.record.title);button.type='button';button.title=room.record.title+'（'+room.label.textContent+'）';button.onclick=()=>{const g=room.geometry;this.focusArea(rect(g.x-30,g.y-60,g.x+g.width+30,g.y+g.height+30));};group.append(button);
-        if(!room.closed)for(const member of room.record.members??[])if(member.state==='joined'){
-          const progress=node('button','office-meeting-progress-person');progress.type='button';progress.title=(member.name??member.roleId)+'：未读为尚未返回角色的发言；未处理为尚未显式确认处理，包含未读。';progress.append(node('strong','',member.name??member.roleId),node('span','','未读 '+member.unreadPosts+' · 未处理 '+member.unprocessedPosts));progress.onclick=()=>this.openDiscussion(room.id);group.append(progress);
-        }
-        this.navigation.append(group);
+        const button=node('button','','会议室 · '+room.record.title);button.type='button';button.title=room.record.title+'（'+room.label.textContent+'）';button.onclick=()=>{const g=room.geometry;this.focusArea(rect(g.x-30,g.y-60,g.x+g.width+30,g.y+g.height+30));};this.navigation.append(button);
       }
     }
+
     layout(){
       if(!this.rooms.size){this.layer.style.height='0px';this.layer.hidden=true;return;}
       this.layer.hidden=this.replay;
@@ -123,9 +137,17 @@
       for(const [role,home] of this.homes){const position=this.positions.get(role),target=this.target(role);if(!position||!target)continue;
         const away=position.roomId||target.roomId||distance(position.point,home.seated)>1;
         if(!away){this.release(home);continue;}
-        const p=home.person;p.dataset.meeting=target.roomId??position.roomId??'returning';p.dataset.meetingName=p.dataset.name??'';home.node.classList.add('is-meeting');
+        const p=home.person;p.dataset.meeting=target.roomId??position.roomId??'returning';home.node.classList.add('is-meeting');
         p.style.translate=(position.point.x-home.seated.x)+'px '+(position.point.y-home.seated.y)+'px';
         const slot=this.rooms.get(position.roomId)?.geometry.slots[this.rooms.get(position.roomId)?.slots.get(role)],atMeeting=slot&&distance(position.point,slot)<=1,atHome=distance(position.point,home.seated)<=1;
+        const member=this.rooms.get(target.roomId)?.record.members?.find(m=>m.roleId===role&&m.state==='joined');
+        if(member){
+          if(member.unreadPosts>0)p.dataset.meetingUnread=String(member.unreadPosts);else delete p.dataset.meetingUnread;
+          const signature=JSON.stringify([member.name,member.unreadPosts,member.unprocessedPosts]);
+          if(!home.progress){home.progress=node('span','office-meeting-avatar-progress');home.progressSignature=null;p.append(home.progress);}
+          if(home.progressSignature!==signature){home.progressSignature=signature;home.progress.replaceChildren(progressContent(member,'office-meeting-avatar-mail'));}
+          p.dataset.meetingSide=atMeeting&&slot.facing==='up'?'below':'above';
+        }else{home.progress?.remove();home.progress=null;home.progressSignature=null;delete p.dataset.meetingSide;delete p.dataset.meetingUnread;}
         const walking=this.moving?.role===role;p.dataset.posture=walking||!atMeeting&&!atHome?'standing':'seated';
         if(!walking){if(atMeeting)p.dataset.facing=slot.facing;else if(atHome)p.dataset.facing=!target.roomId&&home.node.dataset.busy==='true'?'desk':'down';}
       }
