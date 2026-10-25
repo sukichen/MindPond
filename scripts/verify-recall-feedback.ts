@@ -3,7 +3,9 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import assert from 'node:assert/strict';
 import { GraphMemory } from '../src/core/graph-memory.js';
+import {toStructuredError} from '../src/core/errors.js';
 
 async function main() {
   const original = process.env.MEMORY_DB_PATH;
@@ -25,6 +27,13 @@ async function main() {
     await first.getNodeById(node.id,{trackAccess:true});
     const expanded = await first.actionLogAfter(cursor);
     if (expanded.length !== 1 || expanded[0].action !== 'memory_read' || !expanded[0].reason.includes('expand')) throw new Error('tracked direct read did not enter the live stream');
+    for(const identity of [{runId:'wrong',hostId:'host-1'},{runId:'run-1',hostId:'wrong'}]){
+      await assert.rejects(first.reportRecallFeedback({recallId:recall.recallId,...identity,decisions:[{memoryId:node.id,disposition:'used'}]}),error=>{
+        const shape=toStructuredError(error);return shape.code==='scope_denied'&&!!shape.nextAction;
+      });
+    }
+    await assert.rejects(first.reportRecallFeedback({recallId:recall.recallId,runId:'run-1',hostId:'host-1',decisions:[{memoryId:node.id,disposition:'used'},{memoryId:'not-returned',disposition:'used'}]}),error=>toStructuredError(error).code==='invalid_input');
+    assert.equal((await first.recallFeedbackSummary()).decisions.used,0,'Invalid batch must not partially commit valid decisions');
     const firstReceipt = await first.reportRecallFeedback({ recallId: recall.recallId, runId: 'run-1', hostId: 'host-1', decisions: [{ memoryId: node.id, disposition: 'used', reason: 'supported the deployment answer' }] });
     if (firstReceipt.recorded !== 1) throw new Error('feedback was not recorded');
     const replay = await first.reportRecallFeedback({ recallId: recall.recallId, runId: 'run-1', hostId: 'host-1', decisions: [{ memoryId: node.id, disposition: 'used', reason: 'supported the deployment answer' }] });
@@ -34,9 +43,7 @@ async function main() {
     await reopened.init();
     const summary = await reopened.recallFeedbackSummary();
     if (summary.recalls !== 1 || summary.returned !== 1 || summary.decisions.used !== 1 || summary.unreported !== 0) throw new Error('feedback did not survive restart');
-    let conflict = false;
-    try { await reopened.reportRecallFeedback({ recallId: recall.recallId, decisions: [{ memoryId: node.id, disposition: 'rejected' }] }); } catch { conflict = true; }
-    if (!conflict) throw new Error('conflicting adoption feedback was accepted');
+    await assert.rejects(reopened.reportRecallFeedback({ recallId: recall.recallId, runId:'run-1',hostId:'host-1',decisions: [{ memoryId: node.id, disposition: 'rejected' }] }),error=>toStructuredError(error).code==='idempotency_conflict');
     await reopened.close();
     console.log('PASS recall feedback: durable, scoped, idempotent, conflict-protected');
   } finally {

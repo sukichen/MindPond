@@ -185,7 +185,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 
-===== body-parser@2.3.0 / LICENSE =====
+===== body-parser@2.4.0 / LICENSE =====
 (The MIT License)
 
 Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
@@ -897,7 +897,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 
 
-===== body-parser@1.20.8 / LICENSE =====
+===== body-parser@1.20.9 / LICENSE =====
 (The MIT License)
 
 Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
@@ -2144,7 +2144,7 @@ SOFTWARE.
 
 
 
-===== fast-uri@3.1.8 / LICENSE =====
+===== fast-uri@3.1.9 / LICENSE =====
 Copyright (c) 2011-2021, Gary Court until https://github.com/garycourt/uri-js/commit/a1acf730b4bba3f1097c9f52e7d9d3aba8cdcaae
 Copyright (c) 2021-present The Fastify team <https://github.com/fastify/fastify#team>
 All rights reserved.
@@ -2637,7 +2637,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
 
-===== ip-address@10.7.3 / LICENSE =====
+===== ip-address@10.7.5 / LICENSE =====
 Copyright (C) 2011 by Beau Gunderson
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -3881,7 +3881,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-===== qs@6.16.0 / LICENSE.md =====
+===== qs@6.16.1 / LICENSE.md =====
 BSD 3-Clause License
 
 Copyright (c) 2014, Nathan LaFreniere and other [contributors](https://github.com/ljharb/qs/graphs/contributors)
@@ -5070,7 +5070,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 
-===== undici@6.29.0 / LICENSE =====
+===== undici@6.29.1 / LICENSE =====
 MIT License
 
 Copyright (c) Matteo Collina and Undici contributors
@@ -5866,7 +5866,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
 
-===== zod@4.5.4 / LICENSE =====
+===== zod@4.6.7 / LICENSE =====
 MIT License
 
 Copyright (c) 2025 Colin McDonnell

@@ -113,6 +113,11 @@ export class TransientModelError extends Error {
 }
 
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
+const pause = (ms:number,signal?:AbortSignal) => new Promise<void>(resolve=>{
+  const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);resolve();};
+  const timer=setTimeout(done,ms);signal?.addEventListener('abort',done,{once:true});
+  if(signal?.aborted)done();
+});
 
 interface ClaimShape { id: string; leaseToken: string; leaseUntil: number; attempts: number; checkpoint: unknown }
 
@@ -123,13 +128,12 @@ export class WorkDriver {
   private readonly backoffMs: number;
   private readonly maxTurns: number;
   private readonly clock: () => number;
-  private readonly delay: (ms: number) => Promise<void>;
-  private readonly renewDelay: (ms: number) => Promise<void>;
+  private readonly delay: (ms: number, signal?:AbortSignal) => Promise<void>;
+  private readonly renewDelay: (ms: number, signal?:AbortSignal) => Promise<void>;
   private cancelRequested = false;
   private cancelReason = 'cancelled';
   private readonly externalAbort = new AbortController();
   private degraded = false;
-  private renewActive = false;
   private lastError: string | undefined;
 
   constructor(private pond: WorkPond, private adapter: ModelAdapter, options: WorkDriverOptions) {
@@ -139,7 +143,7 @@ export class WorkDriver {
     this.backoffMs = Math.max(0, Math.floor(options.retryBackoffMs ?? 5_000));
     this.maxTurns = Math.max(1, Math.floor(options.maxTurns ?? 8));
     this.clock = options.now ?? Date.now;
-    this.delay = options.delay ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+    this.delay = options.delay ?? pause;
     this.renewDelay = options.renewDelay ?? this.delay;
   }
 
@@ -157,6 +161,8 @@ export class WorkDriver {
    *  claimable right now. */
   async runOne(params: { spaceId: string; memoryType: string; domain?: MemoryDomainRef },
     handler: (ctx: WorkTurnContext) => Promise<WorkTurnResult>): Promise<WorkDriverResult | null> {
+    // A stopped/lost driver must not claim and cancel unrelated queued work.
+    if(this.cancelRequested||this.externalAbort.signal.aborted)return null;
     const start = this.clock();
     // T05: one absolute deadline for the whole request — never reset per turn.
     const deadlineAt = start + this.totalBudgetMs;
@@ -175,7 +181,7 @@ export class WorkDriver {
       const one = await this.runOne(params, handler);
       if (!one) break;
       results.push(one);
-      if (one.finalStatus === 'lost') break;
+      if (one.finalStatus === 'lost'||one.cancelled||one.budgetExhausted) break;
     }
     return results;
   }
@@ -192,13 +198,14 @@ export class WorkDriver {
     let turns = 0;
     let renewLost: string | undefined;
     // Lease renewal runs on its own cadence; it never resets the budget.
-    this.renewActive = true;
+    const renewal = new AbortController();
     const renewLoop = (async () => {
-      while (this.renewActive) {
-        await this.renewDelay(Math.max(1_000, Math.floor(this.leaseMs / 3)));
-        if (!this.renewActive) return;
+      while (!renewal.signal.aborted) {
+        await this.renewDelay(Math.max(1_000, Math.floor(this.leaseMs / 3)),renewal.signal);
+        if (renewal.signal.aborted) return;
         try { await this.pond.renewHostWork(claim.id, claim.leaseToken); }
         catch (error) {
+          if(renewal.signal.aborted)return;
           renewLost = messageOf(error);
           this.externalAbort.abort();
           return;
@@ -251,7 +258,7 @@ export class WorkDriver {
       }
       return result({ finalStatus: 'lost', turns, error: renewLost ?? 'max_turns_exceeded' });
     } finally {
-      this.renewActive = false;
+      renewal.abort();
     }
   }
 
@@ -273,10 +280,11 @@ export class WorkDriver {
     const call = this.adapter.call({ prompt, context });
     let settled = false;
     void call.then(() => { settled = true; }, () => { settled = true; });
+    const timeoutDone = new AbortController();
     const timeoutWatch = (async () => {
       const wait = turnDeadlineAt - this.clock();
-      if (wait > 0) await this.delay(wait);
-      turnAbort.abort();
+      if (wait > 0) await this.delay(wait,timeoutDone.signal);
+      if(!timeoutDone.signal.aborted)turnAbort.abort();
     })();
     try {
       return await Promise.race([
@@ -291,6 +299,7 @@ export class WorkDriver {
       }
       throw error;
     } finally {
+      timeoutDone.abort();
       if (this.cancelRequested && !this.adapter.supportsCancel) this.degraded = true;
       this.externalAbort.signal.removeEventListener('abort', propagate);
     }

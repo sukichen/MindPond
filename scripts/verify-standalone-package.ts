@@ -84,7 +84,7 @@ try {
   }finally{await remoteClient.close();}
   console.log('PASS installed host grant, central HTTP and stdio bridge preserve native role identity; missing identity denied');
   const pkg = JSON.parse(await fs.readFile(path.join(installed, 'package.json'), 'utf8'));
-  assert.equal(pkg.dependencies.zod, '4.5.4');assert(!pkg.dependencies['@huggingface/transformers']);assert(pkg.peerDependenciesMeta['@huggingface/transformers'].optional);
+  assert.equal(pkg.dependencies.zod, '4.6.7');assert(!pkg.dependencies['@huggingface/transformers']);assert(pkg.peerDependenciesMeta['@huggingface/transformers'].optional);
   const {stdout:deviceOutput}=await exec(path.join(temp,'node_modules/.bin/mindpond-models'),['devices'],{cwd:temp,env,timeout:15000});
   const devices=JSON.parse(deviceOutput);assert.equal(devices.localInference.installed,false);assert.deepEqual(devices.backends,[]);
   async function installedBytes(directory:string):Promise<number>{let sum=0;for(const entry of await fs.readdir(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())sum+=await installedBytes(file);else if(entry.isFile())sum+=(await fs.stat(file)).size;}return sum;}

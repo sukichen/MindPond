@@ -145,8 +145,10 @@ try {
     const replay = await ingest({ transcript: '[user] 继续', sessionId: 's-t22', idempotencyKey: 't22-msg-1' });
     assert.equal(replay.body.l0Id, first.body.l0Id, 'same key + same payload must replay the original receipt');
     const conflict = await ingest({ transcript: '[user] 继续上一轮', sessionId: 's-t22', idempotencyKey: 't22-msg-1' });
-    assert.equal(conflict.status, 400, 'same key + different payload must conflict');
-    assert.ok(JSON.stringify(conflict.body).includes('idempotency_conflict'));
+    assert.equal(conflict.status, 409, 'same key + different payload must return the shared conflict status');
+    assert.equal(conflict.body.code,'idempotency_conflict');
+    assert.equal(conflict.body.retryable,false);
+    assert(conflict.body.nextAction,'Conflict must explain how to recover');
     const second = await ingest({ transcript: '[user] 继续', sessionId: 's-t22', idempotencyKey: 't22-msg-2' });
     assert.equal(second.status, 200);
     assert.notEqual(second.body.l0Id, first.body.l0Id, 'a different messageId at a different time must stay a separate event');

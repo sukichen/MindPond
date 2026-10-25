@@ -319,8 +319,8 @@ export class OfficeCollaboration {
         this.admin(a);
         const role = await this.db.get<Row>('SELECT * FROM character_roles WHERE id=?', [i.roleId]);
         if (!role)
-            fail('Role unavailable','not_found');
-        return { role, offices: await this.db.all('SELECT s.office_id,o.title officeTitle,s.label,s.role,s.enabled FROM office_seats s JOIN offices o ON o.id=s.office_id JOIN role_seats rs ON rs.seat_id=s.id WHERE rs.role_id=?', [i.roleId]), contacts: await this.db.all('SELECT sender,recipient FROM role_links WHERE sender=? OR recipient=?', [i.roleId, i.roleId]), host: await this.db.get("SELECT h.* FROM office_host_reports h JOIN role_bindings b ON b.id=h.binding_id AND b.state='active' WHERE h.role_id=?", [i.roleId]), controls: await this.controls(i.roleId, a), notice: 'Same-account active roles may communicate. Cross-account links are directional. Memory grants come from the connection; team writes require their own signed grant. File access is supplied by the host.' };
+            throw new MindPondError('not_found','Role unavailable');
+        return { role, offices: await this.db.all('SELECT s.office_id,o.title officeTitle,s.label,s.role,s.enabled FROM office_seats s JOIN offices o ON o.id=s.office_id JOIN role_seats rs ON rs.seat_id=s.id WHERE rs.role_id=?', [i.roleId]), contacts: await this.db.all('SELECT sender,recipient FROM role_links WHERE sender=? OR recipient=?', [i.roleId, i.roleId]), host: await this.db.get("SELECT h.* FROM office_host_reports h JOIN role_bindings b ON b.id=h.binding_id AND b.state='active' WHERE h.role_id=?", [i.roleId]), controls: await this.controls(i.roleId, a), notice: 'Same-account active roles may communicate. Cross-account links are directional. Role memory follows the role and currently authorized office memberships; connection grants may narrow access. Human-locked office knowledge is read-only for roles. File access is supplied by the host.' };
     }
     async impact(i: Row, a?: TrustedCallContext) {
         this.admin(a);

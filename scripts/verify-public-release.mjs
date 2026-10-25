@@ -65,6 +65,8 @@ if(!fs.readFileSync(path.join(root,'web/office.js'),'utf8').includes("UI_VERSION
 // Do not run prepack recursively. Scan the exact npm file list and compiled output.
 const packed = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { cwd: root, maxBuffer: 8_000_000 }).toString())[0];
 for (const { path: name } of packed.files) {
+  if(name.startsWith('dist/')&&/\.(?:js|d\.ts)$/.test(name)&&!fs.existsSync(path.join(root,name.replace(/^dist\//,'src/').replace(/\.(?:d\.ts|js)$/,'.ts'))))
+    failures.push(`${name}: obsolete compiler output without a source file; run npm run build`);
   const permitted = ['package.json', 'README.md', 'LICENSE', 'npm-shrinkwrap.json'].includes(name)
     || pkg.files.some(entry => entry === name || (entry.endsWith('/') && name.startsWith(entry)));
   if (!permitted || (name !== '.env.example' && !screenshots.has(name) && forbid.test(name))) failures.push(`${name}: npm publication allowlist`);

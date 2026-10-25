@@ -9,6 +9,7 @@ import { createMemoryMcpServer } from '../src/mcp-service.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { TrustedCallContext } from '../src/core/trust.js';
+import {officeAdminServices} from '../src/integrations/office-admin-services.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const exec = promisify(execFile);
@@ -29,6 +30,14 @@ try {
     }
     const [a, b, c] = actors;
     await graph.roles.configureOffice({ id: 'room', title: 'Fixture room', state: 'active', expectedRevision: 0, seats: actors.map((p, n) => ({ id: 'seat-' + n, agentId: 'cli', roleId: p.roleId, label: String(n) })) }, admin);
+    const adminRoutes=new Map<string,(req:any)=>Promise<unknown>>();
+    officeAdminServices(graph,(name,fn)=>adminRoutes.set(name,fn),admin);
+    const permissions:any=await adminRoutes.get('/permissions')!({body:{roleId:a.roleId}});
+    assert.equal(permissions.offices[0].office_id,'room');
+    assert.equal(permissions.knowledgePolicy.roleName,'a');
+    assert.match(permissions.knowledgePolicy.description,/连接授权.*收窄/);
+    assert.match(permissions.knowledgePolicy.description,/办公室/);
+    assert(!('memoryGrants' in permissions),'Membership navigation must not invent effective connection grants');
     const input = { kind: 'broadcast', officeId: 'room', recipients: [b.roleId, c.roleId], body: 'Compare these sources', topic: 'evidence', key: 'group' };
     const broadcast = await graph.officeCollaboration.publish(input, a);
     assert.equal(broadcast.deliveries.length, 2);

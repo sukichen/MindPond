@@ -287,6 +287,13 @@ try {
   const forged = await post('/api/memory/recall-feedback', { recallId: recall.recallId, runId: 'run-2', hostId: 'host-1', decisions: [{ memoryId: alpha.id, disposition: 'used' }] }, ALPHA);
   const forgedBody = await forged.json() as any;
   assert(forged.status >= 400 && /Recall run identity mismatch/i.test(forgedBody.error ?? ''), `feedback forgery must be rejected: ${JSON.stringify(forgedBody)}`);
+  assert.equal(forged.status,403);
+  assert.equal(forgedBody.code,'scope_denied');
+  assert.equal(forgedBody.field,'runId');
+  assert.match(forgedBody.nextAction,/runId/);
+  const wrongHost=await post('/api/memory/recall-feedback',{recallId:recall.recallId,runId:'run-1',hostId:'other-host',decisions:[{memoryId:alpha.id,disposition:'used'}]},ALPHA);
+  assert.equal(wrongHost.status,403);
+  assert.equal((await wrongHost.json() as any).field,'hostId');
   ok('T10 recall feedback stays bound to its run identity');
 
   // ---- T11 team isolation ----

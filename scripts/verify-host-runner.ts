@@ -98,6 +98,58 @@ const immediateAdapter: ModelAdapter = { name: 'immediate', supportsCancel: true
 const noChangeHandler = async (_ctx: WorkTurnContext): Promise<WorkTurnResult> => ({ outcome: 'no_change', reason: 'nothing to organize' });
 
 try {
+  // A completed item's delayed renewal must never revive when the same
+  // driver starts another item. Resolve each passive sleep explicitly.
+  const renewals:Array<()=>void>=[],renewed:string[]=[];
+  let item=0,secondStarted!:()=>void,finishSecond!:()=>void;
+  const secondReady=new Promise<void>(resolve=>{secondStarted=resolve;});
+  const secondDone=new Promise<void>(resolve=>{finishSecond=resolve;});
+  const reusablePond:WorkPond={
+    claimHostWork:async()=>({id:String(++item),leaseToken:'fixture',leaseUntil:now()+300000,attempts:1,checkpoint:{}}),
+    renewHostWork:async id=>{renewed.push(id);if(id==='1')throw Error('stale_work_lease');},
+    finishHostWork:async()=>({status:'completed'}),cancelHostWork:async()=>({status:'cancelled'})
+  };
+  const reusable=new WorkDriver(reusablePond,immediateAdapter,{totalBudgetMs:120000,now,renewDelay:()=>new Promise(resolve=>renewals.push(resolve))});
+  assert.equal((await reusable.runOne(scope,noChangeHandler))?.finalStatus,'completed');
+  const second=reusable.runOne(scope,async ctx=>{secondStarted();await secondDone;assert(!ctx.context.signal.aborted);return noChangeHandler(ctx);});
+  await secondReady;renewals.shift()!();await yieldTick();
+  assert.deepEqual(renewed,[],'The first item’s renewal must stay stopped');
+  renewals.shift()!();await yieldTick();assert.deepEqual(renewed,['2']);
+  finishSecond();assert.equal((await second)?.finalStatus,'completed');
+  renewals.shift()!();await yieldTick();assert.deepEqual(renewed,['2']);
+  ok('sequential driver reuse never revives a completed work item’s renewal');
+
+  // Also fence a renewal already awaiting I/O when its work finishes.
+  let rejectRenewal!:(error:Error)=>void;
+  const renewalInFlight=new Promise<never>((_resolve,reject)=>{rejectRenewal=reject;});
+  const delayedRenewals:Array<()=>void>=[];let delayedItem=0,nextStarted!:()=>void,releaseNext!:()=>void;
+  const nextReady=new Promise<void>(resolve=>{nextStarted=resolve;});
+  const nextDone=new Promise<void>(resolve=>{releaseNext=resolve;});
+  const late=new WorkDriver({...reusablePond,
+    claimHostWork:async()=>({id:String(++delayedItem),leaseToken:'fixture',leaseUntil:now()+300000,attempts:1,checkpoint:{}}),
+    renewHostWork:async()=>renewalInFlight
+  },immediateAdapter,{totalBudgetMs:120000,now,renewDelay:()=>new Promise(resolve=>delayedRenewals.push(resolve))});
+  await late.runOne(scope,async ctx=>{delayedRenewals.shift()!();await yieldTick();return noChangeHandler(ctx);});
+  const next=late.runOne(scope,async ctx=>{nextStarted();await nextDone;assert(!ctx.context.signal.aborted,'Late renewal rejection cannot abort the next item');return noChangeHandler(ctx);});
+  await nextReady;rejectRenewal(Error('stale_work_lease'));await yieldTick();releaseNext();
+  assert.equal((await next)?.finalStatus,'completed');
+  delayedRenewals.shift()!();await yieldTick();
+  ok('late rejection from an in-flight previous renewal cannot cancel the next work item');
+
+  for(const stop of ['cancel','budget'] as const){
+    let claimed=0;const cancelled:string[]=[];let stopAt=0;
+    const stoppingPond:WorkPond={...reusablePond,
+      claimHostWork:async()=>claimed<3?{id:String(++claimed),leaseToken:'fixture',leaseUntil:300000,attempts:1,checkpoint:{}}:null,
+      cancelHostWork:async id=>{cancelled.push(id);return {status:'cancelled'};}
+    };
+    const stopping=new WorkDriver(stoppingPond,immediateAdapter,{totalBudgetMs:1000,now:()=>stopAt});
+    const results=await stopping.run(scope,async ctx=>{if(stop==='cancel')stopping.cancel();else stopAt=1001;return noChangeHandler(ctx);});
+    assert.equal(results.length,1);assert.equal(claimed,1,'Stopping a run must leave every other queued task unclaimed');
+    assert.deepEqual(cancelled,stop==='cancel'?['1']:[]);
+    if(stop==='cancel')assert.equal(await stopping.runOne(scope,noChangeHandler),null);
+  }
+  ok('cancellation and exhausted budgets stop the driver without claiming or cancelling the remaining queue');
+
   await g.init();
   const m1 = await create('routing'), m2 = await create('storage');
   const checkpointFor = async (tag: string) => g.checkpoint({

@@ -65,11 +65,14 @@ export interface MultiFieldSearchResult extends SearchResult {
 // ============================================
 
 export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
+  // Different widths describe different spaces. A matching prefix must not
+  // be scored as perfect similarity by discarding the remaining coordinates.
+  if(a.length!==b.length)return 0;
   let dotProduct = 0;
   let normA = 0;
   let normB = 0;
   
-  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+  for (let i = 0; i < a.length; i++) {
     dotProduct += a[i] * b[i];
     normA += a[i] * a[i];
     normB += b[i] * b[i];
@@ -309,7 +312,7 @@ options: SearchOptions
   private getCacheKey(vector: number[] | Float32Array, options: SearchOptions): string {
     const hash=createHash('sha256').update(Buffer.from(Float64Array.from(vector).buffer)).digest('hex');
     const weights = options.dimensionWeights ? JSON.stringify(options.dimensionWeights) : '';
-    return `${hash}_${vector.length}_${options.topK}_${options.minScore ?? '0'}_${weights}_${options.filterKey ?? ''}`;
+    return `${hash}_${vector.length}_${options.topK}_${options.minScore ?? 'unset'}_${weights}_${options.filterKey ?? ''}`;
   }
 
   /**

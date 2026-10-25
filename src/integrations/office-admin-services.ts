@@ -22,8 +22,9 @@ export function officeAdminServices(graph: GraphMemory, route: (name: string, fn
     route('/control', req => graph.officeCollaboration.requestControl(z.object({ roleId: id, action: z.enum(['pause', 'stop', 'resume']), reason: z.string().trim().min(1).max(1000) }).strict().parse(req.body), operator));
     route('/permissions', async (req) => {
         const input = z.object({ roleId: id }).strict().parse(req.body), result = await graph.officeCollaboration.permissions(input, operator);
-        const memoryGrants=[{domains:[{kind:'agent',id:input.roleId}]}];
-        return { ...result, memoryGrants };
+        // This management view knows memberships, not every active connection's
+        // narrowing grants. Describe the policy instead of inventing a grant.
+        return { ...result, knowledgePolicy:{roleName:result.role.name,description:'绑定此角色的聊天只能访问自己的角色记忆和有效成员办公室的共享记忆；连接授权还可能进一步收窄范围。调换办公室后，访问范围随成员关系更新。人类管理页面可查看全部记忆。人类锁定的办公室记忆不可被角色修改。'} };
     });
     route('/delete-impact', req => graph.officeCollaboration.impact(z.object({ kind: z.enum(['office', 'role', 'agent']), id }).strict().parse(req.body), operator));
     route('/export', req => graph.officeCollaboration.exportPage(office.extend({ section: z.enum(['office', 'seats', 'messages', 'materials', 'events', 'containers', 'handoffs', 'layouts']), snapshotId: id.optional(), offset: z.number().int().min(0).optional() }).strict().parse(req.body), operator));

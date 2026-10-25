@@ -4323,16 +4323,16 @@ export class GraphMemory {
       if (decision.reason !== undefined && (typeof decision.reason !== 'string' || decision.reason.length > 2_000)) throw new Error('Invalid recall feedback reason');
     }
     const recall = await this.db!.get<any>('SELECT run_id,host_id,result_ids FROM memory_recalls WHERE id=?', [input.recallId]);
-    if (!recall) throw new Error('Recall not found');
-    if ((recall.run_id ?? null) !== (input.runId ?? null)) throw new Error('Recall run identity mismatch');
-    if ((recall.host_id ?? null) !== (input.hostId ?? null)) throw new Error('Recall host identity mismatch');
+    if (!recall) throw new MindPondError('not_found', 'Recall not found');
+    if ((recall.run_id ?? null) !== (input.runId ?? null)) throw new MindPondError('scope_denied', 'Recall run identity mismatch', {field:'runId',nextAction:'Use the runId recorded by the original recall; a different run cannot submit its feedback.'});
+    if ((recall.host_id ?? null) !== (input.hostId ?? null)) throw new MindPondError('scope_denied', 'Recall host identity mismatch', {field:'hostId',nextAction:'Use the hostId recorded by the original recall; a different host cannot submit its feedback.'});
     const returned = new Set((JSON.parse(recall.result_ids) as Array<{ id: string }>).map(entry => entry.id));
     let recorded = 0, replayed = 0;
     for (const decision of input.decisions) {
-      if (!returned.has(decision.memoryId)) throw new Error('Feedback may only address a memory returned by this recall');
+      if (!returned.has(decision.memoryId)) throw new MindPondError('invalid_input', 'Feedback may only address a memory returned by this recall', {field:'decisions'});
       const existing = await this.db!.get<any>('SELECT disposition,reason FROM memory_recall_feedback WHERE recall_id=? AND memory_id=?', [input.recallId, decision.memoryId]);
       if (existing) {
-        if (existing.disposition !== decision.disposition || (existing.reason ?? null) !== (decision.reason ?? null)) throw new Error('Recall feedback conflict');
+        if (existing.disposition !== decision.disposition || (existing.reason ?? null) !== (decision.reason ?? null)) throw new MindPondError('idempotency_conflict', 'Recall feedback conflict');
         replayed += 1;
         continue;
       }
@@ -4388,11 +4388,11 @@ export class GraphMemory {
         return JSON.parse(prior.receipt);
       }
       const recall = await this.db!.get<any>('SELECT run_id,host_id,result_ids FROM memory_recalls WHERE id=?',[input.recallId]);
-      if (!recall) throw new Error('Recall not found');
+      if (!recall) throw new MindPondError('not_found', 'Recall not found');
       if ((recall.run_id ?? null) !== (input.runId ?? null) || (recall.host_id ?? null) !== (input.hostId ?? null))
-        throw new Error('Recall identity mismatch');
+        throw new MindPondError('scope_denied', 'Recall identity mismatch', {nextAction:'Submit the original recallId, runId and hostId together. A different run or host cannot report use for this recall.'});
       const returned = new Set((JSON.parse(recall.result_ids) as Array<{id:string}>).map(r=>r.id));
-      for (const id of observedIds) if (!returned.has(id)) throw new Error('Report may only address returned memories');
+      for (const id of observedIds) if (!returned.has(id)) throw new MindPondError('invalid_input', 'Report may only address returned memories', {field:'observations'});
       const signalRows: Array<{id:string;kind:'review_memory'|'review_association';domain:MemoryDomainRef;spaceId:string|null;memoryType:string|null;memoryAId:string;memoryBId:string|null;reason:string;context:string;sourceRefs:SourceReference[]}> = [];
       for (const item of observations) {
         if (!item.issue) continue;
