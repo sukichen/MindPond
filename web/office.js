@@ -389,6 +389,7 @@
       pick.append(make('strong', room.title), make('span', officeStates[room.state] ?? room.state));
       pick.className = 'office-room-choice';
       pick.title = room.title;
+      pick.setAttribute('data-state', room.state);
       pick.setAttribute('aria-pressed', String(state.office?.office.id === room.id));
       row.append(pick);
       if (['completed','cancelled'].includes(room.state)) {
@@ -1045,6 +1046,7 @@
     await closeOfficeDetail(true);
     renderOffice();
     el('officeView').hidden = false;
+    el('officeView').scrollTop = 0;
     el('officeWorkspaceEmpty').hidden=true;
     showAppView('officeRooms');setRoomTab('officeCanvas');
     renderRoomChoices();
