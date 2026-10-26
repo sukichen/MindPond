@@ -16,20 +16,35 @@ import {previewText} from './office-context.js';
 const id=z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),text=(n:number)=>z.string().trim().min(1).max(n);
 export const discussionSchema=z.object({action:z.enum(['list','create','get','join','decline','leave','post','finish','export','close','wait','request_participants','review_participants','cancel_request','request_get','departures','departure_get','send_departure','discard_departure']),postSeqs:z.array(z.number().int().positive()).min(1).max(128).optional(),summary:text(4000).optional(),messages:z.array(z.object({recipient:id,body:text(4000),replyTo:id.optional(),officeId:id.nullable().optional()}).strict()).max(7).optional(),departureId:id.optional(),messageIndex:z.number().int().min(0).max(6).optional(),requestId:id.optional(),reason:text(800).optional(),decision:z.enum(['approve','reject']).optional(),note:text(800).optional(),afterRevision:z.number().int().positive().optional(),waitMs:z.number().int().min(100).max(300000).optional(),officeId:id.optional(),id:id.optional(),afterId:id.optional(),title:text(200).optional(),question:text(2000).optional(),doneWhen:text(1000).optional(),participants:id.array().min(1).max(7).optional(),body:text(4000).optional(),memoryId:id.optional(),key:text(256).optional(),expectedRevision:z.number().int().positive().optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(20).default(10),contextBudgetBytes:z.number().int().min(2048).max(65536).default(16384),ttlHours:z.number().int().min(1).max(72).default(24)}).strict();
 type Row=Record<string,any>;
-const DISCUSSION_NOTICE='Read get/wait retrieves posts, never marks them handled. After addressing posts (including those needing no reply), use finish(id,postSeqs) with their exact seqs; do not acknowledge unseen posts. Unprocessed includes unread. Joined: use only this room’s posts; ordinary sends/replies/broadcasts/handoffs and outside completion feedback are blocked. Additional helpers: request_participants(id,participants,reason,key), human approval, then explicit join; no memory grants. Before leave: summary,key and optional selected messages, sent after exit. Failed drafts follow the role: departures → departure_get/send_departure/discard_departure(departureId). Save reusable knowledge through separate Memory MCP first. Fetched/waiting is not understanding, completion or proof a host is running.';
+const DISCUSSION_NOTICE='get: oldest unprocessed posts from others. wait: unseen posts from others. Omit id for your active room; omit afterSeq for normal work (explicit afterSeq reads history, 0 from the start). After handling posts, submit returned finish or a handled subset; reading is not completion. Unprocessed includes unread. While joined, ordinary sends/replies/broadcasts/handoffs and outside completion feedback are blocked. Helpers: request_participants(id,participants,reason,key), human approval, explicit join; no memory grants. Before leave: summary,key,optional selected messages sent after exit. Failed notifications: departures → departure_get/send_departure/discard_departure. Save reusable knowledge via separate Memory MCP. Fetched/waiting does not prove understanding, completion or a running host.';
 function fail(code:'invalid_input'|'not_found'|'scope_denied'|'stale_version'|'idempotency_conflict'|'material_over_budget',message:string):never{throw new MindPondError(code,message);}
 export class OfficeDiscussions{
  private observations:DiscussionObservations;
  private departures:DiscussionDepartures;
  private waiter=new CollaborationWaiter({inspect:(i,a)=>this.inspectWait(i,a),start:(id,i,a,ms)=>this.startWait(id,i,a,ms),finish:id=>this.finishWait(id)},'office_discussion',{defaultMs:300000,maxMs:300000});
- private async waitView(i:WorkWaitInput&{officeId?:string},a?:TrustedCallContext){return this.write(async()=>{
+ /** Defaults are scoped to the authenticated role; explicit cursors are history reads. */
+ private async currentId(a?:TrustedCallContext){
+  const actor=await this.actor(a),active=actor.human?null:await this.focus(actor.roleId!);
+  if(!active)throw new MindPondError('invalid_input','No active discussion can be selected for this identity.',{field:'id',nextAction:'Use role_sync to inspect your discussion invitations and explicitly join one, or supply an authorized discussion id. Human inspection requires an explicit id.'});
+  await this.room(active.id,a);return active.id as string;
+ }
+ private async posts(roomId:string,roleId:string|undefined,afterSeq:number|undefined,limit:number,selection:'unprocessed'|'unread'){
+  const columns='SELECT p.seq,p.author,r.name authorName,p.body,p.created_at FROM office_discussion_posts p LEFT JOIN character_roles r ON r.id=p.author WHERE p.room_id=?';
+  if(afterSeq!==undefined||!roleId)return this.db.all<Row[]>(columns+' AND p.seq>? ORDER BY p.seq LIMIT ?',[roomId,afterSeq??0,limit]);
+  const filter=selection==='unprocessed'
+   ?'NOT EXISTS(SELECT 1 FROM office_discussion_handled h WHERE h.room_id=p.room_id AND h.role_id=? AND h.post_seq=p.seq)'
+   :"p.seq NOT IN (SELECT value FROM office_discussion_observations o,json_each(o.provided_seqs) WHERE o.room_id=p.room_id AND o.role_id=?)";
+  return this.db.all<Row[]>(columns+' AND p.author<>? AND '+filter+' ORDER BY p.seq LIMIT ?',[roomId,roleId,roleId,limit]);
+ }
+ private finishCommand(roomId:string,posts:Row[]){const seqs=posts.filter(p=>p.processingState==='unprocessed').map(p=>p.seq);return seqs.length?{finish:{action:'finish',id:roomId,postSeqs:seqs}}:{};}
+ private async waitView(i:WorkWaitInput&{officeId?:string;unreadOnly?:boolean},a?:TrustedCallContext){return this.write(async()=>{
   await this.cleanup();await this.actor(a);const {row,actor,state}=await this.room(i.taskId!,a);
   if(i.officeId!==undefined&&i.officeId!==row.office_id)fail('not_found','Discussion not found in the specified office');
   if(actor.human||state!=='joined')fail('scope_denied','Join before waiting for discussion posts');
   await this.observations.waiting(row.id,actor.roleId!);
-  return {room:row,posts:await this.db.all<Row[]>('SELECT p.seq,p.author,r.name authorName,p.body,p.created_at FROM office_discussion_posts p LEFT JOIN character_roles r ON r.id=p.author WHERE p.room_id=? AND p.seq>? ORDER BY p.seq LIMIT 1',[row.id,i.afterSeq??0])};
+  return {room:row,posts:await this.posts(row.id,actor.roleId!,i.unreadOnly?undefined:i.afterSeq,1,'unread')};
  });}
- private async inspectWait(i:WorkWaitInput&{officeId?:string;afterRevision?:number},a?:TrustedCallContext){
+ private async inspectWait(i:WorkWaitInput&{officeId?:string;afterRevision?:number;unreadOnly?:boolean},a?:TrustedCallContext){
   try{
    const view=await this.waitView(i,a),post=view.posts[0];
    if(post)return {status:'matched' as const,discussionId:i.taskId,post,nextCursor:post.seq,revision:view.room.revision};
@@ -41,12 +56,12 @@ export class OfficeDiscussions{
   }
  }
  async wait(value:unknown,a?:TrustedCallContext,r?:WorkCallRuntime){
-  const i=discussionSchema.parse(value);if(!i.id)fail('invalid_input','Wait requires discussion id');
+  const i=discussionSchema.parse(value);if(!i.id)i.id=await this.write(async()=>{await this.cleanup();return this.currentId(a);});
   let baseline=i.afterRevision;
-  if(baseline===undefined){try{baseline=(await this.waitView({taskId:i.id,officeId:i.officeId,afterSeq:i.afterSeq},a)).room.revision;}catch(error){if((error as any).code!=='not_found')throw error;}}
-  const input={taskId:i.id,afterSeq:i.afterSeq,waitMs:i.waitMs,afterRevision:baseline,...(i.officeId?{officeId:i.officeId}:{})};const result:Row=await this.waiter.wait(input,a,r);
+  if(baseline===undefined){try{baseline=(await this.waitView({taskId:i.id,officeId:i.officeId,afterSeq:i.afterSeq,unreadOnly:i.afterSeq===undefined},a)).room.revision;}catch(error){if((error as any).code!=='not_found')throw error;}}
+  const input={taskId:i.id,afterSeq:i.afterSeq,unreadOnly:i.afterSeq===undefined,waitMs:i.waitMs,afterRevision:baseline,...(i.officeId?{officeId:i.officeId}:{})};const result:Row=await this.waiter.wait(input,a,r);
   if(result.status==='matched'&&(result as Row).post)await this.write(async()=>{const actor=await this.actor(a);const {row,state}=await this.room(i.id!,a);if(state!=='joined')fail('scope_denied','You left this discussion before the wait result was delivered');const advanced=await this.observations.delivered(row.id,actor.roleId!,i.afterSeq??0,(result as Row).post.seq,[(result as Row).post.seq]);if(advanced)await this.log('discussion_fetched',row.id,row.office_id);(result as Row).post.processingState=(result as Row).post.author===actor.roleId?'own':(await this.observations.handled(row.id,actor.roleId!)).has((result as Row).post.seq)?'handled':'unprocessed';});
-  return {...result,...(['matched','timeout'].includes(result.status)?{resume:{action:'wait',id:i.id,...(i.officeId?{officeId:i.officeId}:{}),afterSeq:result.nextCursor,afterRevision:(result as Row).revision??baseline,waitMs:i.waitMs??300000}}:{})};
+  return {...result,selection:i.afterSeq===undefined?'unread':'history',...(result.post?this.finishCommand(i.id,[result.post]):{}),...(['matched','timeout'].includes(result.status)?{resume:{action:'wait',id:i.id,...(i.officeId?{officeId:i.officeId}:{}),...(i.afterSeq!==undefined?{afterSeq:result.nextCursor}:{}),afterRevision:(result as Row).revision??baseline,waitMs:i.waitMs??300000}}:{})};
  }
  async close(){await this.waiter.close();}
  constructor(private db:Database,private graph:GraphMemory,private write:<T>(fn:()=>Promise<T>)=>Promise<T>,private clock=Date.now){this.observations=new DiscussionObservations(db,clock);this.departures=new DiscussionDepartures(db,graph,write,clock);}
@@ -153,7 +168,7 @@ export class OfficeDiscussions{
     if(r.state==='joined')activeUnavailable=true;
    }else visible.push(r);
   }
-  const invitations=visible.filter(r=>r.state==='invited'),active=visible.find(r=>r.state==='joined');if(active){active.status=await this.observations.status(active.id);active.recentRequests=await this.db.all('SELECT id,state,revision,review_note note FROM office_discussion_requests WHERE room_id=? AND requester=? ORDER BY created_at DESC,id LIMIT 4',[active.id,actor.roleId]);}return {departures:await this.departures.pending(actor.roleId!),active:active??null,activeUnavailable,invitations:invitations.slice(0,64),hasMoreInvitations:invitations.length>64,next:activeUnavailable?'Your role has an active discussion outside this credential’s office access. Use its authorized connection or ask the human to adjust access. This call did not leave the room; ordinary messages remain pending.':DISCUSSION_NOTICE+' Use office_discussion list per office for all invitations; get/join/post/wait/leave for a room. wait afterSeq uses the discussion cursor, not the mailbox cursor. While joined, prioritize this bounded discussion; other inbox messages remain pending. Save reusable conclusions with the separate Memory MCP before closing. Closing/expiry permanently deletes temporary discussion content; it never wakes a stopped host.'};
+  const invitations=visible.filter(r=>r.state==='invited'),active=visible.find(r=>r.state==='joined');if(active){active.status=await this.observations.status(active.id);active.recentRequests=await this.db.all('SELECT id,state,revision,review_note note FROM office_discussion_requests WHERE room_id=? AND requester=? ORDER BY created_at DESC,id LIMIT 4',[active.id,actor.roleId]);}return {departures:await this.departures.pending(actor.roleId!),active:active??null,activeUnavailable,invitations:invitations.slice(0,64),hasMoreInvitations:invitations.length>64,next:activeUnavailable?'Your role has an active discussion outside this credential’s office access. Use its authorized connection or ask the human to adjust access. This call did not leave the room; ordinary messages remain pending.':DISCUSSION_NOTICE+' Use office_discussion list per office for all invitations; get/join/post/wait/leave for a room. get/wait need no cursor; use the provided finish after handling, or explicit afterSeq for history only. While joined, prioritize this bounded discussion; other inbox messages remain pending. Save reusable conclusions with the separate Memory MCP before closing. Closing/expiry permanently deletes temporary discussion content; it never wakes a stopped host.'};
  });}
  async saveConclusion(i:{id:string;expectedRevision:number;content:string;key:string},a?:TrustedCallContext){
   // Leave embedding outside the connection owner; the save hooks atomically
@@ -204,6 +219,7 @@ export class OfficeDiscussions{
    const records=await this.db.all<Row[]>(`SELECT r.id,r.title,r.creator,r.revision,r.expires_at,m.state FROM office_discussions r LEFT JOIN office_discussion_members m ON m.room_id=r.id AND m.role_id=? WHERE r.office_id=? AND r.id>? ${actor.human?'':"AND m.state IS NOT NULL"} ORDER BY r.id LIMIT ?`,[actor.roleId,i.officeId,i.afterId??'',i.limit+1]);const rooms:Row[]=[];
    for(const record of records.slice(0,i.limit)){const item={...record,status:await this.observations.status(record.id)};if(Buffer.byteLength(JSON.stringify(rooms))+Buffer.byteLength(JSON.stringify(item))+256>i.contextBudgetBytes)break;rooms.push(item);}return {rooms,hasMore:records.length>rooms.length,nextAfterId:rooms.at(-1)?.id??i.afterId??''};
   }
+  if(i.action==='get'&&!i.id)i.id=await this.currentId(a);
   if(!i.id)fail('invalid_input','Discussion id is required');const {row,state}=await this.room(i.id,a,!['get','finish','leave','decline','close','request_get','cancel_request','review_participants'].includes(i.action));
   if(i.officeId!==undefined&&i.officeId!==row.office_id)fail('not_found','Discussion not found in the specified office');
   if(i.action==='get')return this.view(i.id,i,a);
@@ -262,11 +278,38 @@ export class OfficeDiscussions{
  }
 
  private async changed(row:Row){await this.db.run('UPDATE office_discussions SET revision=revision+1 WHERE id=?',[row.id]);await this.log('discussion_updated',row.id,row.office_id);this.waiter.notify();}
- private async view(roomId:string,i:z.infer<typeof discussionSchema>,a?:TrustedCallContext,observe=true):Promise<Row>{const {row,actor,state}=await this.room(roomId,a);const members=await this.observations.members(roomId);
+ private async view(roomId:string,i:z.infer<typeof discussionSchema>,a?:TrustedCallContext,observe=true):Promise<Row>{
+  const {row,actor,state}=await this.room(roomId,a),members=await this.observations.members(roomId);
   if(!actor.human&&state!=='joined')return {room:row,members,posts:[],invitation:state,notice:'Join to read discussion posts. Leaving removes access to discussion posts.'};
-  const rows=await this.db.all<Row[]>('SELECT p.seq,p.author,r.name authorName,p.body,p.created_at FROM office_discussion_posts p LEFT JOIN character_roles r ON r.id=p.author WHERE p.room_id=? AND p.seq>? ORDER BY p.seq LIMIT ?',[roomId,i.afterSeq??0,i.limit+1]);
-  if(!actor.human){const handled=await this.observations.handled(roomId,actor.roleId!);for(const post of rows)post.processingState=post.author===actor.roleId?'own':handled.has(post.seq)?'handled':'unprocessed';}
-  const exports=await this.db.all('SELECT memory_id memoryId,fingerprint FROM office_discussion_exports WHERE room_id=?',[roomId]);const lastSeq=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM office_discussion_posts WHERE room_id=?',[roomId]))!.n;const participantRequests=await this.requests(roomId);const status=await this.observations.status(roomId,members);const base={room:row,members,exports,lastSeq,status,participantRequests,notice:DISCUSSION_NOTICE,posts:[] as Row[],nextAfterSeq:i.afterSeq??0,hasMore:false};
-  for(const post of rows.slice(0,i.limit)){if(Buffer.byteLength(JSON.stringify({...base,posts:[...base.posts,post]}))+128>i.contextBudgetBytes){if(!base.posts.length)fail('material_over_budget','Raise contextBudgetBytes to read the next complete post');break;}base.posts.push(post);base.nextAfterSeq=post.seq;}base.hasMore=rows.length>base.posts.length;if(Buffer.byteLength(JSON.stringify(base))>i.contextBudgetBytes)fail('material_over_budget','Raise contextBudgetBytes to read the full discussion metadata');if(observe&&!actor.human){const advanced=await this.observations.delivered(roomId,actor.roleId!,i.afterSeq??0,base.nextAfterSeq,base.posts.map(p=>p.seq));if(advanced)await this.log('discussion_fetched',roomId,row.office_id);base.members=await this.observations.members(roomId);base.status=await this.observations.status(roomId,base.members);if(Buffer.byteLength(JSON.stringify(base))>i.contextBudgetBytes)fail('material_over_budget','Raise contextBudgetBytes to include the updated complete discussion metadata');}return base;
+  const history=i.afterSeq!==undefined||actor.human;
+  const rows=await this.posts(roomId,actor.human?undefined:actor.roleId!,i.afterSeq,i.limit+1,'unprocessed');
+  if(!actor.human){
+   const handled=await this.observations.handled(roomId,actor.roleId!);
+   for(const post of rows)post.processingState=post.author===actor.roleId?'own':handled.has(post.seq)?'handled':'unprocessed';
+  }
+  const exports=await this.db.all('SELECT memory_id memoryId,fingerprint FROM office_discussion_exports WHERE room_id=?',[roomId]);
+  const lastSeq=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM office_discussion_posts WHERE room_id=?',[roomId]))!.n;
+  const participantRequests=await this.requests(roomId),status=await this.observations.status(roomId,members);
+  const base={room:row,members,exports,lastSeq,status,participantRequests,selection:history?'history':'unprocessed',notice:DISCUSSION_NOTICE,posts:[] as Row[],nextAfterSeq:i.afterSeq??0,hasMore:false};
+  const commands=(posts:Row[],cursor:number)=>({...this.finishCommand(roomId,posts),nextGet:{action:'get',id:roomId,...(history?{afterSeq:cursor}:{}),limit:i.limit,contextBudgetBytes:i.contextBudgetBytes}});
+  for(const post of rows.slice(0,i.limit)){
+   const candidate=[...base.posts,post];
+   // Reserve space for both updated observation metadata and usable follow-ups.
+   if(Buffer.byteLength(JSON.stringify({...base,posts:candidate,...commands(candidate,post.seq)}))+128>i.contextBudgetBytes){
+    if(!base.posts.length)fail('material_over_budget','Raise contextBudgetBytes to read the next complete post');
+    break;
+   }
+   base.posts.push(post);base.nextAfterSeq=post.seq;
+  }
+  base.hasMore=rows.length>base.posts.length;
+  const result={...base,...commands(base.posts,base.nextAfterSeq)};
+  if(Buffer.byteLength(JSON.stringify(result))>i.contextBudgetBytes)fail('material_over_budget','Raise contextBudgetBytes to read the full discussion metadata');
+  if(observe&&!actor.human){
+   const advanced=await this.observations.delivered(roomId,actor.roleId!,i.afterSeq??0,result.nextAfterSeq,result.posts.map(p=>p.seq));
+   if(advanced)await this.log('discussion_fetched',roomId,row.office_id);
+   result.members=await this.observations.members(roomId);result.status=await this.observations.status(roomId,result.members);
+   if(Buffer.byteLength(JSON.stringify(result))>i.contextBudgetBytes)fail('material_over_budget','Raise contextBudgetBytes to include the updated complete discussion metadata');
+  }
+  return result;
  }
 }

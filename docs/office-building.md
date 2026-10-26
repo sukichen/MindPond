@@ -42,7 +42,7 @@ officeId 是可选的办公室上下文。办公室中的消息可出现在用�
 
 用户管理页面的办公室通信、角色消息和回放消息支持 Markdown 标题、列表、任务清单、表格、引用及代码块。原始 HTML 作为文字显示，外部图片不自动加载；链接仅允许 http、https 和 mailto。原始记录仍可展开查看。
 
-读取分页返回 nextCursor 与 cursorScope。直接使用 nextPage 可保留过滤条件与 afterSeq；改变话题、人物、时间或状态筛选时从 afterSeq=0 开始，不能复用旧范围的 cursorScope。since/until 为包含端点的毫秒时间戳。读取进度与处理中消息恢复进度分开保存。办公室通信只读取角色消息；工作项及其操作记录独立保存。
+读取分页返回 nextCursor 与 cursorScope。直接使用 nextPage 可保留过滤条件与 afterSeq；改变话题、人物、时间或状态筛选时省略 afterSeq 和 cursorScope，从该筛选的最早记录开始。since/until 为包含端点的毫秒时间戳。读取进度与处理中消息恢复进度分开保存。办公室通信只读取角色消息；工作项及其操作记录独立保存。
 
 同账户角色可通信；跨账户新发信需要用户授权发送方向。收到一封来信后，可以严格回复原发送人，不因此取得反向自由发信权。重试同一写操作保留 key；同 key 不同内容明确冲突。
 
@@ -58,7 +58,7 @@ officeId 是可选的办公室上下文。办公室中的消息可出现在用�
 {"action":"finish","messageId":"实际收到的消息编号","result":"修正网页超时为360秒；连接配置回归通过。未验证所有宿主版本。","key":"finish-message-1"}
 ```
 
-取信、完成的 key 各自固定；网络中断后重试原请求。若重连时工作尚未完成，先 role_sync，再用 `office_receive {"action":"list","state":"processing","afterSeq":0}` 分页找回；不要只从新消息 cursor 开始，漏掉正在处理的消息。一个角色同时处理多条消息时，最后一条完成后才退出工作状态。处理中不会因等待超时、浏览器关闭或宿主暂时离线自动完成。业务操作本身仍由 agent 保证重试安全，领取去重不代表外部副作用恰好执行一次。
+取信、完成的 key 各自固定；网络中断后重试原请求。若重连时工作尚未完成，先 role_sync，再用 `office_receive {"action":"list","state":"processing"}` 分页找回；不要只从新消息 cursor 开始，漏掉正在处理的消息。一个角色同时处理多条消息时，最后一条完成后才退出工作状态。处理中不会因等待超时、浏览器关闭或宿主暂时离线自动完成。业务操作本身仍由 agent 保证重试安全，领取去重不代表外部副作用恰好执行一次。
 
 默认消息正文数组预算16KB（UTF-8 JSON 字节），可用 contextBudgetBytes 在2KB–64KB范围调整；contextBudget 说明实际计量范围，不把字节数当 token 数。联系人默认最多20个，简介为摘要，office_directory action=contacts 按 afterId 翻页；roleId 读取有权限的一份完整简介。不要静默跳过 hasMore。
 
@@ -76,7 +76,7 @@ officeId 是可选的办公室上下文。办公室中的消息可出现在用�
 
 ### 等待消息与超时续等
 
-`office_wait` 单次等待默认及上限均为 `300000` 毫秒（5分钟），收到匹配消息立即返回。先领取并处理完 `office_receive` 返回的消息，把已处理消息的 `nextCursor` 作为 `afterSeq`；等待某条消息的回复时同时带 `replyTo`。
+`office_wait` 单次等待默认及上限均为 `300000` 毫秒（5分钟），收到匹配消息立即返回。通常省略 `afterSeq`，服务端会检查最早的待处理来信；等待某条消息的回复时带 `replyTo`。显式 `afterSeq` 仅在需要过滤编号范围时使用，不能把“看见来信”的游标当作“已处理”的证明。
 
 返回 `status: "timeout", pending: true` 只表示这一段时间没有匹配消息。若用户授权的等待时间尚未结束，应将返回的 **整个 `resume` 对象** 作为下一次 `office_wait` 的参数；其中保留游标、`replyTo`、等待时长。不要把一次超时当成协作结束、任务成功或失败。预算耗尽时明确告知仍在等哪条回复，不编造结果。
 

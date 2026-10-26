@@ -24,7 +24,7 @@ export class DiscussionObservations{
   const unique=[...new Set(seqs)];
   // Validate the whole batch before acknowledging any post. Cursor gaps never count as delivery.
   const valid=await this.db.get<Row>(`SELECT COUNT(*) n FROM office_discussion_posts p JOIN office_discussion_observations o ON o.room_id=p.room_id AND o.role_id=? WHERE p.room_id=? AND p.author<>? AND p.seq IN (SELECT value FROM json_each(?)) AND p.seq IN (SELECT value FROM json_each(o.provided_seqs))`,[roleId,roomId,roleId,JSON.stringify(unique)]);
-  if(valid!.n!==unique.length)throw new MindPondError('invalid_input','Every postSeq must name another participant’s post in this room already returned to your role. Read get/wait first; cursor gaps, your own posts and posts from other rooms cannot be marked handled.',{nextAction:'Use office_discussion get with the correct id and page cursor, then finish with postSeqs containing only the returned posts you have actually handled.'});
+  if(valid!.n!==unique.length)throw new MindPondError('invalid_input','Every postSeq must name another participant’s post in this room already returned to your role. Read get/wait first; cursor gaps, your own posts and posts from other rooms cannot be marked handled.',{nextAction:'Use office_discussion action=get (no cursor needed in your active room), then submit its finish command only for returned posts you have actually handled. Explicit afterSeq is for historical reads.'});
   for(const seq of unique)await this.db.run('INSERT OR IGNORE INTO office_discussion_handled VALUES(?,?,?,?)',[roomId,roleId,seq,this.clock()]);
   await this.db.run('UPDATE office_discussion_observations SET last_seen=? WHERE room_id=? AND role_id=?',[this.clock(),roomId,roleId]);
  }

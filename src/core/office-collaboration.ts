@@ -280,7 +280,7 @@ export class OfficeCollaboration {
         let end = Math.min(offset + (i.characters ?? 1024), text.length);
         if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]))
             end--;
-        return { id: i.id, text: text.slice(offset, end), offset, nextOffset: end < text.length ? end : null, totalCharacters: text.length, encoding: 'JSON text; concatenate all pages before parsing' };
+        return { id: i.id, text: text.slice(offset, end), offset, nextOffset: end < text.length ? end : null, nextPage: end < text.length ? {action:'page',id:i.id,offset:end,characters:i.characters??1024} : null, totalCharacters: text.length, encoding: 'JSON text; concatenate all pages before parsing' };
     }
     async boundResponse(result: Row, budget: number, a: TrustedCallContext) {
         if (Buffer.byteLength(JSON.stringify(result)) <= budget)
@@ -294,7 +294,8 @@ export class OfficeCollaboration {
             if (total.n >= 512 || total.bytes + Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 * 1024)
                 throw new MindPondError('temporarily_unavailable', 'Response storage is full; retry later');
             await this.db.run('INSERT INTO office_response_pages VALUES(?,?,?,?)', [id, actor, JSON.stringify(result), this.clock() + 3600000]);
-            return { ...(result.isError ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify({ paged: true, id, tool: 'office_context', action: 'page', offset: 0, characters: Math.max(64, Math.floor((budget - 1200) / 12)), totalBytes: Buffer.byteLength(JSON.stringify(result)), notice: 'Complete invocation snapshot retained for one hour, not live state. Read pages before repeating a mutation; recheck role_sync before new work. Correlation and identity are in the retained response.' }) }] };
+            const characters=Math.min(1024,Math.max(64,Math.floor((budget-1200)/12)));
+            return { ...(result.isError ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify({ paged: true, id, tool: 'office_context', action: 'page', offset: 0, characters, nextCall:{tool:'office_context',arguments:{action:'page',id,offset:0,characters}}, totalBytes: Buffer.byteLength(JSON.stringify(result)), notice: 'Complete invocation snapshot retained for one hour, not live state. Read pages before repeating a mutation; recheck role_sync before new work. Correlation and identity are in the retained response.' }) }] };
         });
     }
     async layout(officeId: string, a?: TrustedCallContext) {

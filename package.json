@@ -104,7 +104,7 @@
     "verify:production-boundaries": "tsx scripts/verify-production-boundaries.ts",
     "verify:owner-workbench": "tsx scripts/verify-owner-workbench.ts",
     "verify:role-continuity": "tsx scripts/verify-role-continuity.ts && node scripts/verify-continuity-ui.mjs",
-    "verify:office-resources": "tsx scripts/verify-office-resources.ts && tsx scripts/verify-discussion-controls.ts && tsx scripts/verify-office-transitions.ts && node scripts/verify-office-resources-ui.mjs",
+    "verify:office-resources": "tsx scripts/verify-office-resources.ts && tsx scripts/verify-discussion-controls.ts && tsx scripts/verify-discussion-defaults.ts && tsx scripts/verify-office-transitions.ts && node scripts/verify-office-resources-ui.mjs",
     "verify:office-meetings": "node scripts/verify-office-meetings.mjs",
     "verify:generic-connection": "tsx scripts/verify-generic-connection.ts",
     "release:offline": "node scripts/offline-release.mjs",
