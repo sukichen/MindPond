@@ -23,7 +23,7 @@ const platform=()=>({platform:process.platform,arch:process.arch,nodeMajor:Numbe
 async function smoke(directory){
  const privateData=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-offline-smoke-'));let child,exited,client;
  try{
-  const app=path.join(directory,'app');const env={PATH:process.env.PATH??'',...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{}),MEMORY_DB_PATH:path.join(privateData,'synthetic.db'),MEMORY_HOST:'127.0.0.1',MEMORY_PORT:'0',MEMORY_API_KEY:'',MEMORY_OPERATOR_KEY:'',MEMORY_CONTEXT_SECRET:'',MINDPOND_MCP_ACCOUNTS:'',MINDPOND_EMBEDDING_MODE:'text',EMBEDDING_ZH_ENABLED:'false',EMBEDDING_MODEL_DIR:path.join(privateData,'no-models')};
+  const app=path.join(directory,'app');const env={PATH:process.env.PATH??'',...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{}),MEMORY_DB_PATH:path.join(privateData,'synthetic.db'),MINDPOND_LOG_DIR:path.join(privateData,'logs'),MEMORY_HOST:'127.0.0.1',MEMORY_PORT:'0',MEMORY_API_KEY:'',MEMORY_OPERATOR_KEY:'',MEMORY_CONTEXT_SECRET:'',MINDPOND_MCP_ACCOUNTS:'',MINDPOND_EMBEDDING_MODE:'text',EMBEDDING_ZH_ENABLED:'false',EMBEDDING_MODEL_DIR:path.join(privateData,'no-models')};
   child=spawn(process.execPath,[path.join(app,'dist/server.js')],{cwd:app,env,stdio:['ignore','pipe','pipe']});let output='';
   let spawnError;exited=new Promise(r=>{child.once('exit',r);child.once('error',error=>{spawnError=error;r();});});for(const stream of [child.stdout,child.stderr])stream.on('data',v=>{output=(output+v).slice(-128000);});
   const deadline=Date.now()+30000;while(!/listening on .*:(\d+)/.test(output)&&child.exitCode===null&&!spawnError&&Date.now()<deadline)await new Promise(r=>setTimeout(r,50));
@@ -47,7 +47,9 @@ export async function verifyRelease(directory,{runSmoke=false}={}){
  const manifest=JSON.parse(manifestText);if(manifest.format!=='mindpond.offline-release.v1')throw Error('Unknown release format');
  if(JSON.stringify(manifest.platform)!==JSON.stringify(platform()))throw Error('This runtime was prepared for a different OS/architecture/Node ABI/libc. Prepare on the target platform.');
  const actual=await files(root);if(JSON.stringify(actual)!==JSON.stringify(manifest.files))throw Error('Release contents differ from the manifest; missing, changed or extra files found');
- return {version:manifest.version,manifestSha256:expected,fileCount:actual.length,bytes:actual.reduce((n,f)=>n+(f.bytes??0),0),platform:manifest.platform,...(runSmoke?{smoke:await smoke(root)}:{smoke:{passed:null,reason:'Not requested'}})};
+ const result=runSmoke?await smoke(root):{passed:null,reason:'Not requested'};
+ if(runSmoke&&JSON.stringify(await files(root))!==JSON.stringify(actual))throw Error('Smoke verification changed the release contents; keep runtime files outside the release directory');
+ return {version:manifest.version,manifestSha256:expected,fileCount:actual.length,bytes:actual.reduce((n,f)=>n+(f.bytes??0),0),platform:manifest.platform,smoke:result};
 }
 async function build(output){
  const source=await fs.realpath(path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..')),destination=path.resolve(output);
