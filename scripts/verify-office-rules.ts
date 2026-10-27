@@ -1,0 +1,94 @@
+/** Synthetic data only: authenticated browser management, real MCP reminders and SQLite counters. */
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import express from 'express';
+import {randomBytes} from 'node:crypto';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {GraphMemory} from '../src/core/graph-memory.js';
+import {roleRuntimeId} from '../src/core/roles.js';
+import {DEFAULT_MEMORY_RULE} from '../src/core/office-rules.js';
+import {officeWorkbench} from '../src/integrations/office-workbench.js';
+import {createNetworkMcpApp} from '../src/integrations/network-server.js';
+import {tokenDigest,type NetworkConfiguration} from '../src/integrations/network-config.js';
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-rules-')),dbPath=path.join(dir,'fixture.db'),graph=new GraphMemory('.',{dbPath});
+const admin={v:1 as const,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+const token=randomBytes(32).toString('base64url'),configuration:NetworkConfiguration={version:2,grants:[{principal:'human',agentId:'host',credentialId:'host',tokenHash:tokenDigest(token),domains:[],toolProfile:'office'}]};
+const actor=(chat='a')=>({v:1 as const,principal:'human',agentId:'host',transport:'http-mcp' as const,runtimeId:roleRuntimeId('human','host','codex',chat),runtimeMode:'codex_metadata' as const,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+let network:ReturnType<typeof createNetworkMcpApp>|undefined,listener:any,web:any,peer:GraphMemory|undefined;const clients:Client[]=[];
+try{
+ await graph.init();const db=(graph as any).db;
+ await graph.offices.configureAgent({id:'host',principal:'human',name:'Synthetic host',host:'generic-http-mcp',state:'active',expectedRevision:0},admin);
+ const allowedHosts=['127.0.0.1'];network=createNetworkMcpApp(graph,{allowedHosts,configuration:async()=>configuration});listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener.once('listening',r));const base='http://127.0.0.1:'+listener.address().port;allowedHosts.push(new URL(base).host);
+ const client=new Client({name:'synthetic-office-rules',version:'1'});clients.push(client);await client.connect(new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:'Bearer '+token}}}));
+ const raw=(name:string,args:any={},chat='a')=>client.callTool({name,arguments:args,_meta:{threadId:chat}});
+ const payload=(r:any)=>JSON.parse(r.content.find((c:any)=>c.type==='text').text);
+ const guidance=(r:any)=>r.content.flatMap((c:any)=>c.type==='text'?(JSON.parse(c.text).officeGuidance??[]):[]);
+ const call=async(name:string,args:any={},chat='a')=>{const r=await raw(name,args,chat);assert(!r.isError,JSON.stringify(r));return r;};
+ const roles:any[]=[];for(const chat of ['a','b','c']){const p=payload(await call('role_application',{action:'submit',name:'Synthetic '+chat,introduction:'Generic knowledge',reason:'Synthetic rules',key:'apply'},chat));roles.push(await graph.roles.review({action:'approve',applicationId:p.applicationId,expectedRevision:1},admin));}
+ const seats=roles.slice(0,2).map((r,i)=>({id:'seat-'+i,roleId:r.roleId,label:'Synthetic duty',role:'member'}));await graph.roles.configureOffice({id:'room',title:'Main office',state:'active',expectedRevision:0,seats},admin);await graph.roles.configureOffice({id:'private-room',title:'Other office',state:'active',expectedRevision:0,seats:[{id:'other-seat',roleId:roles[2].roleId,label:'Other'}]},admin);
+ const read=()=>graph.officeRules.manage({action:'get',officeId:'room'},admin);
+ const save=async(rules:any[],officeId='room')=>{const p=await graph.officeRules.manage({action:'get',officeId},admin);return graph.officeRules.manage({action:'save',officeId,expectedRevision:p.revision,rules},admin);};
+ const sample=(id:string,frequency:string,text=id)=>({id,title:id,text,frequency});
+ const initial=await read();assert.deepEqual(initial.levels.map(level=>level.every),[0,1,4,8,16,32,64,128]);assert.equal(initial.revision,0);assert.equal(initial.rules.length,1);assert.equal(initial.rules[0].frequency,'balanced');assert.equal(initial.rules[0].text,DEFAULT_MEMORY_RULE);assert(Buffer.byteLength(DEFAULT_MEMORY_RULE)<512);
+ await assert.rejects(graph.officeRules.manage({action:'save',officeId:'room',expectedRevision:0,rules:[]},actor()),(e:any)=>e.code==='scope_denied');
+ const app=express();app.use(express.json());app.use('/api/office-admin',officeWorkbench(graph,{apiKey:'',operatorKey:'synthetic-operator',contextSecret:''}));web=app.listen(0,'127.0.0.1');await new Promise<void>(r=>web.once('listening',r));const webBase='http://127.0.0.1:'+web.address().port+'/api/office-admin/';
+ const post=(route:string,body:any,cookie='',origin?:string)=>fetch(webBase+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,...(origin?{Origin:origin}:{})},body:JSON.stringify(body)});
+ assert.equal((await post('rules',{action:'get',officeId:'room'})).status,401);
+ const login=await post('login',{operatorKey:'synthetic-operator'}),cookie=login.headers.get('set-cookie')!.split(';')[0];assert.equal((await post('rules',{action:'get',officeId:'room'},cookie)).status,200);assert.equal((await post('rules',{action:'save',officeId:'room',expectedRevision:0,rules:[]},cookie,'https://untrusted.example')).status,403);
+ const first=await call('office_message',{action:'send',officeId:'room',recipient:roles[1].roleId,body:'Keep the original body',key:'original'});assert(guidance(first).length,JSON.stringify(first));assert.equal(guidance(first)[0].rules[0].text,DEFAULT_MEMORY_RULE);const originalId=payload(first).messageId;
+ const received=await call('office_receive',{action:'list'},'b');assert.equal(guidance(received)[0].rules[0].text,DEFAULT_MEMORY_RULE);assert.equal(payload(received).messages[0].body,'Keep the original body');assert.equal((await db.get('SELECT body FROM role_messages WHERE id=?',[originalId])).body,'Keep the original body');
+ assert(!(await client.listTools()).tools.some(t=>/office.*rules/.test(t.name)),'roles cannot configure human rules');
+ console.log('PASS rule management: concise defaults, authenticated/CSRF-protected human configuration and unmodified collaborator messages');
+ const officeRevision=(await db.get('SELECT revision FROM offices WHERE id=?',['room'])).revision;
+ const policy=await save([sample('memory','balanced','Only shared verified knowledge'),sample('gentle','light'),sample('always','strong'),sample('disabled','off'),...[16,32,64,128].map(n=>sample('every'+n,'every'+n))]);
+ const hits:Record<string,number[]>={memory:[],gentle:[],always:[],disabled:[],every16:[],every32:[],every64:[],every128:[]};
+ for(let n=1;n<=129;n++){const r=await call('office_message',{action:'send',officeId:'room',recipient:roles[1].roleId,body:'Count '+n,key:'cadence-'+n});for(const item of guidance(r).flatMap((g:any)=>g.rules))hits[item.id].push(n);}
+ const expected=(every:number)=>Array.from({length:Math.floor(128/every)+1},(_,n)=>1+n*every);
+ assert.deepEqual(hits,{memory:expected(4),gentle:expected(8),always:expected(1),disabled:[],every16:expected(16),every32:expected(32),every64:expected(64),every128:expected(128)});
+ peer=new GraphMemory('.',{dbPath});await peer.init();assert.deepEqual((await peer.officeRules.manage({action:'get',officeId:'room'},admin)).rules.map(r=>r.frequency),policy.rules.map(r=>r.frequency));const resumed=await peer.officeRules.reminders('office_broadcast',{officeId:'room'},{},actor());assert.deepEqual(resumed.flatMap(r=>r.rules.map((item:any)=>item.id)),['always'],'a new service connection keeps long-frequency counters after the 129th response');await peer.close();peer=undefined;
+ assert.equal((await db.get('SELECT revision FROM offices WHERE id=?',['room'])).revision,officeRevision,'rules do not edit seats or revoke claims');
+ assert.equal(guidance(await call('office_receive',{action:'list'},'b'))[0].rules.length,7,'each role has its own first delivery');
+ const counter=async()=>JSON.stringify(await db.all('SELECT * FROM office_rule_delivery ORDER BY office_id,role_id'));
+ const before=await counter();await call('office_receive',{action:'list'});await call('office_wait',{waitMs:100});assert((await raw('office_message',{action:'send',officeId:'room',recipient:roles[2].roleId,body:'Denied',key:'denied'})).isError);assert.deepEqual(await graph.officeRules.reminders('memory_brief',{}, {},actor()),[]);assert.equal(await counter(),before,'empty polls, timeouts, errors and memory calls do not count');
+ await graph.officeRules.manage({action:'save',officeId:'room',expectedRevision:policy.revision-1,rules:policy.rules},admin); // Lost-response replay.
+ await assert.rejects(graph.officeRules.manage({action:'save',officeId:'room',expectedRevision:0,rules:[]},admin),(e:any)=>e.code==='stale_version');
+ for(const rules of [[sample('dup','strong'),sample('dup','light')],[sample('huge','strong','中'.repeat(700))],[sample('invalid','random')]])await assert.rejects(save(rules));
+ await save([]);assert.equal(guidance(await call('office_message',{action:'get',messageId:originalId})).length,0);await save([sample('off','off')]);assert.equal(guidance(await call('office_message',{action:'get',messageId:originalId})).length,0);
+ console.log('PASS cadence: per-rule 1/4/8/16/32/64/128/off, persisted long-frequency boundaries, independent roles, no empty/error inflation, CAS/retry, byte limits and zero-rule opt-out');
+ await save([sample('private','strong','Private office instruction')],'private-room');
+ const direct=payload(await call('office_message',{action:'send',recipient:roles[2].roleId,body:'Direct outside message',key:'outside'}));const outside=guidance(await call('office_receive',{action:'list'},'c'));assert.equal(outside.length,1);assert.equal(outside[0].officeId,'private-room');assert.equal(outside[0].rules[0].text,'Private office instruction');assert.equal(guidance(await call('office_message',{action:'get',messageId:direct.messageId})).length,0,'sender never receives recipient private rules');
+ await save([sample('meeting','strong','Meeting knowledge reminder')]);
+ const meeting=payload(await call('office_discussion',{action:'create',officeId:'room',title:'Synthetic question',question:'What is verified?',doneWhen:'Known evidence',participants:[roles[1].roleId],key:'meeting'}));assert(meeting.room.id);
+ assert.equal(guidance(await call('office_discussion',{action:'join',id:meeting.room.id},'b'))[0].officeId,'room');
+ const postResult=await call('office_discussion',{action:'post',id:meeting.room.id,body:'Verified statement',key:'post'});assert.equal(guidance(postResult)[0].officeId,'room');const fetched=await call('office_discussion',{action:'get'},'b');assert.equal(guidance(fetched)[0].officeId,'room');assert.equal(payload(fetched).posts[0].body,'Verified statement');
+ const noPostBefore=await counter();assert.equal(guidance(await call('office_discussion',{action:'get'})).length,0);assert.equal(await counter(),noPostBefore);
+ const roomRevision=(await db.get('SELECT revision FROM office_discussions WHERE id=?',[meeting.room.id])).revision;await call('office_discussion',{action:'close',id:meeting.room.id,expectedRevision:roomRevision,summary:'Verified statement retained when useful',key:'close'});
+ await graph.roles.configureOffice({id:'secondary',title:'Current second office',state:'active',expectedRevision:0,seats:[{id:'second-seat',roleId:roles[0].roleId,label:'Other duty'},{id:'second-peer',roleId:roles[1].roleId,label:'Peer duty'}]},admin);await save([sample('new-office','strong','Follow current membership')],'secondary');
+ await graph.roles.configureOffice({id:'room',title:'Main office',state:'active',expectedRevision:officeRevision,seats:seats.slice(1)},admin);
+ assert.equal(guidance(await call('office_message',{action:'get',messageId:originalId})).length,0,'history access cannot revive departed-office rules');
+ const fallback=guidance(await call('office_message',{action:'send',recipient:roles[2].roleId,body:'From current place',key:'from-new-office'}));assert.equal(fallback[0].officeId,'secondary');
+ console.log('PASS scope: sender/recipient private rules stay separate, meeting focus uses its office, historical mail cannot revive departed membership');
+ await save([sample('durable','balanced')],'secondary');
+ peer=new GraphMemory('.',{dbPath});await peer.init();
+ const responses=await Promise.all(Array.from({length:8},(_,n)=>(n%2?peer!:graph).officeRules.reminders('office_broadcast',{officeId:'secondary'},{},actor())));assert.equal(responses.filter(r=>r.length).length,2,'shared SQL counters serialize across processes');await peer.close();peer=undefined;
+ const rebound=await raw('role_sync',{},'replacement');assert(!rebound.isError);const role=await db.get('SELECT revision FROM character_roles WHERE id=?',[roles[0].roleId]);await graph.roles.connect({roleId:roles[0].roleId,expectedRevision:role.revision,targetRuntimeId:actor('replacement').runtimeId},admin);
+ assert.equal(guidance(await call('role_sync',{},'replacement'))[0].officeId,'secondary');assert.equal(guidance(await call('role_sync',{},'replacement')).length,0,'repeated sync never consumes communication frequency');assert.equal(guidance(await raw('role_sync')).length,0);
+ const remCount=await db.get('SELECT COUNT(*) n FROM office_rule_delivery');
+ for(let n=0;n<5;n++){const id='budget-'+n;await graph.roles.configureOffice({id,title:'Budget '+n,state:'active',expectedRevision:0,seats:[{id:'budget-seat-'+n,roleId:roles[0].roleId,label:'Synthetic'}]},admin);await save([sample('long','strong','长'.repeat(650))],id);}
+ const covered=new Set<string>();for(let n=0;n<5;n++){const r=await call('role_sync',{},'replacement'),entries=guidance(r);assert(Buffer.byteLength(JSON.stringify(entries))<=8192);for(const e of entries)if(e.officeId.startsWith('budget-'))covered.add(e.officeId);}assert.equal(covered.size,5,'deferred whole reminders get a later turn');
+ await save([sample('failure','balanced')],'secondary');
+ await db.exec("CREATE TRIGGER synthetic_guidance_failure BEFORE UPDATE ON office_rule_delivery WHEN NEW.office_id='secondary' BEGIN SELECT RAISE(ABORT,'synthetic reminder failure'); END");
+ const committed=await call('office_message',{action:'send',officeId:'secondary',recipient:roles[1].roleId,body:'Committed independently',key:'committed'},'replacement');assert(payload(committed).messageId);assert(committed.content.some((c:any)=>c.type==='text'&&JSON.parse(c.text).officeGuidanceUnavailable));assert(await db.get('SELECT id FROM role_messages WHERE id=?',[payload(committed).messageId]));await db.exec('DROP TRIGGER synthetic_guidance_failure');
+ assert((await db.get('SELECT COUNT(*) n FROM office_rule_delivery')).n>=remCount.n);assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);
+ console.log('PASS recovery: shared/restarted counters, new binding reminder, sync suppression, fair whole-text budgets and nonfatal reminder failure after committed messages');
+ await graph.roles.configureOffice({id:'budget-0',title:'Budget 0',state:'cancelled',expectedRevision:1},admin);
+ await assert.rejects(save([sample('archive','strong')],'budget-0'),(e:any)=>e.code==='invalid_input');
+ await graph.roles.deleteOffice({id:'budget-0',expectedRevision:2},admin);
+ assert.equal((await db.get('SELECT COUNT(*) n FROM office_rule_policies WHERE office_id=?',['budget-0'])).n,0);assert.equal((await db.get('SELECT COUNT(*) n FROM office_rule_delivery WHERE office_id=?',['budget-0'])).n,0);
+ const departing=await db.get('SELECT revision FROM character_roles WHERE id=?',[roles[0].roleId]);await graph.roles.deleteRole({roleId:roles[0].roleId,expectedRevision:departing.revision},admin);assert.equal((await db.get('SELECT COUNT(*) n FROM office_rule_delivery WHERE role_id=?',[roles[0].roleId])).n,0);assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);
+ console.log('PASS lifecycle: archived rules are read-only; office policies and per-role counters cascade without orphan records');
+
+}finally{await peer?.close();await Promise.allSettled(clients.map(c=>c.close()));if(network)await network.close(listener);if(web)await new Promise<void>(r=>web.close(()=>r()));await graph.close();await fs.rm(dir,{recursive:true,force:true});}

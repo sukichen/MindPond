@@ -21,7 +21,7 @@ try {
     try{
       await db.run('VACUUM INTO ?',[destination]);await fs.chmod(destination,0o600);
       const copy=await open({filename:destination,driver:sqlite3.Database,mode:sqlite3.OPEN_READONLY});
-      try{const checked=await auditDatabase(copy);if(!checked.healthy)throw new Error('Restored copy failed integrity checks');console.log(JSON.stringify({mode:'restore-copy',destination,healthy:true,notice:'Existing databases were not changed. Stop writers before pointing services to the restored copy.'},null,2));}finally{await copy.close();}
+      try{const checked=await auditDatabase(copy);if(!checked.healthy)throw new Error('Restored copy failed integrity checks');console.log(JSON.stringify({mode:'restore-copy',destination,healthy:true,artifactBytesIncluded:false,notice:'Existing databases were not changed. Stop writers before switching services. Artifact bytes are not included: restore the matching private artifact directory separately and verify SHA-256.'},null,2));}finally{await copy.close();}
     }catch(error){await fs.rm(destination,{force:true});throw error;}
   } else if(!repair || audit.healthy) {
     console.log(JSON.stringify({mode:'check',...audit},null,2));

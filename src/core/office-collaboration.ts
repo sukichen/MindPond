@@ -410,7 +410,7 @@ export class OfficeCollaboration {
             await fs.chmod(filename, 0o600);
             const sha256 = await fileHash(filename);
             await this.db.run('INSERT INTO office_backup_records VALUES(?,?,?,?)', [id, filename, this.clock(), sha256]);
-            return { id, sha256, createdAt: this.clock(), notice: 'Private consistent database snapshot. No credential files included.' };
+            return { id, sha256, createdAt: this.clock(), artifactBytesIncluded:false,notice: 'Private consistent database snapshot. Artifact bytes and credential files are not included. Stop writers and back up the matching artifact directory separately; see docs/artifacts.md.' };
         }
         if (i.action === 'checkBackup') {
             const r = await this.db.get<Row>('SELECT * FROM office_backup_records WHERE id=?', [i.id]);
@@ -418,7 +418,7 @@ export class OfficeCollaboration {
                 fail('Backup unavailable','not_found');
             const db = await open({ filename: r!.filename, driver: sqlite3.Database, mode: sqlite3.OPEN_READONLY });
             try {
-                return { id: i.id, ...await auditDatabase(db), digestMatches: await fileHash(r!.filename) === r!.sha256, restore: { command: 'mindpond-maintenance --db <this-backup-file> --restore-to <new-database-file>', backupFile: r!.filename, notice: 'Restore creates a new database; stop writers before switching services to it. Running data is never overwritten.' } };
+                return { id: i.id, ...await auditDatabase(db), digestMatches: await fileHash(r!.filename) === r!.sha256, restore: { command: 'mindpond-maintenance --db <this-backup-file> --restore-to <new-database-file>', backupFile: r!.filename, artifactBytesIncluded:false,notice: 'Restore creates a new database; stop writers before switching services to it. Restore the matching artifact directory separately and verify file hashes. Running data is never overwritten.' } };
             }
             finally {
                 await db.close();

@@ -30,3 +30,8 @@ evals/baselines/
 # Account grants and opaque LAN credentials
 *.accounts.json
 *.token
+
+# Private immutable artifact byte stores
+*.db.artifacts/
+*.sqlite.artifacts/
+*.sqlite3.artifacts/

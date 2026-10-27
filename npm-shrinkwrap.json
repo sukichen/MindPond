@@ -26,7 +26,8 @@
         "mindpond-mcp-remote": "dist/mcp-remote.js",
         "mindpond-models": "dist/models.js",
         "mindpond-office-doctor": "dist/office-doctor.js",
-        "mindpond-server": "dist/server.js"
+        "mindpond-server": "dist/server.js",
+        "mindpond-artifact": "dist/artifact-client.js"
       },
       "devDependencies": {
         "@types/express": "^4.17.21",

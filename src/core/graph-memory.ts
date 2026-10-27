@@ -1,4 +1,6 @@
 import {OfficeDiscussions} from './office-discussions.js';
+import {OfficeRules} from './office-rules.js';
+import {OfficeArtifacts} from './office-artifacts.js';
 import {OfficeScripts} from './office-scripts.js';
 import { ConnectionCoordinator } from './connection-coordinator.js';
 import {preparePrivateDatabase,reservePrivateBackup} from './sqlite-files.js';
@@ -429,6 +431,8 @@ export class GraphMemory {
   roleContinuity!:RoleContinuityStore;
   discussions!:OfficeDiscussions;
   scripts!:OfficeScripts;
+  artifacts!:OfficeArtifacts;
+  officeRules!:OfficeRules;
   officeTaskStore(actor:import('./trust.js').TrustedCallContext){return new OfficeTaskStore(this.db!,this,work=>this.growthWrite(work),actor);}
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
@@ -1158,6 +1162,11 @@ export class GraphMemory {
     await this.roleContinuity.init();
     this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','assertCommunication','sweep']);await this.discussions.init();
     this.scripts=this.coordinator.service(new OfficeScripts(this.db,this,work=>this.growthWrite(work),this.clock),['init','run']);await this.scripts.init();
+    // Streaming intentionally stays outside the connection coordinator; only its short metadata phases transact.
+    this.artifacts=new OfficeArtifacts(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock);await this.artifacts.init();
+    this.officeRules=new OfficeRules(this.db,this,work=>this.growthWrite(work),this.clock);await this.officeRules.init();
+    this.building.artifactAttachments=(ids,recipient,a)=>this.artifacts.attach(ids,recipient,a);
+    const expireArtifacts=async()=>{try{await this.artifacts.sweep();}catch(error){logger.debug('Artifact maintenance failed',getErrorMessage(error));}finally{this.later(expireArtifacts,60000);}};this.later(expireArtifacts,60000);
     const expireDiscussions=async()=>{try{await this.discussions.sweep();}finally{this.later(expireDiscussions,60000);}};this.later(expireDiscussions,60000);
     this.roles.discussionStatus=a=>this.discussions.attention(a);
     this.building.discussionStatus=a=>this.discussions.attention(a);
@@ -5246,6 +5255,7 @@ export class GraphMemory {
     for (const timer of this.backgroundTimers) clearTimeout(timer);
     this.backgroundTimers.clear();
     this.closePromise = (async () => {
+      await this.artifacts?.close();
       await this.discussions?.close();
       await this.building?.close();
       await this.offices?.close();

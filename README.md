@@ -8,7 +8,7 @@
 
 MindPond 独立于 harness：普通接入使用标准 MCP，不要求指定启动脚本、会话插件或客户端改造。逐聊天身份是可选增强，须按实际宿主能力验证。保持轻量、少依赖、可离线运行；协作流程和记忆质量由用户与 LLM 自主维护。
 
-> 新功能：[角色断开与切换连接、临时讨论室和脚本库](docs/discussions-and-scripts.md)。生产升级请同时阅读[迁移说明](docs/history.md)。
+> 新功能：[办公室守则与分档提醒](docs/office-rules.md)；[通用附件、不可变制品与宿主字节传输](docs/artifacts.md)；[角色断开与切换连接、临时讨论室和脚本库](docs/discussions-and-scripts.md)。生产升级请同时阅读[迁移说明](docs/history.md)。
 
 ## 记忆归属与办公室
 

@@ -160,6 +160,11 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         const entry=result.content?.find((c:any)=>c.type==='text');
         if(entry){const data=JSON.parse(entry.text);data.pondId=await graphMemory.pondIdentity();if(activation)data.activation={...activation,notice:activation.notice??'If the user wants a role, ask them to activate an existing role or submit a role application. An unbound chat uses human memory. Reconnection never chooses a role by recency.'};entry.text=JSON.stringify(data);}
       }
+      if(roleIdentity&&!result.isError){
+        const entry=result.content?.find((c:any)=>c.type==='text');
+        if(entry){try{const reminders=await graphMemory.officeRules.reminders(name,args,JSON.parse(entry.text),current);if(reminders.length)result.content.push({type:'text' as const,text:JSON.stringify({officeGuidance:reminders,notice:'Human-configured office guidance; does not change permissions, message state or user authorization.'})});}
+        catch(error){const failure=toStructuredError(error);if(failure.code==='internal')failure.message='Office reminders are temporarily unavailable.';result.content.push({type:'text' as const,text:JSON.stringify({officeGuidanceUnavailable:{...failure,nextAction:'The communication result above remains valid. Retry reminders on later communication; do not repeat a completed mutation.'},notice:'Only the office reminder was unavailable; the operation result above is unchanged.'})});}}
+      }
       if(roleIdentity) {
         const revision=String(roleIdentity.profileRevision)+':'+String(roleIdentity.bindingEpoch);
         const changed=seenRoleProfiles.get(roleIdentity.bindingId)!==revision;
@@ -180,7 +185,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
             maintenance: toolProfile === 'work' ? 'Bulk requests, worker draining, legacy and destructive administration need a separate full-profile connection (MINDPOND_TOOL_PROFILE=full). The work profile supports scoped saves, edits, small organization jobs and collaboration tasks.' : 'All tools are exposed.' } });
         }
       }
-      if(name==='office_discussion'||name==='office_script')return result; // Own bounded pages; never persist ephemeral posts or downloadable source in generic response caches.
+      if(name==='office_discussion'||name==='office_script'||name==='office_artifact')return result; // Own bounded pages; never persist ephemeral posts or downloadable source in generic response caches.
       if(name.startsWith('office_')||name==='role_sync')return graphMemory.officeCollaboration.boundResponse(result,args.responseBudgetBytes??16384,current);
       return result;
       });

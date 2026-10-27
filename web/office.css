@@ -789,3 +789,6 @@ body.office-application{height:100dvh;overflow:hidden;background:var(--o-backgro
 
 .office-person[data-meeting-unread]::before{content:'✉ ' attr(data-meeting-unread);position:absolute;left:48px;top:0;min-width:24px;padding:3px 5px;border-radius:10px;background:#bf7146;color:#fffbed;border:2px solid #fff7df;font-size:14px;font-weight:700;line-height:17px;text-align:center;white-space:nowrap;z-index:11;pointer-events:none}
 .office-meeting-inbox[data-unprocessed=false]{background:#eff5e8!important;border-color:#a6bea1!important}
+
+/* Rule drafts stay readable in narrow office windows. */
+.office-rules-editor{width:min(640px,calc(100vw - 24px));box-sizing:border-box}.office-rules-editor fieldset{min-width:0;margin:0;padding:0;border:0}.office-rule-card{display:grid;gap:14px;padding:16px;margin:14px 0;border:1px solid var(--o-line);border-radius:12px;background:var(--o-soft)}.office-rule-card textarea{min-height:130px;max-height:40dvh}.office-rule-card .office-danger{justify-self:end;margin:0}.office-rules-editor .office-toolbar{flex-wrap:wrap}.office-rules-editor .office-toolbar button{white-space:normal}

@@ -5,6 +5,10 @@
  * credentials, stack traces or internal paths are exposed through them. */
 
 export type MindPondErrorCode =
+  | 'payload_too_large'
+  | 'checksum_mismatch'
+  | 'artifact_not_ready'
+  | 'artifact_unavailable'
   | 'not_found'                // absent or not visible in the caller's scoped collection
   | 'invalid_input'            // correctable input problem; fix the named field and retry
   | 'idempotency_conflict'     // same scoped key, different normalized payload
@@ -28,6 +32,10 @@ export interface ErrorShape {
 }
 
 const NEXT_ACTION:Record<MindPondErrorCode,string>={
+  payload_too_large:'Reduce the file size or ask the operator to adjust the published byte/count quota; do not bypass limits.',
+  checksum_mismatch:'Recompute the file SHA-256 in the host. Retry the exact original bytes, or prepare a new immutable artifact with a new key.',
+  artifact_not_ready:'Complete the authenticated host upload, then retry the same artifact reference.',
+  artifact_unavailable:'The immutable reference is retained, but its bytes were deleted or expired. Prepare a new artifact for replacement bytes.',
   invalid_input:'Correct the named parameters using this tool’s input schema, then retry. Do not broaden permissions.',
   not_found:'List records visible to this identity and verify the ID and scope. Missing and inaccessible records are not permission grants.',
   scope_denied:'Check the current identity, membership and grants. Ask the human for required approval; do not bypass the restriction.',
@@ -100,6 +108,10 @@ export function toStructuredError(err: unknown): ErrorShape {
 
 export function httpStatus(code: MindPondErrorCode): number {
   switch (code) {
+    case 'payload_too_large': return 413;
+    case 'checksum_mismatch': return 422;
+    case 'artifact_not_ready': return 409;
+    case 'artifact_unavailable': return 410;
     case 'invalid_input': return 400;
     case 'not_found': return 404;
     case 'scope_denied': return 403;

@@ -1,3 +1,5 @@
+import {mountArtifactTransfers} from './artifact-http.js';
+import type {TrustedCallContext} from '../core/trust.js';
 import {RuntimeStatus} from '../core/runtime-status.js';
 import {releaseInfo} from '../core/release-info.js';
 import express from 'express';
@@ -18,6 +20,7 @@ import {
   type NetworkGrant
 } from './network-config.js';
 interface Connection {
+  trusted:TrustedCallContext;
   transport: StreamableHTTPServerTransport;
   service: ReturnType<typeof createMemoryMcpServer>;
   grant: NetworkGrant;
@@ -88,7 +91,7 @@ export function createNetworkMcpApp(
     }
     next();
   });
-  app.all(['/mcp','/memory/mcp'], async (req, res, next) => {
+  app.all(['/mcp','/memory/mcp','/artifacts/:artifactId/content'], async (req, res, next) => {
     try {
       if (closing) {
         res.status(503).json(httpError('temporarily_unavailable','Server is closing'));
@@ -133,6 +136,34 @@ export function createNetworkMcpApp(
     } catch {
       res.status(503).json(httpError('temporarily_unavailable','Account configuration unavailable'));
     }
+  });
+  const artifactTransfers=mountArtifactTransfers(app,graph,async(req,res)=>{
+    const grant=res.locals.grant as NetworkGrant,pinned=res.locals.memoryRole;
+    const token=req.header('authorization')?.replace(/^Bearer /,'')??'';
+    const connection=req.header('mcp-session-id')?connections.get(req.header('mcp-session-id')!):undefined;
+    if(req.header('mcp-session-id')&&(!connection||JSON.stringify(connection.grant)!==JSON.stringify(grant)))throw new MindPondError('not_found','MCP session not found for this account');
+    let actor:TrustedCallContext={v:1,transport:'http-mcp',principal:grant.principal,agentId:networkHostId(grant),credentialId:grant.credentialId,assignmentIds:grant.assignmentIds,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+    const identity=req.header('x-mindpond-identity');if(identity!==undefined&&identity!=='connection')throw new MindPondError('invalid_input','X-MindPond-Identity must be connection');
+    if(pinned){const binding=await graph.memoryOwners.roleBinding(pinned.role_id);if(!binding)throw new MindPondError('scope_denied','Role is not connected');actor={...actor,runtimeId:binding.runtime_id,roleId:pinned.role_id,roleBindingId:binding.id,roleBindingEpoch:binding.epoch,runtimeMode:'credential'};}
+    else if(identity==='connection'||connection?.connectionIdentity){
+      actor={...actor,runtimeId:roleRuntimeId(grant.principal,actor.agentId!,'credential',grant.credentialId??actor.agentId!),runtimeMode:'credential'};
+    }else{
+      // The host mirrors its per-call MCP metadata. Never infer the last chat on a multiplexed connection.
+      const header=req.header('x-mindpond-meta');let meta:Record<string,unknown>={};
+      if(header){if(Buffer.byteLength(header)>2048)throw new MindPondError('invalid_input','Host identity metadata exceeds 2KB');try{meta=JSON.parse(header);}catch{throw new MindPondError('invalid_input','X-MindPond-Meta must be a JSON object');}if(!meta||Array.isArray(meta)||typeof meta!=='object')throw new MindPondError('invalid_input','Host identity metadata must be an object');delete meta['mindpond/verifiedSessionID'];}
+      const proof=req.header('x-mindpond-host-context');if(proof)meta['mindpond/verifiedSessionID']=verifyHostSession(proof,'office_artifact_transfer',{method:req.method,artifactId:req.params.artifactId},token);
+      const chat=hostChatIdentity(meta);
+      if(chat)actor={...actor,runtimeId:roleRuntimeId(grant.principal,actor.agentId!,chat.source,chat.id),runtimeMode:chat.mode,nativeChatId:chat.id};
+      else if(connection)actor={...connection.trusted};
+      else throw new MindPondError('identity_required','Supply the host-configured connection identity, native chat metadata, or the matching MCP session; never choose another role');
+    }
+    const binding=await graph.roles.binding(actor);actor={...actor,roleId:binding!.role_id,roleBindingId:binding!.id,roleBindingEpoch:binding!.epoch};
+    const recheck=async()=>{
+      if(pinned){const current=await graph.memoryOwners.credential(token);if(current?.id!==pinned.id)throw new MindPondError('scope_denied','Role credential was revoked');}
+      else{const current=authenticateNetworkAccount(await options.configuration(),req.header('authorization'));if(JSON.stringify(current)!==JSON.stringify(grant))throw new MindPondError('scope_denied','Account permission changed during transfer');}
+      await graph.roles.binding(actor);
+    };
+    return {actor,recheck};
   });
   app.use(['/mcp','/memory/mcp'], express.json({ limit: '1mb' }));
   app.all(['/mcp','/memory/mcp'], async (req, res) => {
@@ -268,7 +299,7 @@ export function createNetworkMcpApp(
           enableJsonResponse: true
         });
         c = {
-          service,
+          service,trusted:serviceOptions.trusted,
           transport,
           grant,
           logicalSession,memory,connectionIdentity,
@@ -399,9 +430,14 @@ export function createNetworkMcpApp(
       const stopped = listener
         ? new Promise<void>((resolve) => listener.close(() => resolve()))
         : Promise.resolve();
+      await artifactTransfers.close();
       await Promise.allSettled([...requests]);
       await Promise.allSettled([...connections.keys()].map(remove));
       await Promise.allSettled([...retired]);
+      listener?.closeIdleConnections();
+      // All owned MCP/file operations have drained. Also release sockets with
+      // rejected/unconsumed request bodies; they are not idle to Node's HTTP server.
+      listener?.closeAllConnections();
       await stopped;
     }
   };

@@ -943,7 +943,7 @@
       else if (!e.shiftKey && document.activeElement === last) {e.preventDefault();first?.focus();}
     }
   });
-  window.addEventListener('beforeunload', e => {if (state.roleDraft?.dirty || state.containerDirty || window.MindPondOfficeResources?.hasDraft?.()) {e.preventDefault();e.returnValue = '';}});
+  window.addEventListener('beforeunload', e => {if (state.roleDraft?.dirty || state.containerDirty || window.MindPondOfficeRules?.hasDraft?.() || window.MindPondOfficeResources?.hasDraft?.()) {e.preventDefault();e.returnValue = '';}});
   new ResizeObserver(() => {if (state.scene.autoFit) requestAnimationFrame(()=>{if(!replayController.active)layoutScene(el('officeDesks').querySelectorAll('.office-desk').length);fitScene();});}).observe(stage);
   function renderProjects() {
     const members = el('officeProjectMembers'),
@@ -1023,7 +1023,7 @@
     el('officeSeatRows').append(row);
   }
   async function openOffice(id) {
-    if ((state.containerDirty||window.MindPondOfficeResources?.hasDraft?.()) && !(await confirmAction('有尚未保存的内容，仍要切换办公室？'))) return;
+    if ((state.containerDirty||window.MindPondOfficeRules?.hasDraft?.()||window.MindPondOfficeResources?.hasDraft?.()) && !(await confirmAction('有尚未保存的内容，仍要切换办公室？'))) return;
     state.containerDirty = false;
     replayController.close();state.replayIndexRoom=null;
     const generation = ++state.generation;
@@ -1200,6 +1200,7 @@
       : '最近同步 ' + new Date().toLocaleTimeString();
     const controls = el('officeControls');
     controls.replaceChildren();
+    if(!['completed','cancelled'].includes(o.state))controls.append(button('办公室守则',()=>window.MindPondOfficeRules?.open?.(o)));
     for (const [value, title] of [
       ['active', '开放办公室'],
       ['paused', '暂停使用'],
@@ -1699,7 +1700,7 @@
     });
   el('officeLogout').onclick = () =>
     run(async () => {
-      if (state.containerDirty && !(await confirmAction('容器有尚未保存的修改，仍要退出管理？'))) return;
+      if ((state.containerDirty||window.MindPondOfficeRules?.hasDraft?.()) && !(await confirmAction('有尚未保存的修改，仍要退出管理？'))) return;
       if (!(await closeRoleInspector())) return;
       await closeOfficeDetail(true);
       state.containerDirty = false;
@@ -1713,7 +1714,7 @@
       clearTimeout(state.poll);
       state.data = null;state.directoryThrough={};state.directoryGeneration++;state.directoryLoading=false;
       state.office = null;
-      window.MindPondOfficeCollaboration?.reset?.();window.MindPondOfficeResources?.reset?.();
+      window.MindPondOfficeCollaboration?.reset?.();window.MindPondOfficeResources?.reset?.();window.MindPondOfficeRules?.reset?.();
       state.events = [];
       el('officeLogin').hidden = false;
       el('officeSettings').hidden = true;
@@ -1730,6 +1731,7 @@
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.logged)schedule(150);});
   window.addEventListener('pageshow', event => {if(event.persisted && state.logged){startObserver();schedule(0);}});
   if(window.MindPondOfficeCollaboration?.mount){const mounted=window.MindPondOfficeCollaboration.mount({getState:()=>state,api,run,showDetail,showMaterial,setRoomTab,notice,confirmAction,download,fitScene});Object.assign(window.MindPondOfficeCollaboration,mounted);}
+  if(window.MindPondOfficeRules?.mount)Object.assign(window.MindPondOfficeRules,window.MindPondOfficeRules.mount({getState:()=>state,api,notice,confirmAction}));
   if(window.MindPondOfficeResources?.mount)Object.assign(window.MindPondOfficeResources,window.MindPondOfficeResources.mount({getState:()=>state,api,run,setRoomTab,notice,confirmAction,download}));
   if(window.MindPondOfficeOperations?.mount)Object.assign(window.MindPondOfficeOperations,window.MindPondOfficeOperations.mount({getState:()=>state,api,run,showDetail,notice,confirmAction,download,openOffice,refreshOffice:()=>loadMail({refresh:true})}));
   syncAppRoute();
