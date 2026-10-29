@@ -24,7 +24,7 @@ export class OfficeScripts{
   if(i.officeId&&i.roleId)fail('invalid_input','Choose either a role library or an office library');if(!i.officeId&&!roleId)fail('invalid_input','Choose a role library');
   const owner=i.officeId?'office:'+i.officeId:'role:'+roleId;
   if(i.officeId){const o=await this.db.get<Row>('SELECT state,deadline FROM offices WHERE id=?',[i.officeId]);if(!o)fail('not_found','Office not found');if(!human&&!(await this.graph.offices.authorizedSeats(a!)).some(s=>s.office_id===i.officeId))fail('scope_denied','Role no longer belongs to this office');if(writing&&!human&&(o.state!=='active'||o.deadline&&o.deadline<=this.clock()))fail('scope_denied','Office script library is read-only while the office is paused or archived');}
-  else if(!await this.db.get('SELECT 1 FROM character_roles WHERE id=?',[roleId]))fail('not_found','Role not found');
+  else {const role=await this.db.get<Row>('SELECT state FROM character_roles WHERE id=?',[roleId]);if(!role)fail('not_found','Role not found');if(writing&&role.state==='merged')fail('invalid_input','This role has been merged. Choose the surviving role library.');}
   return {human,roleId,officeId:i.officeId??null,owner,writer:human?'human':b!.role_id};
  }
  private present(r:Row){const {content,...meta}=r;return {...meta,locked:!!r.locked,bytes:r.bytes??Buffer.byteLength(content)};}

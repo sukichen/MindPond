@@ -1,0 +1,144 @@
+/** Real stores, HTTP human management, two SQLite connections; fictional data only. */
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import express from 'express';
+import {createHash} from 'node:crypto';
+import {Readable} from 'node:stream';
+import {GraphMemory} from '../src/core/graph-memory.js';
+import {roleRuntimeId} from '../src/core/roles.js';
+import {getEmbeddingService} from '../src/core/embedding.js';
+import {officeWorkbench} from '../src/integrations/office-workbench.js';
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-role-reorganization-')),file=path.join(dir,'fixture.db');
+const graph=new GraphMemory('.',{dbPath:file}),admin={v:1 as const,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+const embedding=getEmbeddingService(),original=embedding.generateEmbedding;embedding.generateEmbedding=async()=>[1,...Array(383).fill(0)];
+let server:any,peer:GraphMemory|undefined;
+try{
+ await graph.init();const db=(graph as any).db;
+ await graph.offices.configureAgent({id:'host',principal:'human',name:'Synthetic host',host:'codex',state:'active',expectedRevision:0},admin);
+ const actor=(chat:string)=>({v:1 as const,principal:'human',agentId:'host',transport:'http-mcp' as const,runtimeId:roleRuntimeId('human','host','codex',chat),runtimeMode:'codex_metadata' as const,nativeChatId:chat,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+ const makeRole=async(chat:string)=>{const p=await graph.roles.application({action:'submit',name:'Fixture '+chat,introduction:'Synthetic responsibility '+chat,reason:'Reorganization regression',key:'apply'},actor(chat));return graph.roles.review({applicationId:p.applicationId,expectedRevision:1,action:'approve'},admin);};
+ const a=await makeRole('a'),b=await makeRole('b'),c=await makeRole('c');
+ const domainA=await graph.memoryOwners.domain({kind:'agent',id:a.roleId}),domainB=await graph.memoryOwners.domain({kind:'agent',id:b.roleId});
+ const node=async(content:string,domain=domainA)=>graph.createNode({dimension:'fact',content,domain,embedding:[1,...Array(383).fill(0)],memberships:[{spaceId:'memory',memoryType:'fact'}]});
+ const n1=await node('Source knowledge A'),n2=await node('Source knowledge B'),n3=await node('Target knowledge',domainB);
+ const members=await Promise.all([n1,n2,n3].map(n=>graph.getMemberships(n.id,{activeOnly:true})));
+ const relation=await graph.upsertAssociation(members[0][0].id,members[1][0].id,'memory','fact',0.75);
+ const edge=await graph.createEdge(n1.id,n2.id,'related',0.7);
+ const script=await graph.scripts.run({action:'save',roleId:a.roleId,filename:'check.sh',description:'Synthetic check',usage:'Review before run',language:'sh',content:'echo fixture',key:'script',expectedRevision:0},admin);
+ await graph.roles.configureOffice({id:'one',title:'Synthetic one',state:'active',expectedRevision:0,seats:[{id:'seat-a',roleId:a.roleId,label:'Source',role:'source duty'},{id:'seat-b',roleId:b.roleId,label:'Target',role:'target duty'}]},admin);
+ await graph.roles.configureOffice({id:'two',title:'Synthetic two',state:'active',expectedRevision:0,seats:[{id:'seat-a2',roleId:a.roleId,label:'Source',role:'second duty'}]},admin);
+ await db.run('UPDATE office_seats SET enabled=0 WHERE id=?',['seat-b']);
+ const officeDomain=await graph.memoryOwners.domain({kind:'office',id:'two'}),shared=await node('Office shared evidence',officeDomain);
+ const summary={goal:'Synthetic goal',progress:'Verified synthetic stage',nextSteps:['Check fixture'],sources:[]};
+ for(const role of [a,b]){await graph.roleContinuity.checkpoint({roleId:role.roleId,human:true},{summary:{...summary,goal:'Goal '+role.roleId},expectedRevision:0,key:'checkpoint',reason:'Fixture'});await graph.roleContinuity.updateTask({roleId:role.roleId,human:true},{task:{id:'same-task',expectedRevision:0,title:'Same identifier',status:'todo',progress:'Independent commitment'},key:'task',reason:'Fixture'});}
+ const credential=await graph.memoryOwners.issue(a.roleId),bound=await graph.roles.binding(actor('a'));
+ const pinned={...actor('a'),roleId:a.roleId,roleBindingId:bound!.id,roleBindingEpoch:bound!.epoch};
+ const merge={mode:'merge',sourceId:a.roleId,targetId:b.roleId,name:'Unified specialist',introduction:'Reviewed combined duties',checkpointChoice:'target'};
+ await assert.rejects(graph.roleReorganization.preview(merge,actor('a')),(e:any)=>e.code==='scope_denied');
+ await assert.rejects(graph.roleReorganization.apply('00000000-0000-4000-8000-000000000000',actor('a')),(e:any)=>e.code==='scope_denied');
+ const app=express();app.use(express.json());app.use('/api/office-admin',officeWorkbench(graph,{apiKey:'',operatorKey:'fixture-operator',contextSecret:''}));server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));
+ const base='http://127.0.0.1:'+server.address().port+'/api/office-admin/';const post=(route:string,value:any,cookie='',origin?:string)=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,...(origin?{Origin:origin}:{})},body:JSON.stringify(value)});
+ assert.equal((await post('role/reorganization/preview',merge)).status,401);
+ const login=await post('login',{operatorKey:'fixture-operator'}),cookie=login.headers.get('set-cookie')!.split(';')[0];assert.equal((await post('role/reorganization/preview',merge,cookie,'https://untrusted.example')).status,403);
+ assert.equal((await post('role/reorganization/choices',{roleId:a.roleId,kind:'memories'},cookie)).status,200);
+ const mail=await graph.building.message({action:'send',recipient:a.roleId,body:'Handle before merge',key:'mail'},actor('c'));
+ let plan=await graph.roleReorganization.preview(merge,admin);assert(plan.blockers.some(b=>b.includes('消息')));await assert.rejects(graph.roleReorganization.apply(plan.previewId,admin),(e:any)=>e.code==='invalid_input');
+ await graph.building.message({action:'take',messageId:mail.messageId,key:'take'},actor('a'));const done=await graph.building.message({action:'finish',messageId:mail.messageId,result:'Verified result',key:'finish'},actor('a'));
+ await graph.building.message({action:'take',messageId:done.feedbackMessageId,key:'take-feedback'},actor('c'));await graph.building.message({action:'finish',messageId:done.feedbackMessageId,result:'Acknowledged',key:'finish-feedback'},actor('c'));
+ plan=await graph.roleReorganization.preview(merge,admin);assert.equal(plan.blockers.length,0,JSON.stringify(plan));assert.equal(plan.counts.memories,2);assert.equal(plan.counts.checkpointConflicts,1);
+ peer=new GraphMemory('.',{dbPath:file});await peer.init();await peer.roles.configure({roleId:a.roleId,expectedRevision:1,name:'Changed source',introduction:'Changed after preview',state:'active'},admin);
+ await assert.rejects(graph.roleReorganization.apply(plan.previewId,admin),(e:any)=>e.code==='stale_version');assert.equal((await graph.getNodeById(n1.id,{trackAccess:false}))!.domain!.id,domainA.id);
+ plan=await graph.roleReorganization.preview(merge,admin);
+ // Deliberate failure after moving nodes proves the entire transaction rolls back.
+ const layout=graph.officeCollaboration.layout;graph.officeCollaboration.layout=async()=>{throw Error('Synthetic layout failure');};
+ await assert.rejects(graph.roleReorganization.apply(plan.previewId,admin),/Synthetic layout failure/);graph.officeCollaboration.layout=layout;
+ assert.equal((await db.get('SELECT state FROM character_roles WHERE id=?',[a.roleId])).state,'active');assert.equal((await graph.getNodeById(n1.id,{trackAccess:false}))!.domain!.id,domainA.id);
+ const merged=await graph.roleReorganization.apply(plan.previewId,admin);assert.equal(merged.targetId,b.roleId);assert.deepEqual(await graph.roleReorganization.apply(plan.previewId,admin),merged);
+ assert.equal(await graph.memoryOwners.credential(credential.token),null);await assert.rejects(graph.roles.binding(pinned),(e:any)=>e.code==='scope_denied');assert.equal(await graph.roles.identity(actor('a')),null);assert.equal(await graph.roles.identity(actor('b')),null);
+ assert(!(await graph.roles.registry(admin)).roles.some((r:any)=>r.id===a.roleId));assert(!(await graph.offices.choices(admin)).roles.some((r:any)=>r.id===a.roleId));
+ assert(!(await graph.memoryOwners.roles()).some((r:any)=>r.id===a.roleId));
+ await assert.rejects(graph.roleContinuity.updateTask({roleId:a.roleId,human:true},{task:{id:'no-revive',expectedRevision:0,title:'Rejected',status:'todo',progress:'No new work'},key:'no-revive',reason:'Synthetic'}),(e:any)=>e.code==='invalid_input');
+ await assert.rejects(graph.scripts.run({action:'save',roleId:a.roleId,filename:'reject.sh',description:'No writes',usage:'Rejected',language:'sh',content:'echo fixture',key:'reject',expectedRevision:0},admin),(e:any)=>e.code==='invalid_input');
+ await assert.rejects(graph.roles.configure({roleId:a.roleId,expectedRevision:3,name:'Cannot revive',introduction:'Rejected',state:'active'},admin),(e:any)=>['invalid_input','stale_version'].includes(e.code));
+ assert.equal((await peer.getNodeById(n1.id,{trackAccess:false}))!.domain!.id,domainB.id,'another connection invalidates the cached owner');
+ assert.equal((await db.get('SELECT weight FROM memory_associations WHERE id=?',[relation.id])).weight,0.75);assert.equal((await db.get('SELECT weight FROM edges WHERE id=?',[edge.id])).weight,0.7);
+ assert.equal((await db.get('SELECT role_id FROM office_scripts WHERE id=?',[script.id])).role_id,b.roleId);
+ assert.equal((await db.get('SELECT count(*) n FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id WHERE rs.role_id=? AND s.enabled=1',[b.roleId])).n,2);
+ assert.equal((await graph.getNodeById(shared.id,{trackAccess:false}))!.domain!.id,officeDomain.id);
+ const archived=await db.get('SELECT * FROM role_messages WHERE id=?',[mail.messageId]);assert.equal(archived.recipient,b.roleId);assert.equal(archived.recipient_name,'Fixture a');assert.equal((await db.get('SELECT recipient FROM role_message_origins WHERE message_id=?',[mail.messageId])).recipient,a.roleId);
+ const recovered=await graph.roleContinuity.resume({roleId:b.roleId,human:true},{contextBudgetBytes:65536});assert.equal(recovered.activeTasks,2);assert.equal(new Set(recovered.tasks.map((t:any)=>t.id)).size,2);assert.equal(recovered.checkpoints[0].goal,'Goal '+b.roleId);assert((await graph.roleContinuity.history({roleId:b.roleId,human:true},{limit:20})).records.some((h:any)=>h.payload.goal==='Goal '+a.roleId));
+ await assert.rejects(graph.building.message({action:'send',recipient:a.roleId,body:'Redirect',key:'retired'},actor('c')),(e:any)=>e.code==='invalid_input'&&e.message.includes(b.roleId));
+ console.log('PASS human auth/CSRF, pending-mail closure, stale two-connection preview, atomic rollback, idempotent merge, connection fencing, owner caches, graph preservation, seats, attribution and continuity collisions');
+
+ // A pending suggestion containing both sides must become human-only on split.
+ await db.run('INSERT INTO memory_recalls VALUES(?,NULL,NULL,?,?,?)',['reorg-recall','fixture','[]',Date.now()]);
+ await db.run('INSERT INTO memory_use_reports VALUES(?,?,?,?,?,?)',['reorg-report','reorg-recall','fixture','{}','{}',Date.now()]);
+ await db.run("INSERT INTO memory_improvement_signals(id,report_id,kind,domain_kind,domain_id,memory_a_id,memory_b_id,reason,context,created_at,updated_at) VALUES(?,?,'review_association','personal',?,?,?,?,?,?,?)",['reorg-signal','reorg-report',domainB.id,n1.id,n2.id,'Synthetic private suggestion','Synthetic private evidence',Date.now(),Date.now()]);
+ // Split selected resources; internal graph stays, cross-owner edges cannot survive.
+ const split={mode:'split',sourceId:b.roleId,name:'New specialist',introduction:'Own the selected specialty',memoryIds:[n1.id],scriptIds:[script.id],officeIds:['two'],taskIds:[],artifactIds:[],checkpointScopes:[]};
+ plan=await graph.roleReorganization.preview(split,admin);assert.equal(plan.blockers.length,0,JSON.stringify(plan));assert.equal(plan.counts.cutAssociations,1);assert.equal(plan.counts.cutEdges,1);
+ const fork=await graph.roleReorganization.apply(plan.previewId,admin);assert.equal((await db.get('SELECT domain_id FROM memory_improvement_signals WHERE id=?',['reorg-signal'])).domain_id,'default');
+ const forkDomain=await graph.memoryOwners.domain({kind:'agent',id:fork.targetId});
+ const forkCtx=await graph.memoryOwners.context({kind:'agent',id:fork.targetId}),sourceCtx=await graph.memoryOwners.context({kind:'agent',id:b.roleId});
+ assert.equal((await graph.getNodeById(n1.id,{trackAccess:false,context:forkCtx}))!.domain!.id,forkDomain.id);
+ await assert.rejects(graph.getNodeById(n1.id,{trackAccess:false,context:sourceCtx}),/outside the readable domains/);
+ await assert.rejects(graph.getNodeById(n2.id,{trackAccess:false,context:forkCtx}),/outside the readable domains/);
+ assert.equal(await db.get('SELECT 1 FROM memory_associations WHERE id=?',[relation.id]),undefined);assert.equal(await db.get('SELECT 1 FROM edges WHERE id=?',[edge.id]),undefined);
+ const connectRole=async(roleId:string,chat:string)=>{const request=await graph.roles.connectionRequest(actor(chat)),role=await db.get('SELECT revision FROM character_roles WHERE id=?',[roleId]);await graph.roles.activate({requestId:request!.id,roleId,expectedRevision:role.revision},admin);};
+ await connectRole(fork.targetId,'fork');await connectRole(b.roleId,'keeper');
+ assert((await graph.memoryOwners.offices(fork.targetId)).some((o:any)=>o.id==='two'));assert(!(await graph.memoryOwners.offices(fork.targetId)).some((o:any)=>o.id==='one'));
+ assert((await graph.memoryOwners.offices(b.roleId)).some((o:any)=>o.id==='two'));
+ // A moved human allocation cannot be returned to the source role by a stale allocation receipt.
+ const human=await graph.saveMemory('Synthetic human allocation source'),copy=(await graph.memoryOwners.allocate([human.id],b.roleId)).copies[0];
+ const allocPlan=await graph.roleReorganization.preview({...split,name:'Allocation specialist',memoryIds:[copy.copyId],scriptIds:[],officeIds:[]},admin);const allocationFork=await graph.roleReorganization.apply(allocPlan.previewId,admin);
+ const replacement=(await graph.memoryOwners.allocate([human.id],b.roleId)).copies[0];assert.notEqual(replacement.copyId,copy.copyId);assert.equal((await graph.getNodeById(copy.copyId,{trackAccess:false}))!.domain!.id,(await graph.memoryOwners.domain({kind:'agent',id:allocationFork.targetId})).id);
+ // Delayed save/continuity retries must not claim moved data is still source-owned.
+ const receiptNode=await graph.saveMemory('Synthetic scoped receipt',{domain:domainB,idempotencyKey:'move-save-receipt'});
+ const receiptTask={id:'receipt-task',expectedRevision:0,title:'Receipt task',status:'todo',progress:'Synthetic progress'};
+ const receiptInput={task:receiptTask,key:'move-task-receipt',reason:'Synthetic receipt'};
+ await graph.roleContinuity.updateTask({roleId:b.roleId,human:true},receiptInput);
+ const receiptPlan=await graph.roleReorganization.preview({...split,name:'Receipt specialist',memoryIds:[receiptNode.id],scriptIds:[],officeIds:[],taskIds:[receiptTask.id]},admin);
+ await graph.roleReorganization.apply(receiptPlan.previewId,admin);
+ await assert.rejects(graph.saveMemory('Synthetic scoped receipt',{domain:domainB,idempotencyKey:'move-save-receipt'}),(e:any)=>e.code==='stale_version');
+ await assert.rejects(graph.roleContinuity.updateTask({roleId:b.roleId,human:true},receiptInput),(e:any)=>e.code==='stale_version');
+ assert.equal(await db.get('SELECT 1 FROM role_continuity_tasks WHERE role_id=? AND id=?',[b.roleId,receiptTask.id]),undefined);
+ // Provenance support closure must be selected together rather than silently corrupting a profile.
+ const p1=await node('Synthetic profile',domainB),p2=await node('Synthetic support',domainB),pm=await graph.getMemberships(p1.id),sm=await graph.getMemberships(p2.id);
+ await db.run('INSERT INTO profile_records VALUES(?,1,1,?)',[pm[0].id,'{}']);await db.run('INSERT INTO profile_supports VALUES(?,?,1,?,?)',[pm[0].id,sm[0].id,'Verified fixture','Synthetic context']);
+ const partial=await graph.roleReorganization.preview({...split,memoryIds:[p1.id],scriptIds:[],officeIds:[]},admin);assert(partial.blockers.some(b=>b.includes('依据')));await assert.rejects(graph.roleReorganization.apply(partial.previewId,admin),(e:any)=>e.code==='invalid_input');
+ // Choices are bounded, searchable, and source-owned; forged selections never move another role's memory.
+ const choices=await graph.roleReorganization.choices({roleId:b.roleId,kind:'memories',query:'Target'},admin);assert(choices.records.some(r=>r.id===n3.id));assert(!choices.records.some(r=>r.id===n1.id));
+ await assert.rejects(graph.roleReorganization.preview({...split,memoryIds:[n1.id],scriptIds:[],officeIds:[]},admin),(e:any)=>e.code==='invalid_input');
+ // Fresh roles exercise meetings, open work and real immutable file bytes.
+ const d=await makeRole('d'),e=await makeRole('e');
+ await graph.roles.configureOffice({id:'three',title:'Artifact office',state:'active',expectedRevision:0,seats:[{id:'seat-d',roleId:d.roleId,label:'D',role:'worker'},{id:'seat-e',roleId:e.roleId,label:'E',role:'reviewer'}]},admin);
+ const resourceMerge={...merge,sourceId:d.roleId,targetId:e.roleId,name:'Artifact specialist'};
+ const meeting=await graph.discussions.run({action:'create',officeId:'three',title:'Focused fixture',question:'What is known?',doneWhen:'Verified conclusion',participants:[e.roleId],key:'meeting'},actor('d'));
+ let blocked=await graph.roleReorganization.preview(resourceMerge,admin);assert(blocked.blockers.some(t=>t.includes('会议室')));
+ await graph.discussions.run({action:'close',id:meeting.room.id,expectedRevision:meeting.room.revision},admin);
+ const dBinding=await graph.roles.binding(actor('d')),dActor={...actor('d'),roleId:d.roleId,roleBindingId:dBinding!.id,roleBindingEpoch:dBinding!.epoch};
+ const work=(await graph.offices.open({assignmentId:'seat-d'},dActor)).context!;
+ const item=await graph.offices.item({action:'create',workSessionId:work.workSessionId,title:'Open fixture',acceptance:'Verified result',owner:'seat-d',reviewer:'seat-e',key:'open-item'},dActor);
+ blocked=await graph.roleReorganization.preview(resourceMerge,admin);assert(blocked.blockers.some(t=>t.includes('工作项')));await graph.offices.cancelItem({itemId:item.item.id,expectedRevision:item.item.revision,reason:'Synthetic human cancellation'},admin);
+ const bytes=Buffer.from('Synthetic immutable original bytes'),hash=createHash('sha256').update(bytes).digest('hex');
+ const prepared=await graph.artifacts.run({action:'prepare',filename:'fixture.txt',mime:'text/plain',size:bytes.length,sha256:hash,scope:'recipients',recipients:[c.roleId],key:'file'},actor('d'));
+ const artifactId=prepared.artifact.artifactId;
+ blocked=await graph.roleReorganization.preview(resourceMerge,admin);assert(blocked.blockers.some(t=>t.includes('上传')));
+ await graph.artifacts.upload(artifactId,Readable.from([bytes]),actor('d'),new AbortController().signal,async()=>{});
+ const ready=await graph.artifacts.run({action:'get',artifactId},actor('d'));
+ const resourcePlan=await graph.roleReorganization.preview(resourceMerge,admin);assert.equal(resourcePlan.blockers.length,0,JSON.stringify(resourcePlan));
+ const httpApplied=await post('role/reorganization/apply',{previewId:resourcePlan.previewId},cookie);assert.equal(httpApplied.status,200,await httpApplied.text());
+ await connectRole(e.roleId,'artifact-keeper');
+ let fileRead=await graph.artifacts.download(artifactId,actor('artifact-keeper'));const received:Buffer[]=[];for await(const part of fileRead.stream)received.push(Buffer.from(part));assert.deepEqual(Buffer.concat(received),bytes);assert.equal(fileRead.artifact.sha256,hash);assert.equal(fileRead.artifact.expiresAt,ready.artifact.expiresAt);
+ const fileSplit=await graph.roleReorganization.preview({mode:'split',sourceId:e.roleId,name:'File specialist',introduction:'Synthetic file custody',artifactIds:[artifactId]},admin);assert.equal(fileSplit.blockers.length,0,JSON.stringify(fileSplit));const fileRole=await graph.roleReorganization.apply(fileSplit.previewId,admin);
+ await connectRole(fileRole.targetId,'file-specialist');await connectRole(e.roleId,'artifact-keeper');
+ await assert.rejects(graph.artifacts.run({action:'get',artifactId},actor('artifact-keeper')),(e:any)=>e.code==='not_found');
+ assert.equal((await graph.artifacts.run({action:'get',artifactId},actor('c'))).artifact.sha256,hash,'explicit third-party recipient remains authorized');
+ fileRead=await graph.artifacts.download(artifactId,actor('file-specialist'));for await(const part of fileRead.stream)assert.deepEqual(Buffer.from(part),bytes);
+ console.log('PASS meeting and open-task blockers, pending-upload protection, authenticated HTTP apply, artifact byte/hash/expiry immutability, custody isolation and retained explicit recipients');
+ assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');assert.deepEqual(await db.all('PRAGMA foreign_key_check'),[]);
+ await peer.close();peer=new GraphMemory('.',{dbPath:file});await peer.init();assert.deepEqual(await peer.roleReorganization.apply(plan.previewId,admin),fork);assert.equal((await peer.getNodeById(n1.id,{trackAccess:false}))!.domain!.id,forkDomain.id);
+ console.log('PASS split isolation, cut topology, selected offices, retained source access, moved-allocation receipt safety, profile evidence closure, bounded choices, restart receipts and SQLite integrity');
+}finally{if(server)await new Promise<void>(r=>server.close(r));await peer?.close();await graph.close();embedding.generateEmbedding=original;await fs.rm(dir,{recursive:true,force:true});}

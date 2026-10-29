@@ -216,7 +216,7 @@ export class OfficeStore {
     // never remove an existing member from a form or hide a selected role.
     return {
       agents:await this.db.all("SELECT id,name,principal,host,state,revision FROM office_agents WHERE state<>'deleted' ORDER BY name,id"),
-      roles:await this.db.all('SELECT id,name,principal,state,revision FROM character_roles ORDER BY name,id'),
+      roles:await this.db.all("SELECT id,name,principal,state,revision FROM character_roles WHERE state<>'merged' ORDER BY name,id"),
       offices:await this.db.all('SELECT id,title,state FROM offices ORDER BY title,id'),
       projects:await this.db.all('SELECT id,title,enabled FROM office_projects ORDER BY title,id')
     };

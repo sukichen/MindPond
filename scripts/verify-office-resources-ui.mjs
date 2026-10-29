@@ -68,3 +68,25 @@ const collaboration=await fs.readFile(new URL('../web/office-collaboration.js',i
  console.log('PASS approval UI: collapsed/live status, manual reminder hints, approval/rejection CAS, notes survive refresh/failure and logout fences');
 }
 console.log('PASS real resource UI: current role scope, live discussion/draft preservation, complete cursor updates, logout fences, source version/SHA-256 validation and deployed asset registration');
+// Human lock controls: explicit policy version, live-state races, retry and logout fencing.
+{
+ const pending=[],failures=[],notices=[],root=new Element('body'),nav=new Element('nav'),view=new Element('section');root.append(nav,view);
+ const s={logged:true,authEpoch:5,office:{office:{id:'locked-office'}}};
+ const scope=vm.createContext({window:{crypto:webcrypto,MindPondOfficeMarkdown:{render:text=>new Element('markdown',text)}},document:{body:root,createElement:tag=>new Element(tag),querySelector:()=>nav,getElementById:()=>view},crypto:webcrypto,TextEncoder,Uint8Array,console});
+ vm.runInContext(await fs.readFile(new URL('../web/office-resources.js',import.meta.url),'utf8'),scope);
+ const instance=scope.window.MindPondOfficeResources.mount({getState:()=>s,api:(path,args)=>new Promise((resolve,reject)=>pending.push({path,args,resolve,reject})),run:async(fn,b)=>{if(b.disabled)return;b.disabled=true;try{await fn();}catch(e){failures.push(e);}finally{b.disabled=false;}},setRoomTab(){},notice:text=>notices.push(text),confirmAction:async()=>true,download(){}});
+ const panel=view.children.find(n=>n.id==='officeResource-discussions');panel.hidden=false;
+ const record=(revision,locked,lockRevision)=>({id:'lock-room',title:'Lock fixture',revision,locked,lockRevision,status:{phase:'no_wait_observed',joined:2,pendingRequests:0}});
+ let refresh=instance.refresh();pending[0].resolve({rooms:[record(1,false,1)]});await refresh;
+ const card=all(panel).find(n=>n.className==='office-discussion-card'),lock=all(card).find(n=>n.textContent==='锁定会议室');assert(!lock.disabled);
+ let changing=lock.onclick();assert.equal(pending[1].path,'discussion-lock');assert.equal(pending[1].args.expectedLockRevision,1);assert.equal(pending[1].args.locked,true);assert(lock.disabled);
+ pending[1].resolve({id:'lock-room',revision:2,locked:true,lockRevision:2});await tick();pending[2].resolve({rooms:[record(2,true,2)]});await changing;
+ assert.equal(lock.textContent,'解锁会议室');assert(all(card).some(n=>n.tagName==='summary'&&n.textContent.includes('🔒 已锁定')),'lock remains visible with a collapsed room');
+ changing=lock.onclick();pending[3].reject(Error('Response lost'));await changing;assert.equal(lock.textContent,'解锁会议室');assert.equal(failures.length,1);
+ changing=lock.onclick();assert.equal(pending[4].args.locked,false);assert.equal(pending[4].args.expectedLockRevision,2);
+ // Another user relocked while this earlier unlock response was in flight.
+ refresh=instance.refresh(true);pending[5].resolve({rooms:[record(4,true,4)]});await refresh;assert(lock.disabled);
+ pending[4].resolve({id:'lock-room',revision:3,locked:false,lockRevision:3});await tick();pending[6].resolve({rooms:[record(4,true,4)]});await changing;assert.equal(lock.textContent,'解锁会议室');assert(notices.at(-1).includes('已锁定'),'a late unlock cannot claim a newer locked room is unlocked');
+ changing=lock.onclick();assert.equal(pending[7].args.expectedLockRevision,4);s.logged=false;instance.reset();const count=notices.length;pending[7].resolve({id:'lock-room',revision:5,locked:false,lockRevision:5});await changing;assert.equal(notices.length,count);assert.equal(pending.length,8,'late responses after logout cannot refetch or announce success');
+ console.log('PASS discussion-lock UI: collapsed lock badge, human controls, independent lock version, frozen intent/retry, in-flight disable, newer policy wins and logout fences');
+}

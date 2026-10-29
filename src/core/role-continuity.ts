@@ -75,6 +75,7 @@ export class RoleContinuityStore{
  }
  private async writable(a:ContinuityAccess,scope:string){
   const access=await this.access(a);if(!access.allowed(scope))throw denied();
+  if(access.role.state==='merged')throw new MindPondError('invalid_input','This role has been merged. Select the surviving role before writing working state.');
   if(scope&&!a.human&&!access.offices.some(o=>o.id===scope&&o.state==='active'))throw new MindPondError('scope_denied','Office working state is read-only while the office is paused or archived');
   // Retained office work must not become visible to a newly created room
   // reusing the same ID. Reuse the existing office namespace tombstone rule.
@@ -90,7 +91,7 @@ export class RoleContinuityStore{
  }
  private async receipt<T>(a:ContinuityAccess,op:string,input:Row,run:()=>Promise<T>):Promise<T>{
   const prior=await this.db.get<Row>('SELECT hash,payload FROM role_continuity_receipts WHERE role_id=? AND operation=? AND key=?',[a.roleId,op,input.key]);
-  const hash=digest(input);if(prior){if(prior.hash!==hash)throw new MindPondError('idempotency_conflict','This working-state key already has a different payload');return JSON.parse(prior.payload);}
+  const hash=digest(input);if(prior){if(prior.hash!==hash)throw new MindPondError('idempotency_conflict','This working-state key already has a different payload');const payload=JSON.parse(prior.payload);if(payload._roleReorganization)throw new MindPondError('stale_version','Role ownership changed after this working-state write. Read memory_resume and use a new key for a new write; the previous receipt cannot restore moved work.');return payload;}
   const result=await run();await this.db.run('INSERT INTO role_continuity_receipts VALUES(?,?,?,?,?)',[a.roleId,op,input.key,hash,stableJSON(result)]);return result;
  }
  private present(row:Row,kind='task'){return {kind,id:row.id??null,officeId:row.scope||null,revision:row.revision,updatedAt:row.updated_at,...(kind==='task'?{archivedAt:row.archived_at??null}:{}),...JSON.parse(row.payload)};}

@@ -1,0 +1,50 @@
+/** Real SQLite, approved roles and public core operations; no transport or model needed. */
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {GraphMemory} from '../src/core/graph-memory.js';
+import {roleRuntimeId} from '../src/core/roles.js';
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mindpond-discussion-idempotency-'));
+const graph=new GraphMemory('.',{dbPath:path.join(dir,'fixture.db')});
+const admin={v:1 as const,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
+try{
+ await graph.init();
+ await graph.offices.configureAgent({id:'host',principal:'human',name:'Synthetic host',host:'codex',state:'active',expectedRevision:0},admin);
+ const actor=(chat:string)=>({v:1 as const,principal:'human',agentId:'host',transport:'http-mcp' as const,runtimeId:roleRuntimeId('human','host','codex',chat),runtimeMode:'codex_metadata' as const,nativeChatId:chat,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER});
+ const makeRole=async(chat:string)=>{const p=await graph.roles.application({action:'submit',name:'Synthetic '+chat,introduction:'Synthetic duty',reason:'Review discussion retries',key:'apply'},actor(chat));return graph.roles.review({applicationId:p.applicationId,expectedRevision:1,action:'approve'},admin);};
+ const a=await makeRole('a'),b=await makeRole('b');
+ await graph.roles.configureOffice({id:'office',title:'Synthetic office',state:'active',expectedRevision:0,seats:[{id:'seat-a',roleId:a.roleId,label:'A',role:'member'},{id:'seat-b',roleId:b.roleId,label:'B',role:'member'}]},admin);
+ const create=await graph.discussions.run({action:'create',officeId:'office',title:'One question',question:'Verify harmless retries',doneWhen:'A verified result',participants:[b.roleId],key:'create'},actor('a')),id=create.room.id;
+ await graph.discussions.run({action:'decline',id},actor('b'));
+ const snapshot=await graph.discussions.run({action:'get',id},admin),db=(graph as any).db;
+ const beforeEvents=(await db.get('SELECT count(*) n FROM role_events')).n;
+ const repeated=await graph.discussions.run({action:'decline',id},actor('b'));
+ const after=await graph.discussions.run({action:'get',id},admin);
+ assert.equal(repeated.closed,false);
+ assert.equal(after.room.revision,snapshot.room.revision,'repeating an already recorded decline must not invalidate a current close/save revision');
+ assert.equal((await db.get('SELECT count(*) n FROM role_events')).n,beforeEvents,'unchanged invitation state must not emit another meeting update');
+ await graph.discussions.run({action:'close',id,expectedRevision:snapshot.room.revision,summary:'Only the original decline changed attendance',key:'close'},actor('a'));
+ // Current membership and human policy also win over a prior successful exit.
+ const make=(key:string,who='a',participant=b.roleId)=>graph.discussions.run({action:'create',officeId:'office',title:key,question:'Verify bounded scope',doneWhen:'Verified result',participants:[participant],key},actor(who));
+ const first=(await make('first')).room.id;
+ await graph.discussions.run({action:'join',id:first},actor('b'));
+ const priorExit={action:'leave',id:first,summary:'Earlier verified phase',key:'earlier-exit'};
+ await graph.discussions.run(priorExit,actor('a'));await graph.discussions.run({action:'join',id:first},actor('a'));
+ const lock=await graph.discussions.setLock({id:first,locked:true,expectedLockRevision:1},admin);
+ await assert.rejects(graph.discussions.run(priorExit,actor('a')),(e:any)=>e.code==='scope_denied'&&e.details?.locked);
+ assert.equal((await graph.discussions.attention(actor('a'))).active.id,first);
+ await graph.discussions.setLock({id:first,locked:false,expectedLockRevision:lock.lockRevision},admin);
+ assert.equal((await graph.discussions.run(priorExit,actor('a'))).left,false,'an old exit receipt must not claim a new attendance ended');
+ await graph.discussions.run({action:'leave',id:first,summary:'Hand over to B',key:'new-exit'},actor('a'));
+ const second=(await make('second')).room.id;
+ await assert.rejects(graph.discussions.run({action:'close',id:first,summary:'Outside creator',key:'invalid-close',expectedRevision:1},actor('a')),(e:any)=>e.code==='scope_denied');
+ assert.deepEqual((await graph.building.snapshot('office',admin)).meetings.map((r:any)=>r.id).sort(),[first,second].sort());
+ const closing=await graph.discussions.run({action:'get',id:first},actor('b'));
+ await graph.discussions.run({action:'close',id:first,summary:'B records the verified result',key:'inside-close',expectedRevision:closing.room.revision},actor('b'));
+ assert.deepEqual((await graph.building.snapshot('office',admin)).meetings.map((r:any)=>r.id),[second]);
+ assert.equal((await graph.discussions.attention(actor('a'))).active.id,second);
+ console.log('PASS core retry boundaries: locked exit replay refused, rejoined attendance retained, outside creator denied and concurrent rooms isolated');
+ assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');assert.deepEqual(await db.all('PRAGMA foreign_key_check'),[]);
+ console.log('PASS duplicate declines preserve meeting revision/events and do not invalidate a verified participant close');
+}finally{await graph.close();await fs.rm(dir,{recursive:true,force:true});}

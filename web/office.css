@@ -792,3 +792,12 @@ body.office-application{height:100dvh;overflow:hidden;background:var(--o-backgro
 
 /* Rule drafts stay readable in narrow office windows. */
 .office-rules-editor{width:min(640px,calc(100vw - 24px));box-sizing:border-box}.office-rules-editor fieldset{min-width:0;margin:0;padding:0;border:0}.office-rule-card{display:grid;gap:14px;padding:16px;margin:14px 0;border:1px solid var(--o-line);border-radius:12px;background:var(--o-soft)}.office-rule-card textarea{min-height:130px;max-height:40dvh}.office-rule-card .office-danger{justify-self:end;margin:0}.office-rules-editor .office-toolbar{flex-wrap:wrap}.office-rules-editor .office-toolbar button{white-space:normal}
+
+/* Role reorganization uses the existing dialog and form controls. */
+.office-reorganization-search{display:flex;gap:.5rem;flex-wrap:wrap;margin:.7rem 0}
+.office-reorganization-search input{flex:1 1 12rem;min-width:0}
+.office-reorganization-option{display:flex!important;align-items:flex-start;gap:.65rem;padding:.55rem;border-bottom:1px solid var(--line,#dce4da);overflow-wrap:anywhere;white-space:pre-wrap}
+.office-reorganization-option input{flex:0 0 auto;width:auto!important;margin-top:.25rem;order:-1}
+.office-role-reorganization fieldset{min-width:0;border:0;padding:0}
+.office-role-reorganization dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.35rem 1rem}
+.office-role-reorganization dd{margin:0}

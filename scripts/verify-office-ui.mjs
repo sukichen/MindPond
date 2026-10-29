@@ -19,6 +19,7 @@ const context = vm.createContext({
   api: (...args) => fetcher(...args),
   el: () => ({ scrollIntoView() {} }),
   renderOffice() {},
+  renderFacilities() {},
   renderRoomChoices() {},
   showAppView() {}, setRoomTab() {},
   async closeOfficeDetail() {},
@@ -44,6 +45,7 @@ vm.runInContext(
     source.slice(source.indexOf('  function restoreProjections('),source.indexOf('  async function refresh(')),
     handler('openOffice', 'function seatName'),
     handler('updateOffice', 'function schedule'),
+    handler('moreContainers', 'function renderFacilities'),
     source.slice(source.indexOf('  function schedule('),source.indexOf('  function submit(')),
     handler('showRecord', 'async function more'),
     source.slice(
@@ -337,3 +339,21 @@ layoutContext.state.scene.autoFit=false;resizeCallback();assert.equal(fitCalls,2
 layoutContext.state.scene.autoFit=true;layoutContext.replayController.active=true;layoutElements.officeStage.clientWidth=1500;const replayColumns=layoutElements.officeDesks.style.gridTemplateColumns;resizeCallback();assert.equal(layoutElements.officeDesks.style.gridTemplateColumns,replayColumns,'resizing must not rearrange historical seats or cancel replay');assert.equal(layoutStops,previousStops);
 layoutContext.layoutScene(1);assert.equal(layoutElements.officeScene.style.width,'412px');
 console.log('PASS responsive scene: resize recomputes multi-person columns, stable layouts preserve animations and manual camera remains under user control');
+
+// Exercise the shipped container paginator with newer meeting snapshots in flight.
+const containerState={logged:true,generation:1,office:page('office',{facilities:{revision:1,containers:[{id:'one'}],nextAfterId:'one',meetings:[{id:'first'}],counts:{total:1}}})};
+let containerRequest,containerRenders=0;
+const containerContext=vm.createContext({state:containerState,api:()=>containerRequest.promise,renderFacilities(){containerRenders++;}});
+vm.runInContext(handler('moreContainers','function renderFacilities'),containerContext);
+containerRequest=deferred();const starting=containerState.office.facilities,pendingPage=containerContext.moreContainers(starting);
+const latestMeetings=[{id:'first'},{id:'second'}];containerState.office.facilities={...starting,meetings:latestMeetings,counts:{total:2}};
+containerRequest.resolve({containers:[{id:'two'}],hasMore:false,nextAfterId:'two'});await pendingPage;
+assert.equal(containerState.office.facilities.meetings,latestMeetings,'late paging must preserve every currently open meeting');assert.equal(containerState.office.facilities.counts.total,2);
+assert.deepEqual([...containerState.office.facilities.containers].map(r=>r.id),['one','two']);assert.equal(containerRenders,1);
+containerRequest=deferred();const beforeChange=containerState.office.facilities,obsoletePage=containerContext.moreContainers(beforeChange);
+containerState.office.facilities={...beforeChange,revision:2,meetings:[{id:'second'}]};const afterChange=containerState.office.facilities;
+containerRequest.resolve({containers:[{id:'obsolete'}],hasMore:false,nextAfterId:'obsolete'});await obsoletePage;assert.equal(containerState.office.facilities,afterChange,'a changed facility revision invalidates the container continuation');
+containerRequest=deferred();const oldVisit=containerContext.moreContainers(afterChange);containerState.generation++;
+containerRequest.resolve({containers:[],hasMore:false});await oldVisit;assert.equal(containerState.office.facilities,afterChange,'returning to the same office does not revive a request from another visit');
+assert.equal(containerRenders,1);
+console.log('PASS delayed container pages preserve live meetings/counts and reject stale revisions or office visits');

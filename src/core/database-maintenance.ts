@@ -17,7 +17,7 @@ export async function auditDatabase(db:Database) {
       (SELECT kind FROM role_events e WHERE e.role_id=r.id AND e.kind IN ('approved','role_migrated') ORDER BY seq LIMIT 1) origin,
       (SELECT COUNT(*) FROM role_bindings b WHERE b.role_id=r.id AND b.state='active') activeBindings,
       (SELECT group_concat(seat_id) FROM role_seats s WHERE s.role_id=r.id) seats
-      FROM character_roles r WHERE r.name IN (SELECT name FROM character_roles GROUP BY name HAVING COUNT(*)>1) ORDER BY r.name,r.id`):[];
+      FROM character_roles r WHERE r.state<>'merged' AND r.name IN (SELECT name FROM character_roles WHERE state<>'merged' GROUP BY name HAVING COUNT(*)>1) ORDER BY r.name,r.id`):[];
   // Duplicate display names are diagnostic, not proof of corruption or identity.
   return {healthy,integrity,foreignKeys,dangling,foreignAssociations,duplicateRoleNames};
 }

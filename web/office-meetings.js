@@ -77,7 +77,7 @@
         if(!room){const used=new Set([...this.rooms.values()].map(r=>r.layoutIndex));let layoutIndex=0;while(used.has(layoutIndex))layoutIndex++;room={id:r.id,layoutIndex,slots:new Map(),element:node('section','office-meeting-room')};this.rooms.set(r.id,room);this.layer.append(room.element);this.buildRoom(room);}
         room.record=r;room.closed=false;
         for(const m of r.members??[])if(!room.slots.has(m.roleId)){const used=new Set(room.slots.values());room.slots.set(m.roleId,Array.from({length:8},(_,i)=>i).find(i=>!used.has(i)));}
-        room.title.textContent=r.title;room.title.title=r.title;const joined=(r.members??[]).filter(m=>m.state==='joined'&&this.homes.has(m.roleId));
+        room.title.textContent=(r.locked?'🔒 ':'')+r.title;room.title.title=r.title+(r.locked?' · 已锁定，角色不能自行进出或结束会议':'');room.door.textContent=r.locked?'🔒 用户已锁定':'会议室入口';const joined=(r.members??[]).filter(m=>m.state==='joined'&&this.homes.has(m.roleId));
         room.label.textContent=joined.length+' 人讨论中 · 未读 '+joined.reduce((n,m)=>n+(m.unreadPosts??0),0)+' · 未处理 '+joined.reduce((n,m)=>n+(m.unprocessedPosts??0),0)+'（含未读）· 普通消息留在工位';
         const progressKey=JSON.stringify(joined.map(m=>[m.roleId,m.name,m.unreadPosts,m.unprocessedPosts,room.slots.get(m.roleId)]));
         if(progressKey!==room.progressKey){
@@ -109,7 +109,7 @@
       const progress=node('div','office-meeting-table-messages');table.append(progress);room.mailboxes=new Map();
       const decor=node('div','office-meeting-decor');decor.setAttribute('aria-hidden','true');
       decor.innerHTML='<svg class="office-meeting-board" viewBox="0 0 190 92" fill="none"><rect x="3" y="5" width="184" height="80" rx="7" fill="#bac7bb"/><rect x="1" y="1" width="184" height="80" rx="7" fill="#f8faf2" stroke="#95aa99" stroke-width="2"/><path d="M16 15h64" stroke="#91aa94" stroke-width="4" stroke-linecap="round"/><rect x="16" y="29" width="37" height="29" rx="3" fill="#ead39c"/><rect x="65" y="29" width="37" height="29" rx="3" fill="#bbd2c3"/><rect x="114" y="29" width="37" height="29" rx="3" fill="#d6c5d4"/><path d="M22 37h23m-23 7h16m27-7h23m-23 7h16m27-7h23m-23 7h16" stroke="#677c6e" stroke-width="2" opacity=".5" stroke-linecap="round"/><path d="M12 78h161" stroke="#a8bca8" stroke-width="5" stroke-linecap="round"/><path d="M128 74h19" stroke="#799c8c" stroke-width="3" stroke-linecap="round"/></svg><svg class="office-meeting-art" viewBox="0 0 112 66" fill="none"><rect x="2" y="3" width="108" height="61" rx="6" fill="#b6b49a"/><rect x="1" y="1" width="108" height="59" rx="5" fill="#f8f4e8" stroke="#cec6ae" stroke-width="2"/><rect x="9" y="9" width="92" height="42" rx="2" fill="#e5eddb"/><circle cx="79" cy="22" r="8" fill="#e5c27e"/><path d="m9 44 23-22 27 29H9z" fill="#aac0a2"/><path d="m39 51 28-22 34 22z" fill="#7f9f85"/></svg>';
-      const door=node('span','office-meeting-door','会议室入口');room.element.append(decor,title,label,table,door);room.progress=progress;room.title=title;room.label=label;
+      const door=node('span','office-meeting-door','会议室入口');room.element.append(decor,title,label,table,door);room.progress=progress;room.title=title;room.label=label;room.door=door;
       room.chairs=Array.from({length:8},()=>{const chair=node('span','office-meeting-chair');chair.setAttribute('aria-hidden','true');room.element.append(chair);return chair;});
       for(const cls of ['north-left','north-right','west','east','south'])room.element.append(node('span','office-meeting-wall '+cls));
     }
@@ -120,7 +120,7 @@
       }
       for(const room of this.rooms.values()){
         if(!room.navigationButton){const button=node('button');button.type='button';button.onclick=()=>{const g=room.geometry;this.focusArea(rect(g.x-30,g.y-60,g.x+g.width+30,g.y+g.height+30));};room.navigationButton=button;this.navigation.append(button);}
-        room.navigationButton.textContent='会议室 · '+room.record.title;room.navigationButton.title=room.record.title+'（'+room.label.textContent+'）';
+        room.navigationButton.textContent=(room.record.locked?'🔒 已锁定 · ':'会议室 · ')+room.record.title;room.navigationButton.title=room.record.title+'（'+room.label.textContent+'）';
       }
     }
 

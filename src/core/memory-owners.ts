@@ -139,7 +139,7 @@ export class MemoryOwners {
         WHERE ns.role_id=r.id AND n.domain_kind='personal') memoryCount,
       EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
       FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
-      LEFT JOIN office_agents a ON a.id=b.connector_id ORDER BY r.name,r.id`); }
+      LEFT JOIN office_agents a ON a.id=b.connector_id WHERE r.state<>'merged' ORDER BY r.name,r.id`); }
     async allocate(memoryIds: string[], roleId: string) {
         const sources = new Map<string, MemoryNode>();
         for (const id of [...new Set(memoryIds)]) {
@@ -159,7 +159,10 @@ export class MemoryOwners {
                     continue;
                 }
                 const old = await this.db.get('SELECT * FROM memory_allocations WHERE source_id=? AND role_id=?', [id, roleId]);
-                if (old && await this.graph.getNodeById(old.copy_id, { trackAccess: false })) {
+                const priorCopy=old?await this.graph.getNodeById(old.copy_id,{trackAccess:false}):null;
+                // A human may have moved the copy during a role split/merge.
+                // An allocation receipt never grants access to its new owner.
+                if (old && priorCopy?.domain?.kind===domain.kind && priorCopy.domain.id===domain.id) {
                     copies.push({ sourceId: id, copyId: old.copy_id, sourceRevision: old.source_revision, existing: true });
                     continue;
                 }

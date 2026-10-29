@@ -1,5 +1,6 @@
 import {OfficeDiscussions} from './office-discussions.js';
 import {OfficeRules} from './office-rules.js';
+import {RoleReorganization} from './role-reorganization.js';
 import {OfficeArtifacts} from './office-artifacts.js';
 import {OfficeScripts} from './office-scripts.js';
 import { ConnectionCoordinator } from './connection-coordinator.js';
@@ -433,6 +434,7 @@ export class GraphMemory {
   scripts!:OfficeScripts;
   artifacts!:OfficeArtifacts;
   officeRules!:OfficeRules;
+  roleReorganization!:RoleReorganization;
   officeTaskStore(actor:import('./trust.js').TrustedCallContext){return new OfficeTaskStore(this.db!,this,work=>this.growthWrite(work),actor);}
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
@@ -1160,11 +1162,12 @@ export class GraphMemory {
     await this.roles.migrateModel();
     this.roleContinuity=this.coordinator.service(new RoleContinuityStore(this.db,this,work=>this.growthWrite(work),this.clock),['init','resume','checkpoint','updateTask','tasks','history','archive']);
     await this.roleContinuity.init();
-    this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','assertCommunication','sweep']);await this.discussions.init();
+    this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','assertCommunication','sweep','setLock']);await this.discussions.init();
     this.scripts=this.coordinator.service(new OfficeScripts(this.db,this,work=>this.growthWrite(work),this.clock),['init','run']);await this.scripts.init();
     // Streaming intentionally stays outside the connection coordinator; only its short metadata phases transact.
     this.artifacts=new OfficeArtifacts(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock);await this.artifacts.init();
     this.officeRules=new OfficeRules(this.db,this,work=>this.growthWrite(work),this.clock);await this.officeRules.init();
+    this.roleReorganization=this.coordinator.service(new RoleReorganization(this.db,this,work=>this.growthWrite(work),this.clock),['init','choices','preview','apply']);await this.roleReorganization.init();
     this.building.artifactAttachments=(ids,recipient,a)=>this.artifacts.attach(ids,recipient,a);
     const expireArtifacts=async()=>{try{await this.artifacts.sweep();}catch(error){logger.debug('Artifact maintenance failed',getErrorMessage(error));}finally{this.later(expireArtifacts,60000);}};this.later(expireArtifacts,60000);
     const expireDiscussions=async()=>{try{await this.discussions.sweep();}finally{this.later(expireDiscussions,60000);}};this.later(expireDiscussions,60000);
@@ -1725,6 +1728,10 @@ export class GraphMemory {
         if (receiptKey) {
           const prior = await this.db!.get<any>('SELECT * FROM memory_receipts WHERE key=?', [receiptKey]);
           if (prior) {
+            const savedId=JSON.parse(prior.payload).id;
+            const savedOwner=await this.db!.get<any>('SELECT domain_kind,domain_id FROM nodes WHERE id=?',[savedId]);
+            if(savedOwner&&(savedOwner.domain_kind!==domain.kind||savedOwner.domain_id!==domain.id))
+              throw new MindPondError('stale_version','This memory changed ownership after a role reorganization; this save receipt cannot be replayed in the original owner scope.',{field:'idempotencyKey',nextAction:'Read memory_identity and memory_resume, inspect current knowledge, then use a new save key only if another independent memory is needed.'});
             if (prior.request_hash !== requestHash) {
               if (prior.request_hash !== legacyRequestHash) throw new MindPondError('idempotency_conflict', 'save idempotencyKey reuse with a different payload', { retryable: false, nextAction: '先按原 key 查回执；同 key 仅可重放相同载荷，修改必须用新 key 或显式修订' });
               await this.db!.run('UPDATE memory_receipts SET request_hash=? WHERE key=?',[requestHash,receiptKey]);

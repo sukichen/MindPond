@@ -631,7 +631,7 @@
   async function closeRoleInspector(force = false) {
     if (!force && state.roleDraft?.saving) return false;
     if (!force && state.roleDraft?.dirty && !(await confirmAction('有尚未保存的角色修改，放弃修改并关闭？'))) return false;
-    el('officeRoleInspector').close();state.roleDraft = null;state.roleEditing = false;
+    el('officeRoleInspector').close();el('officeRoleInspectorClose').disabled=false;state.roleDraft = null;state.roleEditing = false;
     return true;
   }
   async function openRoleInspector(record, application = false) {
@@ -666,10 +666,29 @@
     profile.append(info);
     if(!application){
       const tabs=make('div'),working=make('section');tabs.className='office-continuity-controls';tabs.setAttribute('aria-label','角色详情视图');
-      const scripts=make('section');let libraryMounted=false;
-      const workTab=button('接续工作',()=>selectView('work')),profileTab=button('角色资料',()=>selectView('profile')),scriptTab=button('专属脚本',()=>selectView('scripts'));
-      function selectView(view){profile.hidden=view!=='profile';working.hidden=view!=='work';scripts.hidden=view!=='scripts';for(const [button,name] of [[workTab,'work'],[profileTab,'profile'],[scriptTab,'scripts']])button.setAttribute('aria-pressed',String(view===name));if(view==='scripts'&&!libraryMounted){libraryMounted=true;const epoch=state.authEpoch;window.MindPondOfficeResources?.library({container:scripts,scope:{roleId:record.id},api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===epoch,notice,confirmAction,download});}}
-      tabs.append(workTab,profileTab,scriptTab);body.insertBefore(tabs,profile);body.insertBefore(working,profile);body.insertBefore(scripts,profile);selectView('work');initialFocus=workTab;
+      const scripts=make('section'),reorganization=make('section');let libraryMounted=false,reorganizationMounted=false;
+      const workTab=button('接续工作',()=>selectView('work')),profileTab=button('角色资料',()=>selectView('profile')),scriptTab=button('专属脚本',()=>selectView('scripts')),reorganizationTab=button('合并 / 拆分',()=>selectView('reorganization'));
+      function selectView(view){
+        if(draft.saving)return;
+        reorganization.hidden=view!=='reorganization';profile.hidden=view!=='profile';
+        working.hidden=view!=='work';scripts.hidden=view!=='scripts';
+        for(const [tab,name] of [[workTab,'work'],[profileTab,'profile'],[scriptTab,'scripts'],[reorganizationTab,'reorganization']])tab.setAttribute('aria-pressed',String(view===name));
+        const epoch=state.authEpoch,current=()=>state.roleDraft===draft&&state.logged&&state.authEpoch===epoch;
+        if(view==='reorganization'&&!reorganizationMounted){
+          reorganizationMounted=true;
+          window.MindPondRoleReorganization?.mount({container:reorganization,role:record,api,current,
+            onDirty:()=>{draft.dirty=true;state.roleEditing=true;},
+            onBusy:saving=>{if(state.roleDraft!==draft)return;draft.saving=saving;el('officeRoleInspectorClose').disabled=saving;},
+            complete:async result=>{
+              await closeRoleInspector(true);
+              notice('角色调整完成，请将「'+result.name+'」连接到聊天后继续工作。');
+              await refresh();
+            }
+          });
+        }
+        if(view==='scripts'&&!libraryMounted){libraryMounted=true;window.MindPondOfficeResources?.library({container:scripts,scope:{roleId:record.id},api,current,notice,confirmAction,download});}
+      }
+      tabs.append(workTab,profileTab,scriptTab,reorganizationTab);body.insertBefore(tabs,profile);body.insertBefore(working,profile);body.insertBefore(scripts,profile);body.insertBefore(reorganization,profile);selectView('work');initialFocus=workTab;
       const continuityEpoch=state.authEpoch;window.MindPondRoleContinuity?.mount({container:working,role:record,offices:state.data.choices?.offices??state.data.offices,api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===continuityEpoch,notice,confirmAction});
     }
     form.addEventListener('input', () => {draft.dirty = true;state.roleEditing = true;save.textContent = application ? '批准这个角色' : '保存修改';});
@@ -1117,6 +1136,17 @@
     box.append(button('关闭',()=>closeOfficeDetail()));
     box.scrollIntoView({block:'nearest'});
   }
+  async function moreContainers(data) {
+    if(!state.office)return;
+    const room=state.office.office.id,generation=state.generation;
+    const page=await api('containers',{action:'list',officeId:room,afterId:data.nextAfterId});
+    if(!state.logged||generation!==state.generation||state.office?.office.id!==room)return;
+    const current=state.office.facilities;
+    // A container page cannot roll back live meetings, message counts or another page.
+    if(current?.revision!==data.revision||current.nextAfterId!==data.nextAfterId)return;
+    state.office.facilities={...current,containers:[...current.containers,...page.containers],hasMore:page.hasMore,nextAfterId:page.nextAfterId};
+    renderFacilities(state.office.facilities);
+  }
   function renderFacilities(data) {
     const counts=data?.counts,summary=el('officeMessageCounts');if(summary)summary.textContent=counts?`办公室共 ${counts.total} 条 · 待处理 ${counts.pending} · 处理中 ${counts.processing} · 已处理 ${counts.archived}`:'消息总数同步中…';
     const signature=JSON.stringify([state.office?.office.id,data?.revision,data?.containers,data?.messages]);
@@ -1125,7 +1155,7 @@
     const box=el('officeContainers');box.replaceChildren();
     for(const c of data?.containers??[]){const row=make('article');row.className='office-item';row.append(make('strong',c.title),make('p','版本 '+c.revision),button('打开 / 编辑',async()=>{const room=state.office.office.id;const record=await api('containers',{action:'get',officeId:room,id:c.id});if(state.office?.office.id===room)editContainer(record);}));box.append(row);}
     if(!data?.containers?.length)box.append(make('p','这里还没有容器。需要时可以自行添加。'));
-    if(data?.hasMore)box.append(button('查看更多容器',async()=>{const room=state.office.office.id;const page=await api('containers',{action:'list',officeId:room,afterId:data.nextAfterId});if(state.office?.office.id!==room)return;state.office.facilities={...data,containers:[...data.containers,...page.containers],hasMore:page.hasMore,nextAfterId:page.nextAfterId};renderFacilities(state.office.facilities);}));
+    if(data?.hasMore)box.append(button('查看更多容器',()=>moreContainers(data)));
     if(!state.mail || state.mail.room!==state.office.office.id){
       state.mail={room:state.office.office.id,messages:data?.messages??[],hasMore:data?.messagesHasMore??false,nextBeforeSeq:data?.nextBeforeSeq??null,query:'',status:'all',threadId:null};
       renderMail();

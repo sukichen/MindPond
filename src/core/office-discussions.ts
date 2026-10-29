@@ -16,7 +16,8 @@ import {previewText} from './office-context.js';
 const id=z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),text=(n:number)=>z.string().trim().min(1).max(n);
 export const discussionSchema=z.object({action:z.enum(['list','create','get','join','decline','leave','post','finish','export','close','wait','request_participants','review_participants','cancel_request','request_get','departures','departure_get','send_departure','discard_departure']),postSeqs:z.array(z.number().int().positive()).min(1).max(128).optional(),summary:text(4000).optional(),messages:z.array(z.object({recipient:id,body:text(4000),replyTo:id.optional(),officeId:id.nullable().optional()}).strict()).max(7).optional(),departureId:id.optional(),messageIndex:z.number().int().min(0).max(6).optional(),requestId:id.optional(),reason:text(800).optional(),decision:z.enum(['approve','reject']).optional(),note:text(800).optional(),afterRevision:z.number().int().positive().optional(),waitMs:z.number().int().min(100).max(300000).optional(),officeId:id.optional(),id:id.optional(),afterId:id.optional(),title:text(200).optional(),question:text(2000).optional(),doneWhen:text(1000).optional(),participants:id.array().min(1).max(7).optional(),body:text(4000).optional(),memoryId:id.optional(),key:text(256).optional(),expectedRevision:z.number().int().positive().optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(20).default(10),contextBudgetBytes:z.number().int().min(2048).max(65536).default(16384),ttlHours:z.number().int().min(1).max(72).default(24)}).strict();
 type Row=Record<string,any>;
-const DISCUSSION_NOTICE='get: oldest unprocessed posts from others. wait: unseen posts from others. Omit id for your active room; omit afterSeq for normal work (explicit afterSeq reads history, 0 from the start). After handling posts, submit returned finish or a handled subset; reading is not completion. Unprocessed includes unread. While joined, ordinary sends/replies/broadcasts/handoffs and outside completion feedback are blocked. Helpers: request_participants(id,participants,reason,key), human approval, explicit join; no memory grants. Before leave: summary,key,optional selected messages sent after exit. Failed notifications: departures → departure_get/send_departure/discard_departure. Save reusable knowledge via separate Memory MCP. Fetched/waiting does not prove understanding, completion or a running host.';
+export const discussionLockSchema=z.object({id,locked:z.boolean(),expectedLockRevision:z.number().int().positive()}).strict();
+const DISCUSSION_NOTICE='Human-locked rooms block join/leave/close and pause expiry; only the human can unlock. Existing members continue discussing. Only a currently joined participant or human manager may close; creators outside cannot. Decline never closes. get: oldest unprocessed posts from others. wait: unseen posts from others. Omit id for your active room; omit afterSeq for normal work (explicit afterSeq reads history, 0 from the start). After handling posts, submit returned finish or a handled subset; reading is not completion. Unprocessed includes unread. While joined, ordinary sends/replies/broadcasts/handoffs and outside completion feedback are blocked. Helpers: request_participants(id,participants,reason,key), human approval, explicit join; no memory grants. Before leave: summary,key,optional selected messages sent after exit. Failed notifications: departures → departure_get/send_departure/discard_departure. Save reusable knowledge via separate Memory MCP. Fetched/waiting does not prove understanding, completion or a running host.';
 function fail(code:'invalid_input'|'not_found'|'scope_denied'|'stale_version'|'idempotency_conflict'|'material_over_budget',message:string):never{throw new MindPondError(code,message);}
 export class OfficeDiscussions{
  private observations:DiscussionObservations;
@@ -47,8 +48,8 @@ export class OfficeDiscussions{
  private async inspectWait(i:WorkWaitInput&{officeId?:string;afterRevision?:number;unreadOnly?:boolean},a?:TrustedCallContext){
   try{
    const view=await this.waitView(i,a),post=view.posts[0];
-   if(post)return {status:'matched' as const,discussionId:i.taskId,post,nextCursor:post.seq,revision:view.room.revision};
-   if(i.afterRevision!==undefined&&view.room.revision>i.afterRevision){const detail=await this.write(()=>this.view(i.taskId!,discussionSchema.parse({action:'get',id:i.taskId,contextBudgetBytes:65536}),a,false));return {status:'matched' as const,discussionId:i.taskId,kind:'discussion_updated',nextCursor:i.afterSeq??0,revision:view.room.revision,members:detail.members,participantRequests:detail.participantRequests,nextAction:'Read get to inspect the updated participants and human decisions. '+DISCUSSION_NOTICE};}
+   if(post)return {status:'matched' as const,discussionId:i.taskId,post,nextCursor:post.seq,revision:view.room.revision,locked:!!view.room.locked};
+   if(i.afterRevision!==undefined&&view.room.revision>i.afterRevision){const detail=await this.write(()=>this.view(i.taskId!,discussionSchema.parse({action:'get',id:i.taskId,contextBudgetBytes:65536}),a,false));return {status:'matched' as const,discussionId:i.taskId,kind:'discussion_updated',nextCursor:i.afterSeq??0,revision:view.room.revision,locked:!!detail.room.locked,members:detail.members,participantRequests:detail.participantRequests,nextAction:'Read get to inspect the updated participants and human decisions. '+DISCUSSION_NOTICE};}
    return undefined;
   }catch(error){
    if((error as any).code==='not_found'&&!await this.write(()=>this.db.get('SELECT 1 FROM office_discussions WHERE id=?',[i.taskId])))return {status:'terminal' as const,discussionId:i.taskId,closed:true,nextCursor:i.afterSeq??0,nextAction:'The temporary discussion is absent (ended or its ID is incorrect). Check role_sync/invitations and the discussion ID before ordinary work; this does not prove task completion. Independent memories remain.'};
@@ -75,7 +76,25 @@ export class OfficeDiscussions{
  CREATE TABLE IF NOT EXISTS office_discussion_creations(role_id TEXT NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,room_id TEXT NOT NULL,PRIMARY KEY(role_id,key));
  CREATE TABLE IF NOT EXISTS office_discussion_conclusions(room_id TEXT NOT NULL REFERENCES office_discussions(id) ON DELETE CASCADE,key TEXT NOT NULL,hash TEXT NOT NULL,memory_id TEXT NOT NULL,PRIMARY KEY(room_id,key));
  CREATE TABLE IF NOT EXISTS office_discussion_requests(id TEXT PRIMARY KEY,room_id TEXT NOT NULL REFERENCES office_discussions(id) ON DELETE CASCADE,requester TEXT NOT NULL REFERENCES character_roles(id) ON DELETE CASCADE,participants TEXT NOT NULL,reason TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,created_at INTEGER NOT NULL,reviewed_at INTEGER,review_note TEXT,UNIQUE(room_id,requester,key));
- `);await this.observations.init();await this.departures.init();}
+ `);await this.write(async()=>{const columns=await this.db.all<Row[]>('PRAGMA table_info(office_discussions)');
+  if(!columns.some(c=>c.name==='locked'))await this.db.exec('ALTER TABLE office_discussions ADD COLUMN locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0,1))');
+  if(!columns.some(c=>c.name==='locked_at'))await this.db.exec('ALTER TABLE office_discussions ADD COLUMN locked_at INTEGER');
+  if(!columns.some(c=>c.name==='lock_revision'))await this.db.exec('ALTER TABLE office_discussions ADD COLUMN lock_revision INTEGER NOT NULL DEFAULT 1');
+ });await this.observations.init();await this.departures.init();}
+ private assertUnlocked(row:Row){if(row.locked)throw new MindPondError('scope_denied','This discussion is locked by the human user; roles cannot join, leave or close it.',{details:{discussionId:row.id,locked:true},nextAction:'Ask the human to unlock this room in the discussion panel. Existing members may continue get/post/finish/wait and save knowledge. No attendance, summary or outgoing messages were changed.'});}
+ private assertJoinedCloser(row:Row,state:string){if(state!=='joined')throw new MindPondError('scope_denied','Only a currently joined participant or the human manager can close this discussion; creating it or receiving an invitation does not grant closing permission.',{details:{discussionId:row.id,membership:state},nextAction:'Continue your current work. To close this discussion, ask a current participant or the human manager; alternatively explicitly join it first if authorized and unlocked. Closing as a participant requires the latest expectedRevision, summary and key. No discussion content or attendance was changed.'});}
+ async setLock(value:unknown,a?:TrustedCallContext){
+  if(!a?.operator||a.expiresAt<=this.clock())fail('scope_denied','Only the human manager can lock or unlock a discussion');
+  const i=discussionLockSchema.parse(value);return this.write(async()=>{
+   await this.cleanup();const {row}=await this.room(i.id,a);
+   if(!!row.locked===i.locked)return {id:row.id,locked:i.locked,revision:row.revision,lockRevision:row.lock_revision,expiresAt:row.expires_at,changed:false};
+   // Ordinary posts must not prevent the human from locking an active room.
+   if(row.lock_revision!==i.expectedLockRevision)fail('stale_version','会议室锁已被调整，请刷新后再操作。');
+   const at=this.clock(),expires=row.expires_at+(row.locked?Math.max(0,at-row.locked_at):0);
+   await this.db.run('UPDATE office_discussions SET locked=?,locked_at=?,expires_at=?,lock_revision=lock_revision+1 WHERE id=?',[i.locked?1:0,i.locked?at:null,expires,row.id]);
+   await this.changed(row);return {id:row.id,locked:i.locked,revision:row.revision+1,lockRevision:row.lock_revision+1,expiresAt:expires,changed:true};
+  });
+ }
  private async actor(a?:TrustedCallContext){if(a?.operator&&a.expiresAt>this.clock())return {human:true,roleId:null as string|null};const b=await this.graph.roles.binding(a);return {human:false,roleId:b!.role_id as string};}
  private async member(officeId:string,roleId:string){return !!await this.db.get(`SELECT 1 FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id JOIN character_roles r ON r.id=rs.role_id WHERE s.office_id=? AND rs.role_id=? AND s.enabled=1 AND r.state='active'`,[officeId,roleId]);}
  private async office(officeId:string,a?:TrustedCallContext,writing=false){
@@ -88,9 +107,9 @@ export class OfficeDiscussions{
  private async log(kind:string,id:string,officeId:string){await this.db.run('INSERT INTO role_events(role_id,kind,body,ts) VALUES(NULL,?,?,?)',[kind,JSON.stringify({discussionId:id,officeId}),this.clock()]);}
  private async purge(id:string){const row=await this.db.get<Row>('SELECT office_id FROM office_discussions WHERE id=?',[id]);if(!row)return;await this.db.run('DELETE FROM office_discussions WHERE id=?',[id]);await this.log('discussion_closed',id,row.office_id);this.waiter.notify();}
  async sweep(){return this.write(()=>this.cleanup());}
- private async cleanup(){for(const r of await this.db.all<Row[]>('SELECT id FROM office_discussions WHERE expires_at<=?',[this.clock()]))await this.purge(r.id);}
+ private async cleanup(){for(const r of await this.db.all<Row[]>('SELECT id FROM office_discussions WHERE locked=0 AND expires_at<=?',[this.clock()]))await this.purge(r.id);}
  private async room(id:string,a?:TrustedCallContext,writing=false){const row=await this.db.get<Row>('SELECT * FROM office_discussions WHERE id=?',[id]);if(!row)fail('not_found','Discussion ended or does not exist; its temporary content has been deleted');const actor=await this.office(row.office_id,a,writing);const m=actor.human?null:await this.db.get<Row>('SELECT state FROM office_discussion_members WHERE room_id=? AND role_id=?',[id,actor.roleId]);if(!actor.human&&!m)fail('not_found','Discussion not found among your invitations');return {row,actor,state:m?.state};}
- private async focus(roleId:string){return this.db.get<Row>(`SELECT r.id,r.office_id,r.title,r.revision FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state='joined'`,[roleId]);}
+ private async focus(roleId:string){return this.db.get<Row>(`SELECT r.id,r.office_id,r.title,r.revision,r.locked FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state='joined'`,[roleId]);}
  private async requests(roomId:string){
   const rows=await this.db.all<Row[]>('SELECT q.*,r.name requesterName FROM office_discussion_requests q JOIN character_roles r ON r.id=q.requester WHERE room_id=? ORDER BY (q.state=\'pending\') DESC,created_at DESC,id LIMIT 12',[roomId]);
   const ids=[...new Set<string>(rows.flatMap(q=>JSON.parse(q.participants)))];
@@ -141,7 +160,7 @@ export class OfficeDiscussions{
  async assertCommunication(a?:TrustedCallContext,recipient?:string,feedback=false){
   if(a?.operator)return;const priority=await this.attention(a);if(!priority.active&&!priority.activeUnavailable)return;
   if(feedback&&priority.active&&recipient&&await this.db.get("SELECT 1 FROM office_discussion_members WHERE room_id=? AND role_id=? AND state='joined'",[priority.active.id,recipient]))return;
-  throw new MindPondError('scope_denied',feedback?'Completion would send feedback outside your active discussion; finish it after leaving. The message remains processing.':'Ordinary messages, broadcasts and handoffs are blocked while your role is in a discussion.',{details:priority.active?{discussionId:priority.active.id}:undefined,nextAction:priority.activeUnavailable?priority.next:'Use office_discussion post inside the room. For outside help use request_participants with id,participants,reason,key, then wait for human approval. Or leave with summary,key before ordinary communication. No message was sent.'});
+  throw new MindPondError('scope_denied',feedback?'Completion would send feedback outside your active discussion; finish it after leaving. The message remains processing.':'Ordinary messages, broadcasts and handoffs are blocked while your role is in a discussion.',{details:priority.active?{discussionId:priority.active.id}:undefined,nextAction:priority.activeUnavailable?priority.next:priority.active?.locked?'The human locked your discussion. Ask the human to unlock before leaving or contacting outside roles; continue get/post/finish/wait inside. Request helpers with request_participants, then await human approval and unlocking. No message was sent.':'Use office_discussion post inside the room. For outside help use request_participants with id,participants,reason,key, then wait for human approval. Or leave with summary,key before ordinary communication. No message was sent.'});
  }
  private async startWait(id:string,i:WorkWaitInput,a:TrustedCallContext,ms:number){return this.write(async()=>{
   const {row,actor,state}=await this.room(i.taskId!,a);if(actor.human||state!=='joined')fail('scope_denied','Only joined roles can wait for discussion posts');
@@ -155,7 +174,7 @@ export class OfficeDiscussions{
   // Filter invitations before LIMIT. Otherwise inaccessible older invitations
   // can fill the whole window and permanently hide a permitted invitation.
   // Keep focus even outside this grant so it can be reported without content.
-  const rows=await this.db.all<Row[]>(`SELECT r.id,r.office_id,r.title,r.revision,m.state FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state IN ('joined','invited')
+  const rows=await this.db.all<Row[]>(`SELECT r.id,r.office_id,r.title,r.revision,r.locked,m.state FROM office_discussion_members m JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state IN ('joined','invited')
    AND (m.state='joined' OR (r.office_id IN (SELECT value FROM json_each(?)) AND EXISTS(SELECT 1 FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id WHERE rs.role_id=m.role_id AND s.office_id=r.office_id AND s.enabled=1)))
    ORDER BY (m.state='joined') DESC,r.created_at,r.id LIMIT 66`,[actor.roleId,JSON.stringify([...allowed])]);
   const visible:Row[]=[];let activeUnavailable=false;
@@ -166,7 +185,7 @@ export class OfficeDiscussions{
     // Credential scope narrows this view; it cannot alter the role's actual
     // membership or release another connection's valid discussion focus.
     if(r.state==='joined')activeUnavailable=true;
-   }else visible.push(r);
+   }else visible.push({...r,locked:!!r.locked});
   }
   const invitations=visible.filter(r=>r.state==='invited'),active=visible.find(r=>r.state==='joined');if(active){active.status=await this.observations.status(active.id);active.recentRequests=await this.db.all('SELECT id,state,revision,review_note note FROM office_discussion_requests WHERE room_id=? AND requester=? ORDER BY created_at DESC,id LIMIT 4',[active.id,actor.roleId]);}return {departures:await this.departures.pending(actor.roleId!),active:active??null,activeUnavailable,invitations:invitations.slice(0,64),hasMoreInvitations:invitations.length>64,next:activeUnavailable?'Your role has an active discussion outside this credential’s office access. Use its authorized connection or ask the human to adjust access. This call did not leave the room; ordinary messages remain pending.':DISCUSSION_NOTICE+' Use office_discussion list per office for all invitations; get/join/post/wait/leave for a room. get/wait need no cursor; use the provided finish after handling, or explicit afterSeq for history only. While joined, prioritize this bounded discussion; other inbox messages remain pending. Save reusable conclusions with the separate Memory MCP before closing. Closing/expiry permanently deletes temporary discussion content; it never wakes a stopped host.'};
  });}
@@ -190,7 +209,7 @@ export class OfficeDiscussions{
   }});
   return {memoryId:memory.id,officeId:row.office_id,saved:true};
  }
- async assertMailbox(a?:TrustedCallContext){const priority=await this.attention(a);if(priority.active||priority.activeUnavailable)throw new MindPondError('invalid_input','Finish or leave your active discussion before taking ordinary mailbox work',{details:priority.active?{discussionId:priority.active.id}:undefined,nextAction:priority.activeUnavailable?priority.next:'Use office_discussion get/post; leave requires summary,key and optional selected messages. Ordinary messages remain pending.'});}
+ async assertMailbox(a?:TrustedCallContext){const priority=await this.attention(a);if(priority.active||priority.activeUnavailable)throw new MindPondError('invalid_input','Finish or leave your active discussion before taking ordinary mailbox work',{details:priority.active?{discussionId:priority.active.id}:undefined,nextAction:priority.activeUnavailable?priority.next:priority.active?.locked?'Your discussion is human-locked; continue get/post/finish/wait. Ask the human to unlock before leaving to take ordinary work. Inbox messages remain pending.':'Use office_discussion get/post; leave requires summary,key and optional selected messages. Ordinary messages remain pending.'});}
  async run(value:unknown,a?:TrustedCallContext):Promise<Row>{const i=discussionSchema.parse(value);
   if(['departure_get','send_departure','discard_departure'].includes(i.action)){
    if(!i.departureId)fail('invalid_input','This action requires departureId from leave or departures; it does not use discussion id');
@@ -198,7 +217,11 @@ export class OfficeDiscussions{
   }
   const result:Row=await this.write(async()=>{await this.cleanup();const actor=await this.actor(a);
   if(i.action==='departures'){if(actor.human)fail('invalid_input','Pending exit notifications belong to an authenticated role');return this.departures.pending(actor.roleId!,i.officeId);}
-  if(!actor.human&&['leave','close'].includes(i.action)){const prior=await this.departures.replay(i,actor.roleId!);if(prior){return {id:prior.room_id,exitRecorded:true,left:!(await this.db.get("SELECT 1 FROM office_discussion_members WHERE room_id=? AND role_id=? AND state='joined'",[prior.room_id,actor.roleId])),closed:!await this.db.get('SELECT 1 FROM office_discussions WHERE id=?',[prior.room_id]),departureId:prior.id};}}
+  if(!actor.human&&['leave','close'].includes(i.action)){
+   // Current human policy wins over an earlier successful exit receipt when a
+   // role has rejoined. A retry must never flush mail from inside a locked room.
+   if(i.id&&await this.db.get('SELECT 1 FROM office_discussions WHERE id=?',[i.id])){const current=await this.room(i.id,a);if(i.officeId!==undefined&&i.officeId!==current.row.office_id)fail('not_found','Discussion not found in the specified office');if(i.action==='close')this.assertJoinedCloser(current.row,current.state);if(i.action==='close'||current.state==='joined')this.assertUnlocked(current.row);}
+   const prior=await this.departures.replay(i,actor.roleId!);if(prior){return {id:prior.room_id,exitRecorded:true,left:!(await this.db.get("SELECT 1 FROM office_discussion_members WHERE room_id=? AND role_id=? AND state='joined'",[prior.room_id,actor.roleId])),closed:!await this.db.get('SELECT 1 FROM office_discussions WHERE id=?',[prior.room_id]),departureId:prior.id};}}
 
   if(i.action==='create'){
    if(!i.officeId||!i.title||!i.question||!i.doneWhen||!i.participants||!i.key)fail('invalid_input','Create requires officeId,title,question,doneWhen,participants,key');
@@ -206,18 +229,18 @@ export class OfficeDiscussions{
    const old=await this.db.get<Row>('SELECT * FROM office_discussion_creations WHERE role_id=? AND key=?',[actor.roleId,i.key]);const hash=digest(i);
    if(old){if(old.hash!==hash)fail('idempotency_conflict','Discussion creation key has another payload');const exists=await this.db.get('SELECT 1 FROM office_discussions WHERE id=?',[old.room_id]);return exists?this.view(old.room_id,i,a):{id:old.room_id,closed:true};}
    await this.attention(a);
-   if(await this.focus(actor.roleId!))fail('invalid_input','Leave your current discussion before opening another');
+   const focus=await this.focus(actor.roleId!);if(focus){this.assertUnlocked(focus);fail('invalid_input','Leave your current discussion before opening another');}
    const members=[...new Set([actor.roleId!,...i.participants])];if(members.length<2||members.length>8)fail('invalid_input','Choose 2–8 distinct office roles including yourself');
    for(const role of members)if(!await this.member(i.officeId,role))fail('scope_denied','Every participant must be an active member of this office');
    if((await this.db.get<Row>('SELECT COUNT(*) n FROM office_discussions WHERE office_id=?',[i.officeId]))!.n>=16)fail('invalid_input','At most 16 discussions may be open per office');
-   const roomId=randomUUID();await this.db.run('INSERT INTO office_discussions VALUES(?,?,?,?,?,?,1,?,?)',[roomId,i.officeId,actor.roleId,i.title,i.question,i.doneWhen,this.clock()+i.ttlHours*3600000,this.clock()]);
+   const roomId=randomUUID();await this.db.run('INSERT INTO office_discussions(id,office_id,creator,title,question,done_when,revision,expires_at,created_at) VALUES(?,?,?,?,?,?,1,?,?)',[roomId,i.officeId,actor.roleId,i.title,i.question,i.doneWhen,this.clock()+i.ttlHours*3600000,this.clock()]);
    for(const role of members)await this.db.run('INSERT INTO office_discussion_members VALUES(?,?,?)',[roomId,role,role===actor.roleId?'joined':'invited']);
    await this.db.run('INSERT INTO office_discussion_creations VALUES(?,?,?,?)',[actor.roleId,i.key,hash,roomId]);await this.log('discussion_created',roomId,i.officeId);return this.view(roomId,i,a);
   }
   if(i.action==='list'){
    if(!i.officeId)fail('invalid_input','List requires officeId');await this.office(i.officeId,a);
-   const records=await this.db.all<Row[]>(`SELECT r.id,r.title,r.creator,r.revision,r.expires_at,m.state FROM office_discussions r LEFT JOIN office_discussion_members m ON m.room_id=r.id AND m.role_id=? WHERE r.office_id=? AND r.id>? ${actor.human?'':"AND m.state IS NOT NULL"} ORDER BY r.id LIMIT ?`,[actor.roleId,i.officeId,i.afterId??'',i.limit+1]);const rooms:Row[]=[];
-   for(const record of records.slice(0,i.limit)){const item={...record,status:await this.observations.status(record.id)};if(Buffer.byteLength(JSON.stringify(rooms))+Buffer.byteLength(JSON.stringify(item))+256>i.contextBudgetBytes)break;rooms.push(item);}return {rooms,hasMore:records.length>rooms.length,nextAfterId:rooms.at(-1)?.id??i.afterId??''};
+   const records=await this.db.all<Row[]>(`SELECT r.id,r.title,r.creator,r.revision,r.expires_at,r.locked,r.lock_revision lockRevision,m.state FROM office_discussions r LEFT JOIN office_discussion_members m ON m.room_id=r.id AND m.role_id=? WHERE r.office_id=? AND r.id>? ${actor.human?'':"AND m.state IS NOT NULL"} ORDER BY r.id LIMIT ?`,[actor.roleId,i.officeId,i.afterId??'',i.limit+1]);const rooms:Row[]=[];
+   for(const record of records.slice(0,i.limit)){const item={...record,locked:!!record.locked,status:await this.observations.status(record.id)};if(Buffer.byteLength(JSON.stringify(rooms))+Buffer.byteLength(JSON.stringify(item))+256>i.contextBudgetBytes)break;rooms.push(item);}return {rooms,hasMore:records.length>rooms.length,nextAfterId:rooms.at(-1)?.id??i.afterId??''};
   }
   if(i.action==='get'&&!i.id)i.id=await this.currentId(a);
   if(!i.id)fail('invalid_input','Discussion id is required');const {row,state}=await this.room(i.id,a,!['get','finish','leave','decline','close','request_get','cancel_request','review_participants'].includes(i.action));
@@ -225,10 +248,11 @@ export class OfficeDiscussions{
   if(i.action==='get')return this.view(i.id,i,a);
   if(['request_participants','review_participants','cancel_request','request_get'].includes(i.action))return this.participantRequest(i,row,actor,state,a);
   if(i.action==='join'){
-   if(actor.human)fail('invalid_input','A human cannot impersonate a participant');if(!['invited','joined','left','declined'].includes(state))fail('invalid_input','This role is not invited');await this.attention(a);const active=await this.focus(actor.roleId!);if(active&&active.id!==i.id)fail('invalid_input','Leave your current discussion before joining another');if(state!=='joined'){await this.db.run("UPDATE office_discussion_members SET state='joined' WHERE room_id=? AND role_id=?",[i.id,actor.roleId]);await this.changed(row);}return this.view(i.id,i,a);
+   if(actor.human)fail('invalid_input','A human cannot impersonate a participant');if(!['invited','joined','left','declined'].includes(state))fail('invalid_input','This role is not invited');await this.attention(a);const active=await this.focus(actor.roleId!);if(active&&active.id!==i.id){this.assertUnlocked(active);fail('invalid_input','Leave your current discussion before joining another');}if(state!=='joined'){this.assertUnlocked(row);await this.db.run("UPDATE office_discussion_members SET state='joined' WHERE room_id=? AND role_id=?",[i.id,actor.roleId]);await this.changed(row);}return this.view(i.id,i,a);
   }
   if(i.action==='decline'||i.action==='leave'){
    if(actor.human)fail('invalid_input','Use close to end a discussion as human manager');if(i.action==='decline'&&state!=='invited'&&state!=='declined')fail('invalid_input','Decline applies to an invitation; joined participants use leave');
+   if(i.action==='decline'&&state==='declined')return {id:i.id,left:true,closed:false};
    let departureId:string|undefined;
    if(i.action==='leave'){
     if(state!=='joined')fail('invalid_input','Only a joined participant may leave; use decline for an invitation or departures to recover an earlier exit');
@@ -236,12 +260,14 @@ export class OfficeDiscussions{
     await this.exitSummary(i.id,actor.roleId!,i.summary!,departureId);
    }
    await this.db.run('UPDATE office_discussion_members SET state=? WHERE room_id=? AND role_id=?',[i.action==='decline'?'declined':'left',i.id,actor.roleId]);await this.changed(row);
-   const remaining=await this.db.get<Row>("SELECT COUNT(*) n FROM office_discussion_members WHERE room_id=? AND state IN ('joined','invited')",[i.id]);if(!remaining!.n)await this.purge(i.id);return {id:i.id,left:true,closed:!remaining!.n,...(departureId?{departureId}: {})};
+   // Rejecting an invitation is an outside action, never permission to delete a room.
+   // Only the final joined participant's exit may automatically close an empty room.
+   const remaining=await this.db.get<Row>("SELECT COUNT(*) n FROM office_discussion_members WHERE room_id=? AND state IN ('joined','invited')",[i.id]);const closed=i.action==='leave'&&!remaining!.n;if(closed)await this.purge(i.id);return {id:i.id,left:true,closed,...(departureId?{departureId}: {})};
   }
   if(i.action==='close'){
-   if(!actor.human&&row.creator!==actor.roleId)fail('scope_denied','Only the discussion creator or human manager can close the room');if(i.expectedRevision!==row.revision)fail('stale_version','Discussion changed; read the latest posts and exports before closing');
+   if(!actor.human)this.assertJoinedCloser(row,state);if(i.expectedRevision!==row.revision)fail('stale_version','Discussion changed; read the latest posts and exports before closing');
    let departureId:string|undefined;
-   if(!actor.human&&state==='joined'){departureId=await this.departures.prepare(i,actor.roleId!,row.office_id);await this.exitSummary(i.id,actor.roleId!,i.summary!,departureId);await this.db.run("UPDATE office_discussion_members SET state='left' WHERE room_id=? AND role_id=?",[i.id,actor.roleId]);}
+   if(!actor.human){departureId=await this.departures.prepare(i,actor.roleId!,row.office_id);await this.exitSummary(i.id,actor.roleId!,i.summary!,departureId);await this.db.run("UPDATE office_discussion_members SET state='left' WHERE room_id=? AND role_id=?",[i.id,actor.roleId]);}
    await this.purge(i.id);return {id:i.id,closed:true,contentDeleted:true,...(departureId?{departureId,left:true}: {})};
   }
   if(!actor.human&&state!=='joined')fail('scope_denied','Join the discussion before reading or contributing content');
@@ -280,7 +306,8 @@ export class OfficeDiscussions{
  private async changed(row:Row){await this.db.run('UPDATE office_discussions SET revision=revision+1 WHERE id=?',[row.id]);await this.log('discussion_updated',row.id,row.office_id);this.waiter.notify();}
  private async view(roomId:string,i:z.infer<typeof discussionSchema>,a?:TrustedCallContext,observe=true):Promise<Row>{
   const {row,actor,state}=await this.room(roomId,a),members=await this.observations.members(roomId);
-  if(!actor.human&&state!=='joined')return {room:row,members,posts:[],invitation:state,notice:'Join to read discussion posts. Leaving removes access to discussion posts.'};
+  row.locked=!!row.locked;row.lockRevision=row.lock_revision;
+  if(!actor.human&&state!=='joined')return {room:row,members,posts:[],invitation:state,notice:row.locked?'This discussion is locked by the human. Ask the human to unlock it before joining.':'Join to read discussion posts. Leaving removes access to discussion posts.'};
   const history=i.afterSeq!==undefined||actor.human;
   const rows=await this.posts(roomId,actor.human?undefined:actor.roleId!,i.afterSeq,i.limit+1,'unprocessed');
   if(!actor.human){

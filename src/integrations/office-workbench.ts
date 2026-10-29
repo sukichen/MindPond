@@ -226,6 +226,9 @@ export function officeWorkbench(
   route('/role/state', req => graph.roles.state(operator,req.body.afterSeq,directoryWindows.parse(req.body.directoryThrough??{}),req.body.directoryRevision));
   route('/role/message',req=>graph.roles.messagePreview(messageReference.parse(req.body),operator));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
+  route('/role/reorganization/choices',req=>graph.roleReorganization.choices(req.body,operator));
+  route('/role/reorganization/preview',req=>graph.roleReorganization.preview(req.body,operator));
+  route('/role/reorganization/apply',req=>graph.roleReorganization.apply(z.object({previewId:z.string().uuid()}).strict().parse(req.body).previewId,operator));
   route('/role/continuity',req=>{const {roleId,...input}=continuityReadSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.resume({roleId,human:true},input);});
   route('/role/continuity/checkpoint',req=>{const {roleId,...input}=continuityCheckpointSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.checkpoint({roleId,human:true},input);});
   route('/role/continuity/task',req=>{const {roleId,...input}=continuityTaskWriteSchema.extend({roleId:z.string().uuid()}).parse(req.body);return graph.roleContinuity.updateTask({roleId,human:true},input);});
@@ -251,6 +254,7 @@ export function officeWorkbench(
   route('/role/disconnect',req=>graph.roles.disconnect(z.object({roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),bindingId:z.string().uuid()}).strict().parse(req.body),operator));
   route('/role/connect',req=>graph.roles.connect(z.object({roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),targetRuntimeId:z.string().min(1).max(256)}).strict().parse(req.body),operator));
   route('/role/activate',req=>graph.roles.activate(z.object({requestId:z.string().uuid(),roleId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(req.body),operator));
+  route('/discussion-lock',req=>graph.discussions.setLock(req.body,operator));
   route('/discussions',req=>graph.discussions.run(discussionSchema.parse(req.body),operator));
   route('/rules',req=>graph.officeRules.manage(req.body,operator));
   route('/scripts',req=>graph.scripts.run(managedScriptSchema.parse(req.body),operator));

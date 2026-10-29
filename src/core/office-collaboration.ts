@@ -255,7 +255,7 @@ export class OfficeCollaboration {
     async requestControl(i: Row, a?: TrustedCallContext) {
         this.admin(a);
         return this.write(async () => {
-            if (!await this.db.get('SELECT 1 FROM character_roles WHERE id=?', [i.roleId]))
+            if (!await this.db.get("SELECT 1 FROM character_roles WHERE id=? AND state<>'merged'", [i.roleId]))
                 fail('Role unavailable','not_found');
             if ((await this.db.get("SELECT COUNT(*) n FROM office_control_requests WHERE role_id=? AND state='requested'", [i.roleId])).n >= 20)
                 throw new MindPondError('temporarily_unavailable', 'This role already has 20 unacknowledged requests');

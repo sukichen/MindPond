@@ -46,6 +46,12 @@ const scene={root,scale:()=>1,active:false,enabled:()=>true,status:{},running:fa
 const record={id:'meeting',title:'One focused question',members:[{roleId:'a',state:'joined'},{roleId:'b',state:'joined'}]};
 controller.sync('office',[]);scene.active=true;controller.sync('office',[{...record,members:[{roleId:'a',name:'角色甲',state:'joined',unreadPosts:2,unprocessedPosts:3},{roleId:'b',name:'角色乙',state:'joined',unreadPosts:0,unprocessedPosts:1}]}]);
 const all=n=>[n,...n.children.flatMap(all)],countValues=n=>all(n).filter(n=>n.className?.startsWith('office-meeting-message-count ')).map(n=>n.children.at(-1).textContent);
+controller.sync('office',[{...record,locked:true}]);
+assert(controller.rooms.get('meeting').title.textContent.includes('🔒'));
+assert(controller.rooms.get('meeting').door.textContent.includes('已锁定'));
+assert(controller.rooms.get('meeting').navigationButton.textContent.includes('已锁定'));
+controller.sync('office',[{...record,members:[{roleId:'a',name:'角色甲',state:'joined',unreadPosts:2,unprocessedPosts:3},{roleId:'b',name:'角色乙',state:'joined',unreadPosts:0,unprocessedPosts:1}]}]);
+assert(!controller.rooms.get('meeting').title.textContent.includes('🔒'));
 const meetingRoom=controller.rooms.get('meeting');assert.equal(meetingRoom.progress.parent.className,'office-meeting-table','messages must live on the actual tabletop');
 assert.equal(meetingRoom.progress.children.length,2);assert.equal(meetingRoom.progress.children[0].dataset.unread,'true');assert.deepEqual(countValues(meetingRoom.progress.children[0]),['2','3']);assert(meetingRoom.label.textContent.includes('未读 2 · 未处理 4'));
 const originalNavigation=meetingNavigation.children[1],originalInbox=meetingRoom.progress.children[0];controller.sync('office',[JSON.parse(JSON.stringify(meetingRoom.record))]);assert.equal(meetingRoom.progress.children[0],originalInbox,'unchanged live refreshes preserve tabletop focus and click targets');
@@ -97,3 +103,19 @@ controller.setReplay(true);controller.reset();assert.equal(controller.replay,fal
 resetCase();scene.active=false;controller.sync('case',[record]);
 assert.equal(controller.rooms.get('meeting').progress.children[0].dataset.unprocessed,'unknown','missing counts must not display the completed paper-tray style');assert.deepEqual(countValues(seats[0].person),['—','—']);controller.reset();
 console.log('PASS adversarial transitions: blocked-entrant fairness, live occupancy retry and closed source-room retention during refreshed transfers');
+
+// Ordinary activity at a third desk must never be interpreted as a room closing.
+resetCase(1900);seats.push(makeSeat('outside',730));scene.active=false;
+const concurrent=[{...record,members:[{roleId:'a',state:'joined'}]},{...record,id:'second',members:[{roleId:'b',state:'joined'}]}];
+controller.sync('case',concurrent);scene.active=true;
+const concurrentGeometry=controller.rooms.get('second').geometry,firstElement=controller.rooms.get('meeting').element;
+seats[2].node.classList.add('is-walking');seats[2].person.dataset.pose='letter';
+controller.sync('case',concurrent);
+assert.equal(controller.rooms.size,2);assert([...controller.rooms.values()].every(r=>!r.closed));assert.equal(controller.rooms.get('meeting').element,firstElement);
+assert(seats[2].node.classList.contains('is-walking'));assert.equal(seats[2].person.dataset.pose,'letter','outside activity retains its own animation');
+controller.prepareRebuild();seats=[makeSeat('a',30),makeSeat('b',380),makeSeat('outside',730)];controller.sync('case',concurrent);
+assert.equal(controller.targets.get('a'),'meeting');assert.equal(controller.targets.get('b'),'second');assert.equal(controller.targets.has('outside'),false);assert([...controller.rooms.values()].every(r=>!r.closed),'outside-triggered desk rebuild preserves both rooms');
+assert.equal(controller.rooms.get('second').geometry.x,concurrentGeometry.x);assert.equal(controller.rooms.get('second').geometry.y,concurrentGeometry.y);
+controller.sync('case',[concurrent[1]]);assert.equal(controller.rooms.get('second').closed,false);assert.equal(controller.targets.get('b'),'second','closing one room never returns the other attendee to its desk');controller.reset();
+assert.equal(intervals.size,0);
+console.log('PASS outside desk animations and desk rebuilds preserve two concurrent rooms; closing one leaves the other active');

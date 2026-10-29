@@ -309,6 +309,7 @@ export class RoleStore {
     return this.write(async () => {
       const old = await this.db.get<Row>('SELECT * FROM character_roles WHERE id=?', [i.roleId]);
       if (!old || old.revision !== i.expectedRevision) fail('Character profile changed; refresh', 'stale_version');
+      if(old.state==='merged')fail('角色已合并，无法重新启用；请使用合并后的角色。','invalid_input');
       const revision = old.revision + 1;
       await this.db.run('UPDATE character_roles SET name=?,introduction=?,state=?,revision=? WHERE id=?', [i.name, i.introduction, i.state, revision, old.id]);
       if (old.state !== i.state) {
@@ -354,7 +355,7 @@ export class RoleStore {
     const rolePage = await adminDirectory(this.db,`SELECT r.*,b.id binding_id,b.epoch,b.last_seen,r.id directory_key,b.connector_id,b.runtime_id,a.name connector_name,a.host,a.state host_state,c.source chat_source,c.native_chat_id,
       EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
       FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
-      LEFT JOIN office_agents a ON a.id=b.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=b.runtime_id AND c.connector_id=b.connector_id AND c.principal=b.principal`,'1',[],windows.roles);
+      LEFT JOIN office_agents a ON a.id=b.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=b.runtime_id AND c.connector_id=b.connector_id AND c.principal=b.principal`,"r.state<>'merged'",[],windows.roles);
     const rows=rolePage.rows;
     const roles=rows.map(({connector_id,connector_name,runtime_id,host,host_state,chat_source,native_chat_id,...role})=>({...role,connection:role.binding_id?{
       connectorId:connector_id,name:connector_name??connector_id,host,hostState:host_state,chat: native_chat_id?{source:chat_source,id:native_chat_id}:null,chatRef:runtime_id,bindingId:role.binding_id,lastSeen:role.last_seen
@@ -429,7 +430,7 @@ export class RoleStore {
   async link(i: Row, a?: TrustedCallContext) {
     this.admin(a);
     return this.write(async () => {
-      for (const id of [i.sender, i.recipient]) if (!(await this.db.get('SELECT 1 FROM character_roles WHERE id=?', [id]))) fail('Unknown character', 'invalid_input');
+      for (const id of [i.sender, i.recipient]) if (!(await this.db.get("SELECT 1 FROM character_roles WHERE id=? AND state<>'merged'", [id]))) fail('Role is unavailable or merged; choose a current character', 'invalid_input');
       if (i.enabled) await this.db.run('INSERT OR IGNORE INTO role_links VALUES(?,?)', [i.sender, i.recipient]);
       else await this.db.run('DELETE FROM role_links WHERE sender=? AND recipient=?', [i.sender, i.recipient]);
       await this.db.run('DELETE FROM office_response_pages');
