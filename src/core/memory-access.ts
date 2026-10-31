@@ -15,6 +15,8 @@ export function memoryAccess(graph:GraphMemory, actor:MemoryActor, authority:Mem
     return Object.freeze({
         owner,
         offices:()=>graph.memoryOwners.offices(owner.kind==='agent'?owner.id:undefined,assignments),
+        delegation:(roleId:string,write=false,revision?:number)=>graph.roleMemoryPermissions.authorize(owner,roleId,write,revision),
+        delegatedContext:async(roleId:string,revision?:number)=>{await graph.roleMemoryPermissions.authorize(owner,roleId,false,revision);return graph.memoryOwners.ownerContext({kind:'agent',id:roleId});},
         context:(officeId?:string)=>graph.memoryOwners.context(owner,officeId,assignments),
         assertWritable:(target:MemoryOwner,memoryId?:string)=>graph.memoryOwners.assertWritable(owner,target,memoryId,assignments)
     });

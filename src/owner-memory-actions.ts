@@ -24,6 +24,7 @@ interface Options {
   associationHooks:(o:Actor,g:Guard)=>MemoryWriteHooks;
   authorizeIncidentAssociations:(id:string,o:Actor,g:Guard)=>Promise<void>;
   assertWritable:(actor:Actor,target:MemoryOwner,nodeId?:string)=>Promise<void>;
+  writeTarget:(o:Actor,officeId?:string)=>MemoryOwner;operatorAll:(o:Actor)=>boolean;stageHost:(o:Actor)=>string;
   write:any;related:z.ZodType;recallOptions:any;search:(a:any,o:Actor)=>Promise<any>;instructions:string;
 }
 export function registerOwnerMemoryActions(api:Options){
@@ -91,9 +92,9 @@ export function registerOwnerMemoryActions(api:Options){
     const m=await graph.getMembershipById(a.membershipId,await context(o));await get(m.memoryId,o);
     return graph.getProfileHistory(a.membershipId,await context(o));
   });
-  action('memory_export','Export authorized complete Markdown records with versions and sources. Stable cursor; not a database backup.',{...scope,afterId:id.optional(),limit:page.limit,maxBytes:z.number().int().min(1024).max(2000000).optional(),includeEvents:z.boolean().optional()},async(a,o)=>graph.exportMemory(await context(o,a.officeId)??{}, {...a,operatorAll:o.kind==='user'&&!a.officeId}));
+  action('memory_export','Export authorized complete Markdown records with versions and sources. Stable cursor; not a database backup.',{...scope,afterId:id.optional(),limit:page.limit,maxBytes:z.number().int().min(1024).max(2000000).optional(),includeEvents:z.boolean().optional()},async(a,o)=>graph.exportMemory(await context(o,a.officeId)??{}, {...a,operatorAll:api.operatorAll(o)&&!a.officeId}));
   action('memory_save_validate','Preview saving, anchors and scored links without creating memories/tasks. Reports indexed issues and possible duplicates; saving rechecks current state.',{...api.write,anchors:z.unknown().optional(),related:api.related,...scope,idempotencyKey:key.optional()},async(a,o,g)=>{
-    const target:MemoryOwner=a.officeId?{kind:'office',id:a.officeId}:o;await g();await api.assertWritable(o,target);
+    const target=api.writeTarget(o,a.officeId);await g();await api.assertWritable(o,target);
     const dimensions=a.dimensions??[(await graph.getDimensionPolicy()).defaultDimension];
     const {officeId,...input}=a;
     const {domain,...preview}=await graph.validateMemorySave({...input,dimensions,domain:await graph.memoryOwners.domain(target,false),memberships:dimensions.map((memoryType:string)=>({spaceId:'memory',memoryType}))});
@@ -110,14 +111,13 @@ export function registerOwnerMemoryActions(api:Options){
       z.object({id:key,kind:z.literal('use_report'),input:z.object(memoryUseShape).strict()}).strict()
     ])).max(16)
   },async(a,o,g)=>{
-    const hostId=o.kind+':'+o.id,domain=await graph.memoryOwners.domain(o);
+    const hostId=api.stageHost(o),domain=await graph.memoryOwners.domain(api.writeTarget(o));
     return graph.finishMemoryStage({...a,hostId,runId:'layered',domains:[domain]},async(op,operationKey)=>{
       await g();const original=a.operations.find((r:any)=>r.id===op.id);
       const name=op.kind==='save'?'memory_save':op.kind==='update'?'memory_update':'memory_use_report';
       // Invoke the same authorized handlers, even for a replay. Core writes
       // have durable idempotency and recheck current office/lock permissions.
-      const entry=operations.get(name)!;
-      return entry.fn({...original.input,...(op.kind==='update'?{nodeId:original.nodeId}:{}),...(op.kind==='use_report'?{reportId:operationKey}:{idempotencyKey:operationKey})},o,g);
+      return execute(name,{...original.input,...(op.kind==='update'?{nodeId:original.nodeId}:{}),...(op.kind==='use_report'?{reportId:operationKey}:{idempotencyKey:operationKey})},o,g);
     });
   });
   action('memory_organization_policy','Read current evidence-preserving organization rules. Consolidate duplicates; synthesize supported profiles without deleting useful children.',{},async()=>({version:ORGANIZATION_POLICY_VERSION,instructions:ORGANIZATION_POLICY}));

@@ -1,3 +1,5 @@
+import {RoleClones} from './role-clones.js';
+import {RoleMemoryPermissions} from './role-memory-permissions.js';
 import {OfficeDiscussions} from './office-discussions.js';
 import {OfficeRules} from './office-rules.js';
 import {RoleReorganization} from './role-reorganization.js';
@@ -429,12 +431,14 @@ export class GraphMemory {
   building!: OfficeBuilding;
   officeCollaboration!: OfficeCollaboration;
   memoryOwners!:MemoryOwners;
+  roleMemoryPermissions!:RoleMemoryPermissions;
   roleContinuity!:RoleContinuityStore;
   discussions!:OfficeDiscussions;
   scripts!:OfficeScripts;
   artifacts!:OfficeArtifacts;
   officeRules!:OfficeRules;
   roleReorganization!:RoleReorganization;
+  roleClones!:RoleClones;
   officeTaskStore(actor:import('./trust.js').TrustedCallContext){return new OfficeTaskStore(this.db!,this,work=>this.growthWrite(work),actor);}
   /** O03: material budget discipline — never truncate material, shrink the batch.
    * A packed organizationMaterial larger than this many chars shrinks 8→4→2… */
@@ -1153,12 +1157,13 @@ export class GraphMemory {
     await this.offices.init();
     this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','connect','disconnect','init','migrateModel','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','link']);
     await this.roles.init();
-    this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay']);
+    this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay','pollWait']);
     await this.building.init();
     this.officeCollaboration=this.coordinator.service(new OfficeCollaboration(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock),['init','publish','records','handoffContext','relations','controls','requestControl','responsePage','boundResponse','layout','captureLayout','observations','permissions','impact','exportPage','operations']);
     await this.officeCollaboration.init();
     this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential','nativeBinding','office','offices','context','ownerContext','policy','setPolicy','assertWritable','roleBinding','present']);
     await this.memoryOwners.init();
+    this.roleMemoryPermissions=this.coordinator.service(new RoleMemoryPermissions(this.db,work=>this.growthWrite(work),this.clock),['init','get','manage','authorize','directory','revoke','audit']);await this.roleMemoryPermissions.init();
     await this.roles.migrateModel();
     this.roleContinuity=this.coordinator.service(new RoleContinuityStore(this.db,this,work=>this.growthWrite(work),this.clock),['init','resume','checkpoint','updateTask','tasks','history','archive']);
     await this.roleContinuity.init();
@@ -1168,6 +1173,10 @@ export class GraphMemory {
     this.artifacts=new OfficeArtifacts(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock);await this.artifacts.init();
     this.officeRules=new OfficeRules(this.db,this,work=>this.growthWrite(work),this.clock);await this.officeRules.init();
     this.roleReorganization=this.coordinator.service(new RoleReorganization(this.db,this,work=>this.growthWrite(work),this.clock),['init','choices','preview','apply']);await this.roleReorganization.init();
+    this.roleClones=this.coordinator.service(new RoleClones(this.db,this,work=>this.growthWrite(work),this.clock),['init','manage','office','memory','describe','assertUsable','assertReorganizable']);await this.roleClones.init();
+    this.roles.cloneStatus=roleId=>this.roleClones.describe(roleId);
+    this.roles.assertCloneUsable=roleId=>this.roleClones.assertUsable(roleId);
+    this.roles.assertCloneReorganizable=roleId=>this.roleClones.assertReorganizable(roleId);
     this.building.artifactAttachments=(ids,recipient,a)=>this.artifacts.attach(ids,recipient,a);
     const expireArtifacts=async()=>{try{await this.artifacts.sweep();}catch(error){logger.debug('Artifact maintenance failed',getErrorMessage(error));}finally{this.later(expireArtifacts,60000);}};this.later(expireArtifacts,60000);
     const expireDiscussions=async()=>{try{await this.discussions.sweep();}finally{this.later(expireDiscussions,60000);}};this.later(expireDiscussions,60000);

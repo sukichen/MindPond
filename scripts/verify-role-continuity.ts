@@ -95,7 +95,7 @@ try{
  console.log('PASS cross-harness/new-session recovery preserves role, exact progress, tasks, message attention and human controls; original chat cannot write role state');
 
  await graph.roles.configureOffice({id:'room',title:'Fictional room',state:'active',expectedRevision:1,seats:[seats[1]]},admin);
- const restricted=await call('memory_resume',{},'new-chat',target,'opencode');assert(!restricted.checkpoints.some((p:any)=>p.officeId==='room'));assert(!restricted.tasks.some((t:any)=>t.id==='office-task'));assert.equal(restricted.attention.pendingMessages,0);
+ const restricted=await call('memory_resume',{},'new-chat',target,'opencode');assert(!restricted.checkpoints.some((p:any)=>p.officeId==='room'));assert(!restricted.tasks.some((t:any)=>t.id==='office-task'));assert.equal(restricted.attention.pendingMessages,1,'addressed mail remains role-owned after leaving, while shared knowledge/checkpoints are revoked');
  await deny('memory_continuity_checkpoint',{officeId:'room',expectedRevision:0,summary:{...summary,goal:'Office-scoped task'},tasks:[{...task,id:'office-task'}],key:'office-stage',reason:'Office work stays under office scope'},'scope_denied','new-chat',target,'opencode');
  assert(!(await action('memory_continuity_history',{},'new-chat',target,'opencode')).records.some((r:any)=>r.payload.officeId==='room'));
  assert((await graph.roleContinuity.resume({roleId:role.roleId,human:true})).checkpoints.some((p:any)=>p.officeId==='room'),'Human retains management visibility');

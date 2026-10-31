@@ -43,11 +43,13 @@ export class RoleReorganization{
   return {records:rows.slice(0,30).map(r=>({...r,label:r.label.slice(0,i.kind==='memories'?150:200)})),hasMore:rows.length>30,nextAfter:rows.length>30?rows[29].id:null};
  }
  private async snapshot(i:Input){
+  await this.graph.roleClones?.assertReorganizable(i.sourceId);if(i.mode==='merge')await this.graph.roleClones?.assertReorganizable(i.targetId);
   const source=await this.role(i.sourceId),target=i.mode==='merge'?await this.role(i.targetId):null;
   if(target&&(target.id===source.id||target.principal!==source.principal))fail('invalid_input','请选择同一账户下的两个不同角色。');
   if(target&&target.state!=='active')fail('invalid_input','请先启用主角色，再合并。');
   if(target)await this.graph.memoryOwners.domain({kind:'agent',id:target.id},false);
   const roles=[source.id,...(target?[target.id]:[])],rs=JSON.stringify(roles);
+  const memoryPermissions=await this.db.all(`SELECT * FROM role_memory_permissions WHERE role_id IN (${inList}) ORDER BY role_id`,[rs]);
   const namespaces=await this.db.all<Row[]>(`SELECT * FROM memory_role_namespaces WHERE role_id IN (${inList}) ORDER BY role_id`,[rs]);
   const domains=JSON.stringify(namespaces.map(n=>n.domain_id));
   const nodes=await this.db.all<Row[]>(`SELECT id,domain_id,content,tags,dimension,dimensions,primary_dimension,importance,verified,superseded_by,updated_at FROM nodes WHERE domain_kind='personal' AND domain_id IN (${inList}) ORDER BY id`,[domains]);
@@ -104,8 +106,8 @@ export class RoleReorganization{
   if(scopes.size>50)blockers.push('目标角色工作进度范围将超过 50 个，请先整理。');
   if((target?artifacts.filter(r=>r.owner_role===target.id&&['ready','pending'].includes(r.state)).length:0)+moved.artifacts.filter(r=>['ready','pending'].includes(r.state)).length>1024)blockers.push('目标角色附件将超过 1024 份，请先清理。');
   const cutAssociations=i.mode==='split'?associations.filter(r=>cross(r.a_node,r.b_node)):[],cutEdges=i.mode==='split'?edges.filter(r=>cross(r.from_id,r.to_id)):[];
-  const impact={mode:i.mode,source:{id:source.id,name:source.name},target:target?{id:target.id,name:target.name}:null,name:i.name,counts:{memories:moved.nodes.length,scripts:moved.scripts.length,tasks:moved.tasks.length,checkpoints:moved.checkpoints.length,artifacts:moved.artifacts.length,offices:i.mode==='split'?i.officeIds.length:new Set(seats.filter(s=>s.enabled).map(s=>s.office_id)).size,cutAssociations:cutAssociations.length,cutEdges:cutEdges.length,checkpointConflicts:target?moved.checkpoints.filter(c=>checkpoints.some(t=>t.role_id===target.id&&t.scope===c.scope)).length:0},blockers:[...new Set(blockers)],notice:i.mode==='merge'?'来源角色退出角色目录；历史消息保留当时姓名并交给主角色。两个角色均断开聊天连接，断开后聊天按人类身份访问记忆；请重新绑定后继续角色工作。办公室共享记忆保持原位。同名脚本保留各自编号，记忆不自动去重。':'选中内容迁到新角色，未选内容留在原角色；办公室为新角色增加成员资格。跨角色的关联边会断开，内部关联和权重保留。原角色断开连接后聊天按人类身份访问记忆；请为两个角色重新绑定聊天后继续角色工作。'};
-  const fingerprint=digest({i,source,target,namespaces,nodes,scripts,tasks,checkpoints,artifacts,seats,associations,edges,supports,membership,signals,bindings,meetings,mail,departures,jobs,claimed,
+  const impact={mode:i.mode,source:{id:source.id,name:source.name},target:target?{id:target.id,name:target.name}:null,name:i.name,counts:{memories:moved.nodes.length,scripts:moved.scripts.length,tasks:moved.tasks.length,checkpoints:moved.checkpoints.length,artifacts:moved.artifacts.length,offices:i.mode==='split'?i.officeIds.length:new Set(seats.filter(s=>s.enabled).map(s=>s.office_id)).size,cutAssociations:cutAssociations.length,cutEdges:cutEdges.length,checkpointConflicts:target?moved.checkpoints.filter(c=>checkpoints.some(t=>t.role_id===target.id&&t.scope===c.scope)).length:0},blockers:[...new Set(blockers)],notice:i.mode==='merge'?'来源角色退出角色目录；历史消息保留当时姓名并交给主角色。跨角色记忆授权重置为关闭；两个角色均断开聊天连接，断开后聊天按人类身份访问记忆；请重新绑定后继续角色工作。办公室共享记忆保持原位。同名脚本保留各自编号，记忆不自动去重。':'选中内容迁到新角色，未选内容留在原角色；办公室为新角色增加成员资格。跨角色的关联边会断开，内部关联和权重保留。跨角色记忆授权重置为关闭；原角色断开连接后聊天按人类身份访问记忆；请为两个角色重新绑定聊天后继续角色工作。'};
+  const fingerprint=digest({i,source,target,memoryPermissions,namespaces,nodes,scripts,tasks,checkpoints,artifacts,seats,associations,edges,supports,membership,signals,bindings,meetings,mail,departures,jobs,claimed,
    // Permission and receipt changes in another process also invalidate a preview.
    index:await this.db.get("SELECT value FROM memory_meta WHERE key='index_generation'"),
    grants:await this.db.all(`SELECT * FROM role_links WHERE sender IN (${inList}) OR recipient IN (${inList}) ORDER BY sender,recipient`,[rs,rs]),
@@ -175,6 +177,7 @@ export class RoleReorganization{
     (h.entity_id IS NULL AND h.scope IN (SELECT value FROM json_each(?))))`,
    [targetId,s.source.name+' · ',JSON.stringify([...taskMap]),s.source.id,i.mode,JSON.stringify(s.moved.checkpoints.map(c=>c.scope))]);
   for(const artifact of s.moved.artifacts)await this.db.run('UPDATE office_artifacts SET owner_role=? WHERE id=?',[targetId,artifact.id]);
+  await this.graph.roleMemoryPermissions.revoke(s.source.id);await this.graph.roleMemoryPermissions.revoke(targetId);
   const affectedOffices=new Set<string>();
   if(i.mode==='merge'){
    for(const seat of s.seats.filter(r=>r.role_id===s.source.id)){

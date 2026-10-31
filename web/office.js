@@ -14,6 +14,7 @@
       : Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) =>
           n.toString(16).padStart(2, '0')
         ).join('');
+  let replyWaitSettings=null,replyWaitSettingsEpoch=-1;
   const state = {
     data: null, directoryThrough:{}, directoryLoading:false, directoryGeneration:0,
     office: null,
@@ -103,7 +104,7 @@
     });
     const data = await r.json();
     if (!r.ok) { const error=Error(data.code === 'stale_version'
-      ? route.endsWith('/delete') ? '资料已被其他操作更新或删除。请重新打开角色或办公室，核对最新内容后再决定是否删除。' : '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。'
+      ? route === 'role/memory-permissions' ? '记忆权限已被其他操作更新，请刷新权限后重新设置。' : route.endsWith('/delete') ? '资料已被其他操作更新或删除。请重新打开角色或办公室，核对最新内容后再决定是否删除。' : '资料已被其他操作更新。你的草稿仍保留，请复制需要的内容，关闭后重新打开再编辑。'
       : data.error ?? '操作失败'); error.status=r.status;error.code=data.code;error.nextAction=data.nextAction; throw error; }
     return data;
   }
@@ -285,6 +286,8 @@
     el('officeNavRoomCount').textContent=String(state.data.directory?.offices.total??state.data.offices.length);
     el('officeLoginStatus').textContent = '已登录用户管理';
     el('officeEndpoint').elements.mcpUrl.value = state.data.settings.mcpUrl ?? '';
+    if(replyWaitSettingsEpoch!==state.authEpoch){const epoch=state.authEpoch;replyWaitSettingsEpoch=epoch;replyWaitSettings=window.MindPondOfficeReplyWait?.mount({container:el('officeReplyWaitPolicy'),api,current:()=>state.logged&&state.authEpoch===epoch});}
+    replyWaitSettings?.update(state.data.replyWaitPolicy);
     if(!state.agentPrincipalEdited){const principals=[...new Set(agentChoices().map(a=>a.principal).concat(roleChoices().map(r=>r.principal)))];if(principals.length===1)el('officeAgentForm').elements.principal.value=principals[0];}
     renderDiagnostics();
     el('officeInstance').textContent =
@@ -610,7 +613,7 @@
   }
   async function deleteRoom(record) {
     const epoch=state.authEpoch;
-    if (!(await confirmAction(`永久删除办公室「${record.title}」？该办公室的消息、文本材料、容器、任务及历史记录、临时讨论、共享脚本和退会通知草稿会一并删除，所有工位访问立即失效。角色本身、其他办公室和个人记忆保留。此操作无法撤销。`,{destructive:true,title:'永久删除办公室'}))) return;
+    if (!(await confirmAction(`永久删除办公室「${record.title}」？该办公室的消息、文本材料、容器、任务及历史记录、临时讨论和共享脚本会一并删除，所有工位访问立即失效。角色本身、角色私有脚本、未发退会通知草稿、其他办公室和个人记忆保留。此操作无法撤销。`,{destructive:true,title:'永久删除办公室'}))) return;
     if (epoch!==state.authEpoch || !state.logged) return;
     await api('office/delete',{id:record.id,expectedRevision:record.revision});
     if (epoch!==state.authEpoch) return;
@@ -664,16 +667,18 @@
       info.append(make('p', `已安排 ${count} 个工位`), button('前往办公室', async () => {if (await closeRoleInspector()) {setExpanded(null);showAppView('officeRooms');}}));
     }
     profile.append(info);
+    if(!application){const permissionEpoch=state.authEpoch;window.MindPondRoleMemoryPermissions?.mount({container:profile,roleId:record.id,api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===permissionEpoch,canEdit:()=>!draft.saving,onBusy:busy=>{if(state.roleDraft!==draft)return;draft.saving=busy;el('officeRoleInspectorClose').disabled=busy;}});}
     if(!application){
       const tabs=make('div'),working=make('section');tabs.className='office-continuity-controls';tabs.setAttribute('aria-label','角色详情视图');
-      const scripts=make('section'),reorganization=make('section');let libraryMounted=false,reorganizationMounted=false;
-      const workTab=button('接续工作',()=>selectView('work')),profileTab=button('角色资料',()=>selectView('profile')),scriptTab=button('专属脚本',()=>selectView('scripts')),reorganizationTab=button('合并 / 拆分',()=>selectView('reorganization'));
+      const scripts=make('section'),reorganization=make('section'),clones=make('section');let libraryMounted=false,reorganizationMounted=false,clonesMounted=false;
+      const workTab=button('接续工作',()=>selectView('work')),profileTab=button('角色资料',()=>selectView('profile')),scriptTab=button('专属脚本',()=>selectView('scripts')),reorganizationTab=button('合并 / 拆分',()=>selectView('reorganization')),clonesTab=button('派遣分身',()=>selectView('clones'));
       function selectView(view){
         if(draft.saving)return;
-        reorganization.hidden=view!=='reorganization';profile.hidden=view!=='profile';
+        clones.hidden=view!=='clones';reorganization.hidden=view!=='reorganization';profile.hidden=view!=='profile';
         working.hidden=view!=='work';scripts.hidden=view!=='scripts';
-        for(const [tab,name] of [[workTab,'work'],[profileTab,'profile'],[scriptTab,'scripts'],[reorganizationTab,'reorganization']])tab.setAttribute('aria-pressed',String(view===name));
+        for(const [tab,name] of [[workTab,'work'],[profileTab,'profile'],[scriptTab,'scripts'],[reorganizationTab,'reorganization'],[clonesTab,'clones']])tab.setAttribute('aria-pressed',String(view===name));
         const epoch=state.authEpoch,current=()=>state.roleDraft===draft&&state.logged&&state.authEpoch===epoch;
+        if(view==='clones'&&!clonesMounted){clonesMounted=true;window.MindPondRoleClones?.mount({container:clones,role:record,api,current,notice,confirmAction,onLifecycleChanged:async result=>{await closeRoleInspector(true);notice(result.state==='active'?'分身已恢复，请核对聊天身份。':result.state==='revoked'?'分身已撤回，原绑定拒绝访问；宿主进程不受控制。':'派遣资料已清理，角色当前的私有知识保留。');await refresh();},onDirty:()=>{draft.dirty=true;state.roleEditing=true;},onBusy:saving=>{if(state.roleDraft!==draft)return;draft.saving=saving;el('officeRoleInspectorClose').disabled=saving;}});}
         if(view==='reorganization'&&!reorganizationMounted){
           reorganizationMounted=true;
           window.MindPondRoleReorganization?.mount({container:reorganization,role:record,api,current,
@@ -688,14 +693,14 @@
         }
         if(view==='scripts'&&!libraryMounted){libraryMounted=true;window.MindPondOfficeResources?.library({container:scripts,scope:{roleId:record.id},api,current,notice,confirmAction,download});}
       }
-      tabs.append(workTab,profileTab,scriptTab,reorganizationTab);body.insertBefore(tabs,profile);body.insertBefore(working,profile);body.insertBefore(scripts,profile);body.insertBefore(reorganization,profile);selectView('work');initialFocus=workTab;
+      tabs.append(workTab,profileTab,scriptTab,clonesTab,reorganizationTab);body.insertBefore(clones,profile);body.insertBefore(tabs,profile);body.insertBefore(working,profile);body.insertBefore(scripts,profile);body.insertBefore(reorganization,profile);selectView('work');initialFocus=workTab;
       const continuityEpoch=state.authEpoch;window.MindPondRoleContinuity?.mount({container:working,role:record,offices:state.data.choices?.offices??state.data.offices,api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===continuityEpoch,notice,confirmAction});
     }
     form.addEventListener('input', () => {draft.dirty = true;state.roleEditing = true;save.textContent = application ? '批准这个角色' : '保存修改';});
     const actions = make('div');actions.className = 'office-dialog-actions';
     let saving = false;
     async function saveProfile(action) {
-      if (saving || !form.reportValidity()) return;
+      if (saving || state.roleDraft?.saving || !form.reportValidity()) return;
       const draft = state.roleDraft, epoch = state.authEpoch;
       const payload = {expectedRevision: record.revision, name: name.value.trim(), introduction: intro.value.trim()};
       if (!payload.name || !payload.introduction) throw Error('名字与介绍不能为空。');

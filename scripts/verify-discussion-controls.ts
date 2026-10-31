@@ -185,9 +185,10 @@ try{
  const deletingRole=(await graph.roles.registry(admin)).roles.find((r:any)=>r.id===roles[1].roleId)!;
  await graph.roles.deleteRole({roleId:deletingRole.id,expectedRevision:deletingRole.revision},admin);
  assert.equal((await db.get('SELECT COUNT(*) n FROM office_discussion_departures WHERE role_id=?',[deletingRole.id])).n,0,'permanent role deletion purges its private exit drafts');
+ const privateDraftsBeforeDeletion=await db.all('SELECT * FROM office_discussion_departures WHERE office_id=? ORDER BY id',['office']);
  const officeRevision=(await db.get('SELECT revision FROM offices WHERE id=?',['office'])).revision;
  await graph.roles.deleteOffice({id:'office',expectedRevision:officeRevision},admin);
- assert.equal((await db.get('SELECT COUNT(*) n FROM office_discussion_departures WHERE office_id=?',['office'])).n,0,'permanent office deletion purges its scoped drafts and receipts');
+ assert.deepEqual(await db.all('SELECT * FROM office_discussion_departures WHERE office_id=? ORDER BY id',['office']),privateDraftsBeforeDeletion,'office deletion preserves exact role-owned draft bodies, states and retry receipts');
  assert(await db.get('SELECT 1 FROM character_roles WHERE id=?',[roles[0].roleId]),'office deletion preserves the role itself');
  const codes:MindPondErrorCode[]=['not_found','invalid_input','idempotency_conflict','source_revision_conflict','stale_lease','stale_version','material_over_budget','scope_denied','identity_required','temporarily_unavailable','internal'];
  for(const code of codes){const e=toStructuredError(new MindPondError(code,'Correctable explanation'));assert.equal(e.code,code);assert(e.message&&e.nextAction);}

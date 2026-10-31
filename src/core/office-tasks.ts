@@ -1,3 +1,4 @@
+import {officeWaitResult} from './office-wait-policy.js';
 /** Experimental MCP 2025-11-25 Tasks, for a fixed authenticated host session.
  * Polling evaluates durable message conditions; no detached model or hidden worker.
  * A process restart preserves handles, while binding epochs and grants fence reads. */
@@ -37,10 +38,9 @@ export class OfficeTaskStore implements TaskStore {
             if (!row)
                 return null;
             if (row.state === 'working') {
-                const condition = JSON.parse(row.conditions), page = await this.graph.building.receive({ action: 'list', state: 'pending', limit: 1, afterSeq: condition.afterSeq, replyTo: condition.replyTo }, this.actor);
-                const matched = page.messages[0], timedOut = Date.now() >= row.created_at + condition.waitMs;
-                if (matched || timedOut) {
-                    const payload = matched ? { status: 'matched', message: matched, nextCursor: page.nextCursor } : { status: 'timeout', pending: true, resume: condition, nextCursor: condition.afterSeq };
+                const condition=JSON.parse(row.conditions),ready=await this.graph.building.pollWait(condition,this.actor),elapsed=Date.now()-row.created_at;
+                if (ready || elapsed>=condition.waitMs) {
+                    const payload=officeWaitResult(ready??{status:'timeout',nextCursor:condition.afterSeq},condition,elapsed);
                     await this.db.run("UPDATE office_protocol_tasks SET state='completed',result=?,updated_at=? WHERE id=? AND state='working'", [JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(payload) }] }), Date.now(), id]);
                     return this.project(await this.db.get('SELECT * FROM office_protocol_tasks WHERE id=?', [id]));
                 }

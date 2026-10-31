@@ -1,3 +1,4 @@
+import {roleControlAttention} from './role-control-attention.js';
 import {DiscussionDepartures} from './office-discussion-departures.js';
 import {DiscussionObservations} from './office-discussion-observations.js';
 import {memoryAccess} from './memory-access.js';
@@ -43,11 +44,12 @@ export class OfficeDiscussions{
   if(i.officeId!==undefined&&i.officeId!==row.office_id)fail('not_found','Discussion not found in the specified office');
   if(actor.human||state!=='joined')fail('scope_denied','Join before waiting for discussion posts');
   await this.observations.waiting(row.id,actor.roleId!);
-  return {room:row,posts:await this.posts(row.id,actor.roleId!,i.unreadOnly?undefined:i.afterSeq,1,'unread')};
+  return {room:row,control:await roleControlAttention(this.db,actor.roleId!),posts:await this.posts(row.id,actor.roleId!,i.unreadOnly?undefined:i.afterSeq,1,'unread')};
  });}
  private async inspectWait(i:WorkWaitInput&{officeId?:string;afterRevision?:number;unreadOnly?:boolean},a?:TrustedCallContext){
   try{
    const view=await this.waitView(i,a),post=view.posts[0];
+   if(view.control)return {...view.control,discussionId:i.taskId,nextCursor:i.afterSeq??0};
    if(post)return {status:'matched' as const,discussionId:i.taskId,post,nextCursor:post.seq,revision:view.room.revision,locked:!!view.room.locked};
    if(i.afterRevision!==undefined&&view.room.revision>i.afterRevision){const detail=await this.write(()=>this.view(i.taskId!,discussionSchema.parse({action:'get',id:i.taskId,contextBudgetBytes:65536}),a,false));return {status:'matched' as const,discussionId:i.taskId,kind:'discussion_updated',nextCursor:i.afterSeq??0,revision:view.room.revision,locked:!!detail.room.locked,members:detail.members,participantRequests:detail.participantRequests,nextAction:'Read get to inspect the updated participants and human decisions. '+DISCUSSION_NOTICE};}
    return undefined;

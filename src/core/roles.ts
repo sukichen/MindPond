@@ -24,6 +24,9 @@ function fail(message: string, code: 'not_found' | 'scope_denied' | 'invalid_inp
   throw new MindPondError(code, message, { nextAction: code==='not_found'?'List permitted roles/messages and check the ID before retrying.':code==='invalid_input'?'Correct the request or missing role/session context; this is not a permission grant failure.':'Call role_sync to check this chat’s role and user approval. The host supplies chat identity; never select a role through arguments or read credentials.' });
 }
 export class RoleStore {
+  cloneStatus?:(roleId:string)=>Promise<Row>;
+  assertCloneUsable?:(roleId:string)=>Promise<void>;
+  assertCloneReorganizable?:(roleId:string)=>Promise<void>;
   discussionStatus?:(a?:TrustedCallContext)=>Promise<Row>;
   constructor(private db: Database, private write: <T>(fn: () => Promise<T>) => Promise<T>, private offices: OfficeStore, private clock: () => number = Date.now) {}
   async init() {
@@ -91,6 +94,7 @@ export class RoleStore {
     const b = await this.db.get<Row>('SELECT b.*,r.name,r.introduction,r.state role_state,r.revision profile_revision,r.primary_seat FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.principal=? AND b.connector_id=? AND b.runtime_id=?', [a.principal, a.agentId, a.runtimeId]);
     if (!b) { if (required) fail('No approved character for this session; use role_application','invalid_input'); return null; }
     if(b.state!=='active'&&!required&&a.roleId===undefined&&a.roleBindingId===undefined&&a.roleBindingEpoch===undefined)return null;
+    await this.assertCloneUsable?.(b.role_id);
     if (b.state !== 'active' || b.role_state !== 'active') fail('Character or session binding was disabled by the user', 'scope_denied');
     if ((a.roleId !== undefined && a.roleId !== b.role_id) ||
         (a.roleBindingId !== undefined && a.roleBindingId !== b.id) ||
@@ -252,8 +256,9 @@ export class RoleStore {
     const processing=await this.db.all("SELECT m.id messageId,m.office_id officeId,s.taken_at takenAt FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.recipient=? AND s.state='processing' ORDER BY m.seq LIMIT 21",[b.role_id]);
     const controlRequests=await this.db.all("SELECT id,action,reason,requested_at FROM office_control_requests WHERE role_id=? AND state='requested' ORDER BY requested_at LIMIT 20",[b.role_id]);
     const waits=await this.db.all<Row[]>("SELECT id,state,conditions,expires_at FROM role_message_waits WHERE role_id=? ORDER BY started_at DESC LIMIT 10",[b.role_id]);
-    const waitRecovery=waits.map(w=>{const conditions=JSON.parse(w.conditions);return {...w,conditions,resume:{afterSeq:conditions.afterSeq??0,...(conditions.replyTo?{replyTo:conditions.replyTo}:{}),waitMs:conditions.waitMs??300000}};});
-    return { state: 'active', discussions:await this.discussionStatus?.(actor), identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
+    const waitRecovery=waits.map(w=>{const conditions=JSON.parse(w.conditions),inbox=conditions.purpose==='sent_message_inbox';return {...w,conditions,...(inbox?{sentMessageId:conditions.replyTo,sendKey:conditions.sendKey,nextAction:'This send was already committed. Retry its original office_message send payload/key with waitForReply=true to recover a delivered processing message or wait for any new inbox mail. The ordinary office_wait resume below observes inbox arrivals only; do not resend with a new key.'}:{}),resume:{afterSeq:conditions.afterSeq??0,...(!inbox&&conditions.replyTo?{replyTo:conditions.replyTo}:{}),waitMs:conditions.waitMs??300000}};});
+    const clone=await this.cloneStatus?.(b.role_id);
+    return { state: 'active', clone:clone?.lineage||clone?.returns.packages?clone:undefined, discussions:await this.discussionStatus?.(actor), identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
       processing:processing.slice(0,20),processingHasMore:processing.length>20,resume:{mcp:'memory',tool:'memory_resume',next:'Read current role working state on the separate Memory MCP before continuing. Follow its pages, check new messages and verify linked versions; do not infer unrecorded progress.'},instructions: ROLE_INSTRUCTIONS };
   }
   async contacts(i:Row,a?:TrustedCallContext){
@@ -309,6 +314,7 @@ export class RoleStore {
     return this.write(async () => {
       const old = await this.db.get<Row>('SELECT * FROM character_roles WHERE id=?', [i.roleId]);
       if (!old || old.revision !== i.expectedRevision) fail('Character profile changed; refresh', 'stale_version');
+      if(i.state==='active')await this.assertCloneUsable?.(old.id);
       if(old.state==='merged')fail('角色已合并，无法重新启用；请使用合并后的角色。','invalid_input');
       const revision = old.revision + 1;
       await this.db.run('UPDATE character_roles SET name=?,introduction=?,state=?,revision=? WHERE id=?', [i.name, i.introduction, i.state, revision, old.id]);
@@ -325,6 +331,7 @@ export class RoleStore {
     return this.write(async () => {
       const role = await this.db.get<Row>('SELECT revision FROM character_roles WHERE id=?',[i.roleId]);
       if (!role || role.revision !== i.expectedRevision) fail('Character profile changed or was deleted; refresh','stale_version');
+      await this.assertCloneReorganizable?.(i.roleId);
       await this.fenceRole(i.roleId);
       await deleteRoleData(this.db,i.roleId);
       await this.event(i.roleId,'deleted',{roleId:i.roleId});
@@ -396,7 +403,7 @@ export class RoleStore {
   async configureOffice(i: Row, a?: TrustedCallContext) {
     this.admin(a);
     return this.write(async () => {
-      if(!await this.db.get('SELECT 1 FROM offices WHERE id=?',[i.id])&&await this.db.get('SELECT 1 FROM memory_office_namespaces WHERE office_id=?',[i.id]))fail('This office ID belongs to retained knowledge from a deleted office. Create a new office ID.','invalid_input');
+      if(!await this.db.get('SELECT 1 FROM offices WHERE id=?',[i.id])&&await this.db.get('SELECT 1 FROM memory_office_namespaces WHERE office_id=? UNION ALL SELECT 1 FROM office_discussion_departures WHERE office_id=? LIMIT 1',[i.id,i.id]))fail('This office ID belongs to retained knowledge or role-owned exit records from a deleted office. Create a new office ID.','invalid_input');
       for (const s of i.seats ?? []) {
         if(!s.roleId)fail('Choose an approved role for every office participant','invalid_input');
         const r = await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'", [s.roleId]);

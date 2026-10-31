@@ -201,13 +201,14 @@ export function officeWorkbench(
     const choices=conditionalProjection(await graph.offices.choices(operator),known.choicesRevision);
     const templates=conditionalProjection(settings.mcpUrl?Object.fromEntries(registry.agents.map((a:any)=>[a.id,officeConnection({host:a.host,id:a.id,url:settings.mcpUrl})])):{},known.connectionTemplatesRevision);
     return {
-      ...registry, choices:choices.value,choicesRevision:choices.revision, selectedOffice:req.body.selectedOfficeId?{id:z.string().min(1).max(160).parse(req.body.selectedOfficeId),exists:await graph.offices.officeExists(req.body.selectedOfficeId,operator)}:null, settings, release:releaseInfo(),capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
+      ...registry, choices:choices.value,choicesRevision:choices.revision, selectedOffice:req.body.selectedOfficeId?{id:z.string().min(1).max(160).parse(req.body.selectedOfficeId),exists:await graph.offices.officeExists(req.body.selectedOfficeId,operator)}:null, settings, replyWaitPolicy:await graph.building.replyWaitPolicy.get(), release:releaseInfo(),capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
       connectionTemplates:templates.value,connectionTemplatesRevision:templates.revision,
       characters: await graph.roles.state(operator, req.body.roleAfterSeq,windows,req.body.roleDirectoryRevision),
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
   });
   route('/connection-template',async req=>{const i=z.object({agentId:z.string().min(1).max(128),identityMode:z.enum(['connection','native'])}).strict().parse(req.body);const agent=await graph.offices.agent(i.agentId,operator);if(!agent)throw new MindPondError('not_found','Connection not found');const settings=await graph.offices.settings(operator);if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address first');return officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:i.identityMode});});
+  route('/reply-wait-policy',req=>graph.building.replyWaitPolicy.manage(req.body,operator));
   route('/settings', (req) => graph.offices.settings(operator, req.body.mcpUrl));
   officeAdminServices(graph,route,operator);
   route('/agent', (req) =>
@@ -225,6 +226,8 @@ export function officeWorkbench(
   route('/role/review', req => graph.roles.review(roleReviewSchema.parse(req.body), operator));
   route('/role/state', req => graph.roles.state(operator,req.body.afterSeq,directoryWindows.parse(req.body.directoryThrough??{}),req.body.directoryRevision));
   route('/role/message',req=>graph.roles.messagePreview(messageReference.parse(req.body),operator));
+  route('/role/clones',req=>graph.roleClones.manage(req.body,operator));
+  route('/role/memory-permissions',req=>graph.roleMemoryPermissions.manage(req.body,operator));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
   route('/role/reorganization/choices',req=>graph.roleReorganization.choices(req.body,operator));
   route('/role/reorganization/preview',req=>graph.roleReorganization.preview(req.body,operator));

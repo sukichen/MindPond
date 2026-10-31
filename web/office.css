@@ -801,3 +801,13 @@ body.office-application{height:100dvh;overflow:hidden;background:var(--o-backgro
 .office-role-reorganization fieldset{min-width:0;border:0;padding:0}
 .office-role-reorganization dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.35rem 1rem}
 .office-role-reorganization dd{margin:0}
+
+.office-role-memory-permissions{display:grid;gap:12px;padding:18px;margin-top:18px;border:1px solid var(--office-line,#dbe5da);border-radius:14px;min-width:0;overflow-wrap:anywhere}
+.office-role-memory-permissions label{display:flex;align-items:flex-start;gap:10px;line-height:1.6;cursor:pointer}
+.office-role-memory-permissions input[type=checkbox]{flex:0 0 auto;width:18px;height:18px;margin-top:3px;accent-color:#356c58}
+.office-role-memory-permissions p,.office-role-memory-permissions h3{margin:0}
+
+/* Dispatch controls remain usable inside narrow role inspectors. */
+.office-clones{min-width:0}.office-clones p,.office-clones small{overflow-wrap:anywhere;white-space:normal}.office-clones fieldset{display:grid;gap:12px;min-width:0;border:1px solid var(--office-border,#d8e1d3);border-radius:12px;padding:16px}.office-clones label{display:grid;gap:6px;min-width:0}.office-clones input:not([type=checkbox]),.office-clones textarea,.office-clones select{box-sizing:border-box;width:100%;min-width:0;max-width:100%}.office-clone-card{border:1px solid var(--office-border,#d8e1d3);border-radius:12px;padding:14px;margin:12px 0;min-width:0}.office-clone-card button{margin:6px 8px 0 0;white-space:normal}.office-clone-review{border-top:1px solid var(--office-border,#d8e1d3);margin-top:12px;padding-top:12px}.office-clone-review pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}.office-clone-review>div{max-height:420px;overflow:auto}.office-clones .office-reorganization-option{display:flex;align-items:flex-start;gap:8px;overflow-wrap:anywhere}.office-clones .office-reorganization-option input{flex:0 0 auto}
+
+.office-reply-wait-policy{border-top:1px solid var(--office-border,#d8e1d3);margin-top:20px;padding-top:14px;min-width:0}.office-reply-wait-policy fieldset{border:0;margin:0;padding:0;min-width:0}.office-reply-wait-policy p{overflow-wrap:anywhere;white-space:normal}.office-reply-wait-policy input{width:100%;box-sizing:border-box;min-width:0}

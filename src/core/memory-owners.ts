@@ -27,7 +27,7 @@ export class MemoryOwners {
     }
     async role(roleId: string) { const r = await this.db.get(`SELECT r.id,r.name,r.state,r.principal,b.connector_id,a.name connector_name,a.host FROM character_roles r
       LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active' LEFT JOIN office_agents a ON a.id=b.connector_id WHERE r.id=?`, [roleId]); if (!r || r.state !== 'active')
-        throw new MindPondError('scope_denied', 'The memory role is unavailable or disabled'); return r; }
+        throw new MindPondError('scope_denied', 'The memory role is unavailable or disabled'); await this.graph.roleClones?.assertUsable(roleId); return r; }
     async roleBinding(roleId: string) { return this.db.get("SELECT id,epoch,runtime_id,connector_id,principal FROM role_bindings WHERE role_id=? AND state='active'", [roleId]); }
     /** Native chat identity is supplied by the host, never by tool arguments.
      * Ambiguous matches require the authenticated host-specific Memory endpoint. */
@@ -40,6 +40,7 @@ export class MemoryOwners {
         if(active.length>1)throw new MindPondError('scope_denied','This chat matches multiple host connections. Use the Memory endpoint generated for the intended host.');
         if(!active.length){if(matches.length)throw new MindPondError('scope_denied','The bound host is disabled; it cannot become a human connection.');return null;}
         if(active[0].role_state!=='active')throw new MindPondError('scope_denied','The bound role is disabled; it cannot become a human connection.');
+        await this.graph.roleClones?.assertUsable(active[0].role_id);
         return active[0];
     }
     async office(officeId:string) {
@@ -132,7 +133,8 @@ export class MemoryOwners {
     async present(node:MemoryNode) {
         const {embedding,domain,sessionId,...rest}=node,owner=await this.owner(node);
         const provenance=await this.db.get('SELECT source_id sourceId,source_revision sourceRevision,source_hash sourceHash,created_at assignedAt FROM memory_allocations WHERE copy_id=?',[node.id]);
-        return {...rest,owner,...(owner.kind==='office'?{officePolicy:await this.policy(node.id)}:{}),...(provenance?{provenance}:{})};
+        const copyOrigin=await this.db.get("SELECT source_id sourceId,source_version sourceVersion,source_hash sourceHash,origin,created_at createdAt FROM role_knowledge_copies WHERE copy_id=? AND kind='memory'",[node.id]);
+        return {...rest,owner,...(copyOrigin?{copyOrigin}:{}),...(owner.kind==='office'?{officePolicy:await this.policy(node.id)}:{}),...(provenance?{provenance}:{})};
     }
     async roles() { return this.db.all(`SELECT r.id,r.name,r.state,b.connector_id connectorId,a.name connectorName,a.host,a.state hostState,
       (SELECT COUNT(*) FROM nodes n JOIN memory_role_namespaces ns ON ns.domain_id=n.domain_id

@@ -30,8 +30,6 @@ try{
  const roles:any[]=[];
  for(const chat of ['a','b','c','outside']){const app=await call('role_application',{action:'submit',name:'Fixture '+chat,introduction:'Reusable verified work only',reason:'Resources regression',key:'apply'},chat);roles.push(await graph.roles.review({applicationId:app.applicationId,expectedRevision:1,action:'approve'},admin));}
  const seats=roles.slice(0,3).map((r,i)=>({id:'seat-'+i,roleId:r.roleId,label:'Duty '+i,role:'member'}));
- await graph.roles.configureOffice({id:'room',title:'Fixture office',state:'active',expectedRevision:0,seats},admin);
- await graph.roles.configureOffice({id:'outside-room',title:'Another office',state:'active',expectedRevision:0,seats:[{id:'outside-seat',roleId:roles[3].roleId,label:'Outside',role:'member'}]},admin);
  const tools=(await client.listTools()).tools.map(t=>t.name);assert(tools.includes('office_discussion')&&tools.includes('office_script'));assert(!tools.some(n=>n.startsWith('memory_')),'Office never reintroduces Memory read/write tools');
  const script={action:'save',filename:'check-env.py',language:'Python 3',description:'Verify a fictional environment',usage:'Review source and run only in the authorized project. No installation required.',content:'print("合成源码🙂")\n'.repeat(1300),expectedRevision:0,key:'private-script'};
  const saved=await call('office_script',script);assert.equal((await call('office_script',script)).id,saved.id);
@@ -48,6 +46,9 @@ try{
  await deny('office_script',{action:'get',id:saved.id,offset:20},'invalid_input');
  const edited=await Promise.all(['first','second'].map(key=>raw('office_script',{...script,id:saved.id,expectedRevision:1,key,content:'print("'+key+'")\n'})));assert.equal(edited.filter((r:any)=>!r.isError).length,1);
  await deny('office_script',{action:'get',id:saved.id,offset:20,expectedRevision:1},'stale_version');
+ console.log('PASS role-private scripts need no office: save/list/get/edit/delete, peer isolation, versioned downloads and retries all work before office creation');
+ await graph.roles.configureOffice({id:'room',title:'Fixture office',state:'active',expectedRevision:0,seats},admin);
+ await graph.roles.configureOffice({id:'outside-room',title:'Another office',state:'active',expectedRevision:0,seats:[{id:'outside-seat',roleId:roles[3].roleId,label:'Outside',role:'member'}]},admin);
  const shared=await call('office_script',{...script,officeId:'room',key:'shared',content:'echo fixture-only\n',filename:'verify.sh',language:'POSIX sh'});
  assert.equal((await call('office_script',{action:'get',officeId:'room',id:shared.id},'b')).content,'echo fixture-only\n');await deny('office_script',{action:'get',officeId:'room',id:shared.id},'scope_denied','outside');
  await deny('office_script',{...script,id:saved.id,key:'collision',expectedRevision:0},'not_found','b');
@@ -63,7 +64,8 @@ try{
  const facility=await graph.building.snapshot('room',admin),facilityDelta=await graph.building.snapshot('room',admin,facility.revision);
  assert.equal(facilityDelta.unchanged,true);assert.equal(facilityDelta.meetings[0].id,roomId);assert.equal(facilityDelta.activity.find((r:any)=>r.roleId===roles[0].roleId).discussionId,roomId);assert.equal(facilityDelta.meetings[0].members.find((m:any)=>m.roleId===roles[1].roleId).state,'invited');assert(!JSON.stringify(facilityDelta.meetings).includes(create.question),'scene metadata must not include temporary transcript/question bodies');
  assert.equal((await call('role_sync')).discussions.active.id,roomId);assert.equal((await graph.building.snapshot('room',admin)).activity.find((r:any)=>r.roleId===roles[0].roleId).discussionTitle,create.title);assert.equal((await call('role_sync',{},'b')).discussions.invitations[0].id,roomId);
- assert.equal((await call('office_wait',{waitMs:2000},'b')).status,'discussion');
+ const inviteWake=await call('office_wait',{waitMs:30000},'b');assert.equal(inviteWake.status,'discussion');assert.equal(inviteWake.wakeReason,'discussion_invitation');assert.equal(inviteWake.requestedWaitMs,30000);assert(inviteWake.elapsedMs<5000);assert(inviteWake.nextAction.includes('join or decline'));assert.equal(inviteWake.discussions.active,null,'wait never joins an invitation');
+ const focusWake=await call('office_wait',{waitMs:30000});assert.equal(focusWake.wakeReason,'active_discussion');assert.equal(focusWake.nextCall.tool,'office_discussion');assert.deepEqual(focusWake.nextCall.arguments,{action:'get',id:roomId});assert(focusWake.elapsedMs<5000);assert(!focusWake.pending&&!focusWake.resume,'discussion focus must not masquerade as a resumable mailbox timeout');
  await deny('office_receive',{action:'take',key:'must-wait'},'invalid_input');await deny('office_message',{action:'take',messageId:mail.messageId,key:'must-wait'},'invalid_input');
  assert.equal((await call('office_receive',{action:'list'})).messages.find((m:any)=>m.id===mail.messageId).state,'pending');
  const firstPost=await call('office_discussion',{action:'post',id:roomId,body:'Private temporary post sentinel',key:'post'});
@@ -147,6 +149,8 @@ try{
  console.log('PASS connections: native sessions visible including occupied/pending chats, explicit disconnect/CAS, credential revocation, no automatic reapplication, and identity/script continuity on a different observed chat');
 
  await graph.roles.configureOffice({id:'room',title:'Fixture office',state:'active',expectedRevision:1,seats:[seats[2]]},admin);
+ const detachedScript=await call('office_script',{action:'get',id:saved.id},'new-target');assert.equal(detachedScript.script.role_id,roleNow.id);assert.equal(detachedScript.script.office_id,null);
+ const detachedEdit=await call('office_script',{...script,id:saved.id,expectedRevision:detachedScript.script.revision,key:'edit-after-office-exit',content:'print("Role-private without an office")\n'},'new-target');assert.equal(detachedEdit.revision,detachedScript.script.revision+1);
  await deny('office_script',{action:'get',officeId:'room',id:shared.id},'scope_denied','new-target');await deny('office_discussion',{action:'get',id:parallel.room.id},'scope_denied','b');
  await graph.roles.configureOffice({id:'outside-room',title:'Another office',state:'active',expectedRevision:1,seats:[{id:'outside-seat',roleId:roles[3].roleId,label:'Outside',role:'member'},{id:'moved-b-seat',roleId:roles[1].roleId,label:'New duty',role:'member'}]},admin);
  const movedFocus=await call('office_discussion',{...create,officeId:'outside-room',participants:[roles[3].roleId],key:'moved-focus'},'b');assert(movedFocus.room.id,'moving offices must release an inaccessible old focus even without role_sync');await call('office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:movedFocus.room.id},'b');assert.equal((await call('role_sync',{},'b')).discussions.active,null);
@@ -154,6 +158,8 @@ try{
  reopened=new GraphMemory('.',{dbPath:file});await reopened.init();assert.equal((await reopened.scripts.run({action:'list',roleId:roleNow.id},admin)).scripts[0].id,saved.id);assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');assert.deepEqual(await db.all('PRAGMA foreign_key_check'),[]);
  await reopened.close();reopened=undefined;
  await graph.roles.deleteOffice({id:'room',expectedRevision:2},admin);assert.equal((await db.get('SELECT COUNT(*) n FROM office_scripts WHERE office_id=?',['room'])).n,0);assert(await graph.getNodeById(memory.id));
+ const afterOfficeDeletion=await call('office_script',{action:'get',id:saved.id},'new-target');assert.equal(afterOfficeDeletion.content,'print("Role-private without an office")\n');assert((await call('office_script',{action:'list'},'new-target')).scripts.some((r:any)=>r.id===saved.id));
+ console.log('PASS leaving/deleting an office preserves private role scripts and editing access; switching chats preserves the same role-owned library');
  const deleting=(await graph.roles.registry(admin)).roles.find((r:any)=>r.id===roleNow.id)!;await graph.roles.deleteRole({roleId:roleNow.id,expectedRevision:deleting.revision},admin);assert.equal((await db.get('SELECT COUNT(*) n FROM office_scripts WHERE role_id=?',[roleNow.id])).n,0);assert.deepEqual(await db.all('PRAGMA foreign_key_check'),[]);
  console.log('PASS revocation, expiry cleanup, restart, scoped deletion cascades, independent memory retention and SQLite integrity');
 }finally{for(const c of clients)await c.close();(workbench as any)?.closeObservers?.();await network?.close();if(listener)await new Promise<void>(r=>listener.close(r));await reopened?.close();await graph.close();embedding.generateEmbedding=generate;await fs.rm(dir,{recursive:true,force:true});}

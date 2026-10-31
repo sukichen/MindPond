@@ -7,7 +7,7 @@ export function parseMcpToolProfile(value: string | undefined): McpToolProfile {
 }
 const WORK_TOOLS = new Set([
   'office_directory','office_receive','office_message','office_wait','office_container','office_material',
-  'office_discussion','office_script','office_artifact','office_host','office_context','office_record','office_broadcast',
+  'office_clone','office_discussion','office_script','office_artifact','office_host','office_context','office_record','office_broadcast',
   'role_application','role_sync',
   'memory_export', 'memory_finish', 'memory_directory', 'memory_history', 'memory_event_search',
   'memory_brief', 'memory_search', 'memory_get', 'memory_expand', 'memory_connections', 'memory_spaces',

@@ -95,6 +95,13 @@ try {
     const cc = (name: string, input: any = {}) => call(c, name, input);
     const waitSchema=(await a.listTools()).tools.find(t=>t.name==='office_wait')!.inputSchema;
     assert.equal((waitSchema.properties!.waitMs as any).maximum,300000);
+    if(process.argv.includes('--wait-diagnostics')){
+        const bridge=new Client({name:'thirty-second-wait-fixture',version:'1'});clients.push(bridge);
+        await bridge.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('dist/mcp-remote.js'),'--url',`http://127.0.0.1:${port}/mcp`,'--token-file',path.join(dir,'cli.token'),'--session',ra.sessionLabel],stderr:'pipe'}));
+        const measured=async(client:Client)=>{const start=performance.now(),result=await call(client,'office_wait',{waitMs:30000}),elapsed=performance.now()-start;assert.equal(result.status,'timeout');assert(elapsed>=29500&&elapsed<45000,JSON.stringify({elapsed,result}));assert(result.elapsedMs>=29500);return Math.round(elapsed);};
+        const elapsed=await Promise.all([measured(b),measured(bridge)]);
+        console.log('PASS actual 30000ms idle office_wait over HTTP and stdio→HTTP bridge: elapsed '+elapsed.join('/')+'ms');
+    }
     if(process.argv.includes('--long-wait')){
         // Exercise the real stdio→HTTP bridge past the SDK's former 60-second deadline,
         // while an independent HTTP call proves the default five-minute timeout.
@@ -139,9 +146,9 @@ try {
     const reply = await cb('office_message', { action: 'send', replyTo: sent.messageId, body: 'A normal reply.', key: 'reply' });
     assert.equal((await ca('office_receive')).messages[0].id, reply.messageId);
     const waiting = await ca('office_wait', { replyTo: sent.messageId, waitMs: 100 });
-    assert.equal(waiting.status, 'matched', 'reply before wait remains observable');
+    assert.equal(waiting.status, 'matched', 'reply before wait remains observable');assert.equal(waiting.wakeReason,'message_available');assert.equal(waiting.requestedWaitMs,100);assert(waiting.elapsedMs>=0);assert(waiting.nextAction.includes('take'));
     const idle = await cb('office_wait', { waitMs: 100 });
-    assert.equal(idle.status, 'timeout');assert.equal(idle.pending, true);
+    assert.equal(idle.status, 'timeout');assert.equal(idle.pending, true);assert.equal(idle.wakeReason,'deadline_reached');assert.equal(idle.requestedWaitMs,100);assert(idle.elapsedMs>=95);
     assert.equal(idle.resume.waitMs, 100);assert.equal(idle.resume.roleContext, undefined);
     // Retry the exact public continuation through MCP: an unrelated message must not satisfy it.
     const pendingReply = await ca('office_wait', { replyTo: sent.messageId, afterSeq: reply.seq, waitMs: 100 });

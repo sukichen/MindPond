@@ -11,7 +11,18 @@ type Row=Record<string,any>;
 export type DepartureInput={action:string;id?:string;officeId?:string;summary?:string;key?:string;expectedRevision?:number;messages?:{recipient:string;body:string;replyTo?:string;officeId?:string|null}[]};
 export class DiscussionDepartures{
  constructor(private db:Database,private graph:GraphMemory,private write:<T>(fn:()=>Promise<T>)=>Promise<T>,private clock:()=>number){}
- async init(){await this.db.exec(`CREATE TABLE IF NOT EXISTS office_discussion_departures(id TEXT PRIMARY KEY,room_id TEXT NOT NULL,office_id TEXT NOT NULL REFERENCES offices(id) ON DELETE CASCADE,role_id TEXT NOT NULL REFERENCES character_roles(id) ON DELETE CASCADE,key TEXT NOT NULL,hash TEXT NOT NULL,messages TEXT NOT NULL,pending_count INTEGER NOT NULL,created_at INTEGER NOT NULL,UNIQUE(role_id,room_id,key)); CREATE INDEX IF NOT EXISTS discussion_departure_role ON office_discussion_departures(role_id,pending_count,created_at,id);`);}
+ async init(){await this.write(async()=>{
+  const columns='(id TEXT PRIMARY KEY,room_id TEXT NOT NULL,office_id TEXT NOT NULL,role_id TEXT NOT NULL REFERENCES character_roles(id) ON DELETE CASCADE,key TEXT NOT NULL,hash TEXT NOT NULL,messages TEXT NOT NULL,pending_count INTEGER NOT NULL,created_at INTEGER NOT NULL,UNIQUE(role_id,room_id,key))';
+  await this.db.exec('CREATE TABLE IF NOT EXISTS office_discussion_departures'+columns);
+  // office_id records provenance, not ownership. Migrate the former cascade
+  // atomically so deleting an office cannot delete a role's unsent private work.
+  const keys=await this.db.all<Row[]>('PRAGMA foreign_key_list(office_discussion_departures)');
+  if(keys.some(k=>k.from==='office_id'&&k.table==='offices'))await this.db.exec(`CREATE TABLE office_discussion_departures_next${columns};
+   INSERT INTO office_discussion_departures_next SELECT * FROM office_discussion_departures;
+   DROP TABLE office_discussion_departures;
+   ALTER TABLE office_discussion_departures_next RENAME TO office_discussion_departures;`);
+  await this.db.exec('CREATE INDEX IF NOT EXISTS discussion_departure_role ON office_discussion_departures(role_id,pending_count,created_at,id)');
+ });}
  private hash(i:DepartureInput){return digest({action:i.action,id:i.id,summary:i.summary,key:i.key,expectedRevision:i.expectedRevision,messages:i.messages??[]});}
  async replay(i:DepartureInput,roleId:string){
   if(!i.id||!i.key)return;

@@ -17,7 +17,7 @@ export interface WorkCallRuntime {
   /** Gateways recheck revocable credentials during an outstanding request. */
   authorize?:()=>Promise<void>;
 }
-export interface WaitMatch {status:'matched'|'terminal'|'superseded';nextCursor:number;[key:string]:unknown}
+export interface WaitMatch {status:'matched'|'terminal'|'superseded'|'control';nextCursor:number;[key:string]:unknown}
 interface WaitHooks {
   inspect:(input:WorkWaitInput,actor?:TrustedCallContext)=>Promise<WaitMatch|undefined>;
   start:(id:string,input:WorkWaitInput,actor:TrustedCallContext,waitMs:number)=>Promise<void>;

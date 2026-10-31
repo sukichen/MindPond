@@ -90,7 +90,7 @@ const server = new McpServer({
 const exposedTools: string[] = [];
 if(taskStore){
   exposedTools.push('office_wait_task');
-  server.experimental.tasks.registerToolTask('office_wait_task',{description:'Experimental MCP task: durable five-minute message/reply condition. Poll task status; fetching a match does not claim a message. Survives server reconnects with the same approved fixed host session. Does not wake a stopped model.',inputSchema:{afterSeq:z.number().int().min(0).optional(),replyTo:z.string().max(160).optional(),waitMs:z.number().int().min(100).max(300000).optional()},execution:{taskSupport:'required'}},{
+  server.experimental.tasks.registerToolTask('office_wait_task',{description:'Experimental MCP task: durable five-minute wait with the same human-control, discussion and message priorities as office_wait. Poll task status; fetching a match does not claim a message. Survives server reconnects with the same approved fixed host session. Does not wake a stopped model.',inputSchema:{afterSeq:z.number().int().min(0).optional(),replyTo:z.string().max(160).optional(),waitMs:z.number().int().min(100).max(300000).optional()},execution:{taskSupport:'required'}},{
     createTask:async(_args,extra)=>{await options.authorizeWait?.();return {task:await extra.taskStore.createTask({ttl:3600000,pollInterval:1000})};},
     getTask:async(_args,extra)=>{await options.authorizeWait?.();return (await extra.taskStore.getTask(extra.taskId))!;},
     getTaskResult:async(_args,extra)=>{await options.authorizeWait?.();return await extra.taskStore.getTaskResult(extra.taskId) as any;}
@@ -106,12 +106,13 @@ const seenRoleProfiles=new Map<string,string>();
 function tool(name: string, description: string, shape: any, handler: (args: any,runtime?:WorkCallRuntime) => Promise<any>) {
   if (!exposesMcpTool(toolProfile, name)) return;
   if(baseTrusted.agentId&&name.startsWith('work_'))return;
-  if((name.startsWith('office_')||name==='role_sync')&&!['office_discussion','office_script'].includes(name))shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
+  if((name.startsWith('office_')||name==='role_sync')&&!['office_discussion','office_script','office_clone'].includes(name))shape={...shape,responseBudgetBytes:z.number().int().min(2048).max(65536).optional()};
   exposedTools.push(name);
   const execute=async (args: any,extra:{signal:AbortSignal;requestId:string|number;_meta?:Record<string,unknown>}) => {
     if(closing)return {content:[{type:'text' as const,text:JSON.stringify({error:toStructuredError(new MindPondError('temporarily_unavailable','The MCP service is shutting down. Reconnect before retrying the same operation key.'))})}],isError:true};
     let release!:()=>void;const active=new Promise<void>(r=>release=r);activeCalls.add(active);
     let auditContext:TrustedCallContext=baseTrusted;
+    let committedSend:{messageId:string;seq?:number}|undefined;
     try {
       await options.authorizeWait?.();
       let current:TrustedCallContext={...baseTrusted};
@@ -155,6 +156,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       }
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
+      if(name==='office_message'&&args.action==='send'&&args.waitForReply===true&&!result.isError){const first=result.content?.find((c:any)=>c.type==='text');if(first){const data=JSON.parse(first.text);if(data.sent&&typeof data.messageId==='string')committedSend={messageId:data.messageId,seq:data.seq};}}
       await options.authorizeWait?.();
       if(name==='role_sync'&&!result.isError){
         const entry=result.content?.find((c:any)=>c.type==='text');
@@ -185,12 +187,14 @@ function tool(name: string, description: string, shape: any, handler: (args: any
             maintenance: toolProfile === 'work' ? 'Bulk requests, worker draining, legacy and destructive administration need a separate full-profile connection (MINDPOND_TOOL_PROFILE=full). The work profile supports scoped saves, edits, small organization jobs and collaboration tasks.' : 'All tools are exposed.' } });
         }
       }
-      if(name==='office_discussion'||name==='office_script'||name==='office_artifact')return result; // Own bounded pages; never persist ephemeral posts or downloadable source in generic response caches.
+      if(name==='office_message'&&args.waitForReply===true&&committedSend)return result; // Complete inbox delivery is intentional; do not replace it with a get/page round trip.
+      if(name==='office_discussion'||name==='office_script'||name==='office_artifact'||name==='office_clone')return result; // Own bounded pages; never persist ephemeral posts or downloadable source in generic response caches.
       if(name.startsWith('office_')||name==='role_sync')return graphMemory.officeCollaboration.boundResponse(result,args.responseBudgetBytes??16384,current);
       return result;
       });
     } catch (err) {
       const e = toStructuredError(err);
+      if(committedSend){e.details={...e.details,sent:true,...committedSend};e.nextAction='The message was already sent. Retry the original payload/key if needed; do not create a new send key because waiting or response delivery failed. '+e.nextAction;}
       await graphMemory.logAction({action:'host_tool_failed',domain:trustBound&&!auditContext.operator?(auditContext.sessionId?{kind:'session',id:auditContext.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,code:e.code,...(trustBound?{principal:auditContext.principal,agentId:auditContext.agentId,workSessionId:auditContext.workSessionId,roleId:auditContext.roleId,roleBindingEpoch:auditContext.roleBindingEpoch}:{})})}).catch(()=>{});
       return { content: [{ type: 'text' as const, text: JSON.stringify({ error: e }) }], isError: true };
     } finally {release();activeCalls.delete(active);}

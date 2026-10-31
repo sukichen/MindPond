@@ -14,7 +14,7 @@ Codex 使用每次工具调用的 `threadId` 区分聊天；OpenCode 使用插�
 
 ## 消息闭环
 
-`office_receive` 领取待处理消息后转为处理中；`office_message finish` 提交处理结果、归档并发送反馈。列表、详情和等待只观察，不代表处理完成。`office_wait` 最长等待五分钟；客户端工具超时应至少360秒。超时返回待定和恢复参数，不是成功或任务失败。
+`office_receive` 领取待处理消息后转为处理中；`office_message finish` 提交处理结果、归档并发送反馈。列表、详情和等待只观察，不代表处理完成。`office_wait` 最长等待五分钟；客户端工具超时应至少360秒。超时返回待定和恢复参数，不是成功或任务失败。 `waitMs` 是最长等待时间，并非固定停顿：已有待处理消息、会议焦点或邀请时可立即返回。核对 `requestedWaitMs`、`elapsedMs` 和 `wakeReason`：`message_available` 表示可领取消息；`active_discussion` 应跟随 `nextCall` 查看会内未处理发言，无内容时使用 `office_discussion wait`；`discussion_invitation` 需明确加入或拒绝；`discussion_access_changed` 需核对连接权限。`status=control / wakeReason=user_control_requested` 表示人类控制请求优先返回；用返回的 `nextCall` 读取完整原因，实际遵守后再通过 `office_host ack` 反馈。普通等待、会议等待和协商支持的 MCP Tasks 保持这一优先级。收到请求不代表已停止宿主、自动确认或任务完成。只有 `deadline_reached` 表示服务端等待窗口到期。`request_cancelled` 表示取消，不代表已等满时间。若客户端直接报 MCP 取消、超时或网络错误而没有这些字段，应另查客户端/代理日志。
 
 重连后先 `role_sync` 恢复身份、处理中消息及等待条件。同一角色切换聊天时，让当前聊天显示激活编号，在网页核对后连接已有角色；角色知识和消息随角色保留。批准或激活不会启动已经停止的宿主。
 
