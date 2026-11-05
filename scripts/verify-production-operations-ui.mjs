@@ -19,6 +19,11 @@ const all=n=>[n,...n.children.flatMap(all)],button=(root,text)=>all(root).find(n
 const snapshot={release:{version:'0.2.0',platform:'test',arch:'test'},schemaVersion:5,integrity:{healthy:true},storage:{databaseBytes:100,walBytes:0,filesystem:{availableBytes:200}},runtime:{memoryBytes:{rss:100},uptimeSeconds:60,failed:0},mcpProcesses:[],backups:[],processing:[],backlog:[],capacity:{},observedAt:1};
 let pending=operations.refresh();state.authEpoch++;calls.at(-1).resolve(snapshot);await pending;assert.equal(elements.officeOperationsBody.children.length,0,'responses from a logged-out management session never render');
 state.logged=true;pending=operations.refresh();calls.at(-1).resolve(snapshot);await pending;assert(button(elements.officeOperationsBody,'下载脱敏诊断'));await button(elements.officeOperationsBody,'下载脱敏诊断').onclick();assert.equal(downloads.length,1);
+pending=operations.refresh();
+calls.at(-1).resolve({...snapshot,storage:{...snapshot.storage,filesystem:{name:'NFS',kind:'network',availableBytes:200}}});
+await pending;
+assert(all(elements.officeOperationsBody).some(n=>n.textContent==='最近检查通过'));
+assert(all(elements.officeOperationsBody).some(n=>n.textContent.includes('SQLite WAL 不支持网络文件系统')));
 const fields=all(elements.officeOperationsBody).filter(n=>n.tagName==='input');fields[0].value='12';fields[1].value='80';fields[0].oninput();pending=operations.refresh();calls.at(-1).resolve(snapshot);await pending;const preserved=all(elements.officeOperationsBody).filter(n=>n.tagName==='input');assert.equal(preserved[0].value,'12');assert.equal(preserved[1].value,'80','automatic status refresh preserves unsaved capacity drafts');
 const savedDownload=button(elements.officeOperationsBody,'下载脱敏诊断');operations.reset();state.logged=false;await savedDownload.onclick();assert.equal(downloads.length,1,'stale diagnostics actions cannot download after logout');
 state.logged=true;state.appView='officeRooms';pending=operations.recover({id:'message',officeId:'room'});state.office={office:{id:'other'}};calls.at(-1).resolve({message:{id:'message',state:'processing'}});await pending;assert.equal(elements.officeDetail.children.length,0,'room switches fence delayed message recovery');

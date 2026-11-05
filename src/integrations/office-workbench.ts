@@ -259,6 +259,7 @@ export function officeWorkbench(
   route('/role/activate',req=>graph.roles.activate(z.object({requestId:z.string().uuid(),roleId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(req.body),operator));
   route('/discussion-lock',req=>graph.discussions.setLock(req.body,operator));
   route('/discussions',req=>graph.discussions.run(discussionSchema.parse(req.body),operator));
+  route('/discussion-history',req=>graph.discussions.history(req.body,operator));
   route('/rules',req=>graph.officeRules.manage(req.body,operator));
   route('/scripts',req=>graph.scripts.run(managedScriptSchema.parse(req.body),operator));
   route('/discussion-memory',async req=>{

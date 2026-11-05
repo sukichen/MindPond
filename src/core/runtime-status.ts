@@ -21,11 +21,54 @@ export class RuntimeStatus {
     }
     middleware(){return (_req:unknown,res:{statusCode:number;writableEnded:boolean;once:(event:string,fn:()=>void)=>unknown},next:()=>void)=>{const started=performance.now();let done=false;const finish=(aborted:boolean)=>{if(done)return;done=true;this.observe(performance.now()-started,res.statusCode,aborted);};res.once('finish',()=>finish(false));res.once('close',()=>finish(!res.writableEnded));next();};}
 }
+type FilesystemKind='network'|'volatile'|'local_type'|'unknown';
+const linuxFilesystems=new Map<number,{name:string;kind:FilesystemKind}>([
+    [0x6969,{name:'NFS',kind:'network'}],
+    [0xff534d42,{name:'CIFS',kind:'network'}],
+    [0xfe534d42,{name:'SMB2',kind:'network'}],
+    [0x517b,{name:'SMB',kind:'network'}],
+    [0x00c36400,{name:'CephFS',kind:'network'}],
+    [0x01021994,{name:'tmpfs',kind:'volatile'}],
+    [0x858458f6,{name:'ramfs',kind:'volatile'}],
+    [0xef53,{name:'ext2/3/4',kind:'local_type'}],
+    [0x58465342,{name:'XFS',kind:'local_type'}],
+    [0x9123683e,{name:'Btrfs',kind:'local_type'}],
+    [0x794c7630,{name:'OverlayFS',kind:'unknown'}],
+    [0x65735546,{name:'FUSE',kind:'unknown'}]
+]);
+
+export function classifyDatabaseFilesystem(type:number,platform=process.platform){
+    // Linux statfs may expose an unsigned magic as a signed integer.
+    return (platform==='linux'?linuxFilesystems.get(type>>>0):undefined)
+        ?? {name:null,kind:'unknown' as const};
+}
+
+/** Inspect the actual file's mount, including a symlink target or bind mount. */
+export async function databaseFilesystem(filename:string){
+    if(filename===':memory:')return null;
+    try{
+        const target=await fs.realpath(filename).catch(async(error:NodeJS.ErrnoException)=>{
+            if(error.code!=='ENOENT')throw error;
+            // A dangling symlink is an unknown target, not a new local file.
+            const existing=await fs.lstat(filename).catch((failure:NodeJS.ErrnoException)=>{
+                if(failure.code!=='ENOENT')throw failure;
+                return null;
+            });
+            if(existing)throw error;
+            return fs.realpath(path.dirname(filename));
+        });
+        const stat=await fs.statfs(target);
+        return {...classifyDatabaseFilesystem(stat.type),availableBytes:stat.bavail*stat.bsize,totalBytes:stat.blocks*stat.bsize};
+    }catch{
+        return null;
+    }
+}
+
 export async function storageStatus(filename:string){
     const size=async(file:string)=>{try{return (await fs.stat(file)).size;}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return 0;throw error;}};
-    const [databaseBytes,walBytes,shmBytes]=await Promise.all([size(filename),size(filename+'-wal'),size(filename+'-shm')]);
-    let filesystem:{availableBytes:number;totalBytes:number}|null=null;
-    try{const value=await fs.statfs(path.dirname(filename));filesystem={availableBytes:value.bavail*value.bsize,totalBytes:value.blocks*value.bsize};}catch{/* Explicitly unknown on unsupported filesystems. */}
+    const [databaseBytes,walBytes,shmBytes,filesystem]=await Promise.all([
+        size(filename),size(filename+'-wal'),size(filename+'-shm'),databaseFilesystem(filename)
+    ]);
     return {databaseBytes,walBytes,shmBytes,filesystem};
 }
 export const webRuntimeStatus=new RuntimeStatus();

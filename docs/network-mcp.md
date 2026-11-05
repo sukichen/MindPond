@@ -13,7 +13,7 @@ node dist/mcp-http.js serve --config /absolute/private/access.accounts.json --db
 
 Web、HTTP MCP、本机 stdio 必须指向同一中心数据库。新程序初始化可能迁移数据库，先按[迁移手册](history.md)在一致副本演练。
 
-网络部署使用 TLS 或可信反向代理，并设置 `--allowed-host pond.example`（含非默认端口时填写 host:port）。直接 TLS 可设置 `--tls-cert`、`--tls-key`。不要关闭证书验证。可信明文内网需显式 `--allow-http`；令牌及内容不会被加密。数据库只放中心机器本地磁盘，不供客户端通过网络文件系统直接打开。
+网络部署使用 TLS 或可信反向代理，并设置 `--allowed-host pond.example`（含非默认端口时填写 host:port）。直接 TLS 可设置 `--tls-cert`、`--tls-key`。不要关闭证书验证。可信局域网可以直接监听内网 IP，并通过防火墙限制客户端来源。例如 `--host "<内网IP>" --port 7904 --allowed-host "<内网IP>:7904"`，将占位符换为中心电脑的实际地址。明文 HTTP 会暴露令牌及内容，共享网络使用 HTTPS。将实际可达的 `/mcp` 地址保存到连接设置，再到宿主连接复制双入口配置。数据库只放中心机器本地磁盘，不供客户端通过网络文件系统直接打开。
 
 ## 两个入口，同一身份
 

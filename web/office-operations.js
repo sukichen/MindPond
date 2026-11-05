@@ -40,12 +40,21 @@
     const card=(title,value,description)=>{const c=node('article');c.className='office-health-card';c.append(node('h3',title),node('strong',value),node('p',description));grid.append(c);return c;};
     card('服务版本',data.release.version,'数据库版本 '+data.schemaVersion+' · '+data.release.platform+' / '+data.release.arch);
     card('数据库',data.integrity.healthy?'最近检查通过':'需要检查','数据库 '+bytes(data.storage.databaseBytes)+' · WAL '+bytes(data.storage.walBytes)+'；检查于 '+new Date(data.integrityObservedAt??data.observedAt).toLocaleTimeString());
-    card('可用磁盘',bytes(data.storage.filesystem?.availableBytes),'磁盘信息仅代表数据目录所在文件系统。');
+    const filesystem=data.storage.filesystem;
+    const storageLabel=filesystem?.name??'类型未确认';
+    const storageAdvice={
+     network:'SQLite WAL 不支持网络文件系统。请安排停写迁移到单节点持久盘。',
+     volatile:'该文件系统是临时存储。生产数据应放在持久盘。',
+     local_type:'已识别文件系统类型。请核对数据盘能跨作业保留，并且同一时刻只挂载给一个服务节点。',
+     unknown:'需要核对挂载类型、持久性和节点归属。'
+    }[filesystem?.kind??'unknown'];
+    card('数据库存放位置',storageLabel,storageAdvice??'需要核对挂载类型、持久性和节点归属。');
+    card('可用磁盘',bytes(filesystem?.availableBytes),'磁盘信息来自数据库所在文件系统。');
     card('当前进程',bytes(data.runtime.memoryBytes.rss),'已运行 '+Math.floor(data.runtime.uptimeSeconds/60)+' 分钟；请求被拒绝 '+(data.runtime.rejected??0)+' 次，服务错误 '+(data.runtime.serverErrors??0)+' 次。任务完成需另行核对。');
     const compatible=(data.mcpProcesses??[]).every(p=>p.payload.release.version===data.release.version&&p.payload.release.lockSha256===data.release.lockSha256);
     card('MCP 进程',(data.mcpProcesses??[]).length?compatible?'最近有通信记录':'发现运行版本不一致':'尚无运行报告','仅统计最近两分钟主动报告的进程，不据此判断宿主或模型在线。');
     card('默认向量模型',({ready:'可用',disabled:'已停用 · 文本模式',unavailable:'不可用',uninitialized:'尚未验证'})[data.retrievalRuntime?.primary?.state]??'尚未核对','文本检索仍可使用；其它检索配置在记忆库查看。不自动下载模型。');
-    card('最近数据库备份',data.backups[0]?new Date(data.backups[0].created_at).toLocaleString():'尚无备份记录','备份不含宿主凭据与模型。建议同时验证恢复副本。');body.append(grid);
+    card('最近数据库备份',data.backups[0]?new Date(data.backups[0].created_at).toLocaleString():'尚无备份记录','这是数据库备份。附件原文件与宿主凭据需另外备份。');body.append(grid);
     const attention=node('section');attention.className='office-attention';const characters=getState().data?.characters,reviewCount=(characters?.pending?.length??0)+(characters?.connections?.length??0);attention.append(node('h3','需要你处理'),node('p',reviewCount?'有 '+reviewCount+' 条可见的角色审核或连接激活请求。':'当前没有待审核或待激活请求。'));const review=node('a','打开角色与申请');review.href='#officeCharacters';attention.append(review);const pendingCount=(data.backlog??[]).filter(r=>['queued','pending'].includes(r.state)).reduce((n,r)=>n+r.count,0);attention.append(node('p',pendingCount+' 条消息等待角色处理。处理时间和在线状态需要结合实际宿主判断。'));body.prepend(attention);
     if(data.restoreDrill)body.append(node('p','最近恢复演练：'+new Date(data.restoreDrill.checkedAt).toLocaleString()+' · '+(data.restoreDrill.healthy?'副本检查通过':'未通过')));
     const actions=node('div');actions.className='office-health-actions';

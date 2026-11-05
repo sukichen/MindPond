@@ -98,6 +98,26 @@ try{
  const manage=async(route:string,args:any,origin=base,auth=true)=>{const r=await fetch(base+'/api/office-admin/'+route,{method:'POST',headers:{'Content-Type':'application/json',Origin:origin,...(auth?{Cookie:cookie}:{})},body:JSON.stringify(args)});return {status:r.status,body:await r.json() as any};};
  assert.equal((await manage('scripts',{action:'list',roleId:roles[0].roleId},base,false)).status,401);assert.equal((await manage('scripts',{action:'list',roleId:roles[0].roleId},'https://foreign.invalid')).status,403);
  assert.equal((await manage('scripts',{action:'list',roleId:roles[0].roleId})).body.scripts[0].id,saved.id);
+ const previousPosts=(await graph.discussions.run({action:'get',id:parallel.room.id},admin)).posts.map((p:any)=>p.seq);
+ const postSeqs:number[]=[];
+ for(let n=0;n<24;n++){
+  const posted=await call('office_discussion',{action:'post',id:parallel.room.id,body:'History fixture '+n,key:'history-'+n},'c');
+  postSeqs.push(posted.seq);
+ }
+ const history={id:parallel.room.id,limit:20,contextBudgetBytes:65536};
+ assert.equal((await manage('discussion-history',history,base,false)).status,401);
+ const head=await manage('discussion-history',history);
+ assert.equal(head.status,200,JSON.stringify(head));
+ assert.deepEqual(head.body.posts.map((p:any)=>p.seq),postSeqs.slice(-20).reverse());
+ assert.equal(head.body.hasMore,true);
+ const arrival=await call('office_discussion',{action:'post',id:parallel.room.id,body:'Arrived after opening',key:'new-head'},'c');
+ const tail=await manage('discussion-history',{...history,beforeSeq:head.body.nextBeforeSeq});
+ assert.equal(tail.status,200,JSON.stringify(tail));
+ assert.deepEqual(tail.body.posts.map((p:any)=>p.seq),[...previousPosts,...postSeqs.slice(0,4)].reverse());
+ assert.equal(tail.body.hasMore,false);
+ assert.equal((await manage('discussion-history',history)).body.posts[0].seq,arrival.seq);
+ assert.equal((await call('office_discussion',{action:'get',id:parallel.room.id,limit:1},'b')).posts[0].seq,postSeqs[0],'role work selection remains oldest-unprocessed first');
+ console.log('PASS human discussion history: newest page, stable older cursor across arrivals, login gate and unchanged role ordering');
  const meeting=await call('office_discussion',{action:'get',id:parallel.room.id},'c');
  const conclusion=await manage('discussion-memory',{id:parallel.room.id,expectedRevision:meeting.room.revision,content:'Human-reviewed fixture conclusion',key:'human-conclusion'});assert.equal(conclusion.status,200,JSON.stringify(conclusion));assert.equal((await graph.getNodeById(conclusion.body.memoryId))!.domain.id,domain.id);
  const retry=await manage('discussion-memory',{id:parallel.room.id,expectedRevision:meeting.room.revision,content:'Human-reviewed fixture conclusion',key:'human-conclusion'});assert.equal(retry.status,200,JSON.stringify(retry));assert.equal(retry.body.memoryId,conclusion.body.memoryId,'lost-response retry must return the same conclusion');

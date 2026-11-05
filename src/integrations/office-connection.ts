@@ -48,13 +48,13 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
   const memoryUrl=memoryMcpEndpoint(o.url);
   warnings.push(connectionScoped?'通用连接身份：共享这份配置的聊天共享一个角色；需要不同角色时创建独立连接。无需插件，Office 和 Memory 身份一致。':'逐聊天身份：需要宿主提供可靠聊天标识，请在实际客户端验证。支持的 Codex 可提供 threadId，OpenCode 可选会话插件；不支持时使用通用连接身份。');
   const base = { env, name,identityMode:connectionScoped?'connection' as const:'native' as const, warnings, capabilities: OFFICE_CAPABILITIES };
-  if (o.host === 'codex') return { ...base, place: 'Codex .codex/config.toml', docs: 'https://learn.chatgpt.com/docs/config-file/config-reference',
+  if (o.host === 'codex') return { ...base, place: 'Codex 的 ~/.codex/config.toml（或可信项目的 .codex/config.toml）', docs: 'https://learn.chatgpt.com/docs/config-file/config-reference',
     text: [name,memoryName].map((entry,i)=>`[mcp_servers.${entry}]\nurl = ${JSON.stringify(i===0?o.url:memoryUrl)}\nbearer_token_env_var = ${JSON.stringify(env)}\ntool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS}\n${connectionScoped?'http_headers = { "X-MindPond-Identity" = "connection" }\n':''}`).join('\n') };
   const config = o.host === 'opencode' ? { mcp: { [name]: { type: 'remote', url: o.url, oauth: false, headers: { Authorization: `Bearer {env:${env}}`, ...headers }, timeout: OFFICE_TOOL_TIMEOUT_MS },[memoryName]:{type:'remote',url:memoryUrl,oauth:false,headers:{Authorization:`Bearer {env:${env}}`,...headers},timeout:OFFICE_TOOL_TIMEOUT_MS} } }
     : { mcpServers: { [name]: { type: 'http', url: o.url, headers: { Authorization: 'Bearer ${' + env + '}', ...headers }, timeout: OFFICE_TOOL_TIMEOUT_MS },[memoryName]:{type:'http',url:memoryUrl,headers:{Authorization:'Bearer ${'+env+'}',...headers},timeout:OFFICE_TOOL_TIMEOUT_MS} } };
   if (o.host === 'opencode' || o.host === 'claude') return { ...base, config,
     ...(o.host==='opencode'&&!connectionScoped?{files:{['.opencode/plugins/mindpond-session-'+o.id.replace(/[^A-Za-z0-9_-]/g,'_')+'.js']:renderOpenCodeSessionPlugin({tokenEnv:env,prefixes:[name+'_',memoryName+'_']})}}:{}),
-    place: o.host === 'opencode' ? (connectionScoped?'OpenCode opencode.json':'OpenCode opencode.json（同时安装会话插件）') : 'Claude Code .mcp.json', text: JSON.stringify(config, null, 2) + '\n',
+    place: o.host === 'opencode' ? (connectionScoped?'OpenCode 的 ~/.config/opencode/opencode.json（或项目的 opencode.json）':'OpenCode 的 opencode.json（同时安装会话插件）') : 'Claude Code .mcp.json', text: JSON.stringify(config, null, 2) + '\n',
     docs: o.host === 'opencode' ? 'https://opencode.ai/docs/mcp-servers/' : 'https://code.claude.com/docs/en/mcp',
     warnings: [...warnings, ...(o.host === 'opencode' ? ['OpenCode 不同版本对 timeout 的执行范围有差异；配置后请用实际长等待验证，工具发现成功不代表长调用已验证。'] : [])] };
   return { ...base, place: '宿主原生 HTTP MCP 设置（语法需按客户端验证）', docs: null,

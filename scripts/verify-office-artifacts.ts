@@ -180,5 +180,63 @@ try{
  for(const c of clients)await c.close();await Promise.race([network.close(listener),new Promise((_,reject)=>setTimeout(()=>reject(Error('Shutdown waited for a stalled body')),4000))]);network=undefined;listener=undefined;await graph.close();
  reopened=new GraphMemory('.',{dbPath,clock:()=>now});await reopened.init();const restored=await reopened.artifacts.download(id,actor('a'));const chunks=[];for await(const chunk of restored.stream)chunks.push(chunk);assert.deepEqual(Buffer.concat(chunks),bytes);assert.equal((await reopened.artifacts.run({action:'get',artifactId:sharedId},actor('b'))).artifact.state,'deleted');
  console.log('PASS restart and shutdown: original bytes survive reopen; stalled transfers cancel and release leases without holding SQLite');
+
+ // Back up only after the source server and cleanup workers have stopped.
+ const sourceCatalog=(reopened as any).db;
+ const sourceName=(await sourceCatalog.get('SELECT storage_key FROM office_artifacts WHERE id=?',[id])).storage_key;
+ await reopened.close();reopened=undefined;
+ const repairedBlob=path.join(graph.artifacts.directory,symlinkKey);
+ await fs.rm(repairedBlob,{force:true});
+ await fs.writeFile(repairedBlob,'safe',{mode:0o600});
+
+ const maintenance=path.resolve('dist/maintenance.js');
+ const maint=async(...args:string[])=>JSON.parse((await promisify(execFile)(process.execPath,[maintenance,...args])).stdout);
+ const backupSet=path.join(dir,'offline-set'),restoreSet=path.join(dir,'restore-set');
+ const createArgs=['--db',dbPath,'--artifact-dir',graph.artifacts.directory,'--backup-set',backupSet];
+ await assert.rejects(()=>maint(...createArgs),/--writers-stopped/);
+ await assert.rejects(fs.access(backupSet),{code:'ENOENT'});
+ const bundle=await maint(...createArgs,'--writers-stopped');
+ assert.equal(bundle.mode,'backup-set');
+ assert(bundle.artifacts.files>0);
+ const bundleDirectory=path.join(backupSet,'graph.db.artifacts');
+ assert(!(await fs.readdir(bundleDirectory)).includes(path.basename(foreignFile)),'unrelated files are outside the database catalog');
+ assert.equal((await maint('--verify-set',backupSet)).manifestSha256,bundle.manifestSha256);
+
+ const goodBlob=path.join(bundleDirectory,sourceName);
+ const flipped=Buffer.from(bytes);flipped[0]^=255;
+ await fs.writeFile(goodBlob,flipped);
+ await assert.rejects(()=>maint('--restore-set',backupSet,'--to',restoreSet),/checksum does not match/);
+ await assert.rejects(fs.access(restoreSet),{code:'ENOENT'});
+ await fs.writeFile(goodBlob,bytes);
+ const extra=path.join(bundleDirectory,'unexpected.part');await fs.writeFile(extra,'stray');
+ await assert.rejects(()=>maint('--verify-set',backupSet),/unexpected files/);
+ await fs.unlink(extra);
+
+ const sourceBlob=path.join(graph.artifacts.directory,sourceName),moved=sourceBlob+'.removed-for-test';
+ await fs.rename(sourceBlob,moved);
+ const incomplete=path.join(dir,'incomplete-set');
+ try{
+  await assert.rejects(()=>maint('--db',dbPath,'--backup-set',incomplete,'--writers-stopped'),/ENOENT/);
+  await assert.rejects(fs.access(incomplete),{code:'ENOENT'});
+ }finally{await fs.rename(moved,sourceBlob);}
+
+ const copied=await maint('--restore-set',backupSet,'--to',restoreSet);
+ assert.equal(copied.manifestSha256,bundle.manifestSha256);
+ await assert.rejects(()=>maint('--restore-set',backupSet,'--to',restoreSet),/EEXIST/);
+ const copiedDb=path.join(restoreSet,'graph.db');
+ const copiedBlob=path.join(copiedDb+'.artifacts',sourceName);
+ if(process.platform!=='win32'){
+  for(const directory of [backupSet,restoreSet,copiedDb+'.artifacts'])assert.equal((await fs.stat(directory)).mode&0o777,0o700);
+  for(const file of [copiedDb,copiedBlob])assert.equal((await fs.stat(file)).mode&0o777,0o600);
+ }
+ reopened=new GraphMemory('.',{dbPath:copiedDb,clock:()=>now});
+ await reopened.init();
+ const restoredFile=await reopened.artifacts.download(id,actor('a'));
+ const restoredChunks=[];for await(const chunk of restoredFile.stream)restoredChunks.push(chunk);
+ assert.deepEqual(Buffer.concat(restoredChunks),bytes);
+ await assert.rejects(()=>reopened!.artifacts.download(id,actor('b')),/not_found/);
+ assert.equal((await reopened.artifacts.run({action:'get',artifactId:sharedId},actor('b'))).artifact.state,'deleted');
+ console.log('PASS offline backup set: stopped-writer confirmation, complete catalog/hash verification, no overwrite, failed-copy cleanup and restored artifact ACL/bytes');
+
 }finally{for(const c of clients)await c.close().catch(()=>{});await network?.close(listener);await reopened?.close();await graph.close();await fs.rm(dir,{recursive:true,force:true});}
 function Authorization(value:string){return {Authorization:'Bearer '+value};}

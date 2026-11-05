@@ -9,6 +9,7 @@ import { ConnectionCoordinator } from './connection-coordinator.js';
 import {preparePrivateDatabase,reservePrivateBackup} from './sqlite-files.js';
 import { admitDegreeNeighbour, degreeNeighbours, degreeRepairPlan, evictDegreeNeighbour, DEFAULT_MAX_ASSOCIATION_DEGREE } from './association-degree.js';
 import { auditDatabase } from './database-maintenance.js';
+import { databaseFilesystem } from './runtime-status.js';
 import { ProfileRetrieval, type ProfileRetrievalDependencies } from './profile-retrieval.js';
 import type { RetrievalConfigInput } from './embedding-profiles.js';
 import {embeddingRuntimeSchema} from './embedding-profiles.js';
@@ -633,6 +634,13 @@ export class GraphMemory {
     return this.withWriteLock(async () => {
     const fs = await import('fs');
     await preparePrivateDatabase(this.dataPath);
+    const filesystem = await databaseFilesystem(this.dataPath);
+    if (filesystem?.kind === 'network') {
+      logger.warn('SQLite WAL is unsupported on the database network filesystem. Plan a stopped-writer migration to durable storage mounted on one service node.', { filesystem: filesystem.name });
+    } else if (filesystem?.kind === 'volatile') {
+      logger.warn('The database is on volatile storage. Keep production data on a persistent volume.', { filesystem: filesystem.name });
+    }
+
 
     this.db = this.coordinator.connection(await open({
       filename: this.dataPath,

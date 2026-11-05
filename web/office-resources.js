@@ -54,9 +54,64 @@
    return true;
   }
   function act(label,fn){const b=node('button',label);b.type='button';b.onclick=()=>run(async()=>{b.disabled=true;try{await fn();}finally{b.disabled=false;}},b);return b;}
-  async function draw(roomId,card,officeId,epoch,more=false){const version=++card.version,order=++snapshotOrder;try{const data=await api('discussions',{action:'get',id:roomId,...(more?{afterSeq:card.next}:{}),limit:20,contextBudgetBytes:65536});if(version!==card.version||!current(officeId,epoch)||cards.get(roomId)!==card)return;if(!updateRoomState(card,{...data.room,status:data.status},order))return;card.record=data.room;card.summary.textContent=roomSummary(data.room.title,data.status,card.policy.locked);card.progress.textContent=data.status?(phaseNames[data.status.phase]??'状态待确认')+' · 未读 '+(data.status.unreadPosts??data.status.pendingPosts)+' 条 · 未处理 '+(data.status.unprocessedPosts??'—')+' 条（按成员累计，未处理包含未读） · 等待调用 '+data.status.waiting+' 路 · '+(data.status.lastPostAt?'最近发言 '+new Date(data.status.lastPostAt).toLocaleString():'尚无发言'):'状态读取中';card.meta.title='未读：尚未通过 get/wait 返回给该角色。未处理：其他成员的发言中，该角色尚未用 finish 明确确认处理的条数，包含未读。发言、退会或人类查看页面不会自动清零。';card.meta.textContent='目标：'+data.room.done_when+(card.policy.locked?' · 已锁定：成员不能自行进出或结束会议，到期计时暂停；讨论与记忆操作照常。':' · 到期：'+new Date(data.room.expires_at).toLocaleString());card.question.textContent=data.room.question;card.members.replaceChildren(...data.members.map(m=>{const entry=node('article');entry.className='office-discussion-member';entry.append(node('strong',m.name),node('p',memberSummary(m)));return entry;}));renderRequests(data.participantRequests??[],card,roomId,officeId,epoch);for(const post of data.posts)card.posts.set(post.seq,post);card.next=Math.max(card.next??0,data.nextAfterSeq);card.more.hidden=card.next>=data.lastSeq;const printed=JSON.stringify([...card.posts.values()]);if(printed!==card.printed){card.printed=printed;card.messages.replaceChildren();for(const post of [...card.posts.values()].sort((a,b)=>a.seq-b.seq)){const article=node('article');article.className='office-item';article.append(node('strong',post.authorName??post.author),node('small',' · '+new Date(post.created_at).toLocaleString()),window.MindPondOfficeMarkdown.render(post.body));card.messages.append(article);}}
+  function renderDiscussionPosts(card,data,older){
+   const overlaps=card.posts.size>0&&data.posts.some(post=>card.posts.has(post.seq));
+   if(!older&&!overlaps)card.posts.clear();
+   // A head refresh keeps the loaded tail only if it overlaps. Otherwise there
+   // may be missing pages between the new head and previously loaded history.
+   if(older||!overlaps){
+    card.beforeSeq=data.nextBeforeSeq;
+    card.more.hidden=!data.hasMore||card.beforeSeq==null;
+   }
+   for(const post of data.posts)card.posts.set(post.seq,post);
+   const posts=[...card.posts.values()].sort((a,b)=>b.seq-a.seq);
+   const printed=JSON.stringify(posts);
+   if(printed===card.printed)return;
+   card.printed=printed;
+   card.messages.replaceChildren(...posts.map(post=>{
+    const article=node('article');
+    article.className='office-item';
+    article.append(node('strong',post.authorName??post.author),node('small',' · '+new Date(post.created_at).toLocaleString()),window.MindPondOfficeMarkdown.render(post.body));
+    return article;
+   }));
+  }
+  async function draw(roomId,card,officeId,epoch,older=false){
+   if(card.loadingOlder){
+    if(!older)card.refreshAfterOlder=true;
+    return;
+   }
+   if(older&&card.beforeSeq==null)return;
+   const version=++card.version,order=++snapshotOrder;
+   if(older){
+    card.loadingOlder=true;
+    if(card.headVersion)card.refreshAfterOlder=true;
+   }else{
+    card.headVersion=version;
+   }
+   try{
+    const data=await api('discussion-history',{id:roomId,...(older?{beforeSeq:card.beforeSeq}:{}),limit:20,contextBudgetBytes:65536});
+    if(version!==card.version||!current(officeId,epoch)||cards.get(roomId)!==card)return;
+    if(!updateRoomState(card,{...data.room,status:data.status},order)){
+     if(older)renderDiscussionPosts(card,data,true);
+     return;
+    }
+    renderDiscussionPosts(card,data,older);
+    card.record=data.room;card.summary.textContent=roomSummary(data.room.title,data.status,card.policy.locked);card.progress.textContent=data.status?(phaseNames[data.status.phase]??'状态待确认')+' · 未读 '+(data.status.unreadPosts??data.status.pendingPosts)+' 条 · 未处理 '+(data.status.unprocessedPosts??'—')+' 条（按成员累计，未处理包含未读） · 等待调用 '+data.status.waiting+' 路 · '+(data.status.lastPostAt?'最近发言 '+new Date(data.status.lastPostAt).toLocaleString():'尚无发言'):'状态读取中';card.meta.title='未读：尚未通过 get/wait 返回给该角色。未处理：其他成员的发言中，该角色尚未用 finish 明确确认处理的条数，包含未读。发言、退会或人类查看页面不会自动清零。';card.meta.textContent='目标：'+data.room.done_when+(card.policy.locked?' · 已锁定：成员不能自行进出或结束会议，到期计时暂停；讨论与记忆操作照常。':' · 到期：'+new Date(data.room.expires_at).toLocaleString());card.question.textContent=data.room.question;card.members.replaceChildren(...data.members.map(m=>{const entry=node('article');entry.className='office-discussion-member';entry.append(node('strong',m.name),node('p',memberSummary(m)));return entry;}));renderRequests(data.participantRequests??[],card,roomId,officeId,epoch);
     card.exports.textContent=data.exports?.length?'已带出独立记忆：'+data.exports.map(x=>x.memoryId).join('、'):'尚未登记带出的记忆。';card.message.textContent='';
-   }catch(e){if(version===card.version&&current(officeId,epoch))card.message.textContent=errorText(e);}}
+   }catch(e){
+    if(version===card.version&&current(officeId,epoch))card.message.textContent=errorText(e);
+   }finally{
+    if(older){
+     card.loadingOlder=false;
+     if(card.refreshAfterOlder){
+      card.refreshAfterOlder=false;
+      if(card.details.open&&current(officeId,epoch)&&cards.get(roomId)===card)void draw(roomId,card,officeId,epoch);
+     }
+    }else if(card.headVersion===version){
+     card.headVersion=0;
+    }
+   }
+  }
   function renderRequests(records,card,roomId,officeId,epoch){
    const signature=JSON.stringify(records);if(signature===card.requestSignature)return;card.requestSignature=signature;card.requests.replaceChildren();
    if(!records.length)return;card.requests.append(node('h4','增员申请 · 仅用户可以审批'),node('p','显示全部待审批及最近记录，最多 12 项。长说明可单独读取。'));
@@ -73,10 +128,10 @@
     card.requests.append(row);
    }
   }
-  function makeRoom(r,officeId,epoch){const details=node('details'),summary=node('summary',roomSummary(r.title,r.status,r.locked)),progress=node('p'),requests=node('section'),meta=node('p'),question=node('p'),members=node('div'),messages=node('div'),exports=node('p'),message=node('p'),conclusion=node('textarea'),form=node('form');details.className='office-discussion-card';members.className='office-discussion-members';conclusion.placeholder='只写需要长期保留的结论、验证步骤和适用条件，不必复制全部讨论。';conclusion.required=true;conclusion.maxLength=10000;const label=node('label','整理为办公室记忆');label.append(conclusion);form.append(label);const save=node('button','保存这份结论');save.type='submit';form.append(save);const card={details,summary,progress,requests,requestSignature:'',reviewDrafts:new Map(),meta,question,members,messages,exports,message,conclusion,record:null,version:0,posts:new Map(),printed:'',next:null,more:null};let key=crypto.randomUUID(),prior='';
+  function makeRoom(r,officeId,epoch){const details=node('details'),summary=node('summary',roomSummary(r.title,r.status,r.locked)),progress=node('p'),requests=node('section'),meta=node('p'),question=node('p'),members=node('div'),messages=node('div'),exports=node('p'),message=node('p'),conclusion=node('textarea'),form=node('form');details.className='office-discussion-card';members.className='office-discussion-members';conclusion.placeholder='只写需要长期保留的结论、验证步骤和适用条件，不必复制全部讨论。';conclusion.required=true;conclusion.maxLength=10000;const label=node('label','整理为办公室记忆');label.append(conclusion);form.append(label);const save=node('button','保存这份结论');save.type='submit';form.append(save);const card={details,summary,progress,requests,requestSignature:'',reviewDrafts:new Map(),meta,question,members,messages,exports,message,conclusion,record:null,version:0,posts:new Map(),printed:'',beforeSeq:null,loadingOlder:false,headVersion:0,refreshAfterOlder:false,more:null};let key=crypto.randomUUID(),prior='';
    card.title=r.title;card.lockBusy=false;card.lockButton=act('锁定会议室',async()=>{if(!card.policy||!current(officeId,epoch))return;const desired=!card.policy.locked;card.lockBusy=true;try{const result=await api('discussion-lock',{id:r.id,locked:desired,expectedLockRevision:card.policy.lockRevision});if(!current(officeId,epoch)||cards.get(r.id)!==card)return;updateRoomState(card,result);card.summary.textContent=roomSummary(card.title,card.roomStatus,card.policy.locked);notice(card.policy.locked?'会议室已锁定，成员进出由你控制。':'会议室已解锁，角色可以正常进出。');await refresh(true);}catch(error){if(current(officeId,epoch))card.message.textContent=errorText(error);throw error;}finally{card.lockBusy=false;}});updateRoomState(card,r);
    form.onsubmit=e=>{e.preventDefault();void run(async()=>{if(!card.record||!current(officeId,epoch)||!form.reportValidity())return;const payload={id:r.id,expectedRevision:card.record.revision,content:conclusion.value.trim()};if(prior){const pending=JSON.parse(prior);if(pending.content!==payload.content)throw Error('上次保存结果未确认，请先核对记忆与最新讨论。');payload.expectedRevision=pending.expectedRevision;}prior=JSON.stringify(payload);save.disabled=true;conclusion.disabled=true;try{const saved=await api('discussion-memory',{...payload,key});if(current(officeId,epoch)){conclusion.value='';prior='';key=crypto.randomUUID();notice('结论已保存到办公室记忆：'+saved.memoryId);await draw(r.id,card,officeId,epoch);}}catch(error){if(error.status>=400&&error.status<500){prior='';key=crypto.randomUUID();}throw error;}finally{save.disabled=false;conclusion.disabled=false;}});};
-   const more=act('继续读取讨论',()=>draw(r.id,card,officeId,epoch,true));more.hidden=true;card.more=more;details.append(summary,card.lockButton,progress,question,meta,members,requests,messages,more,exports,form,message,act('结束并删除临时讨论',async()=>{if(!card.record)return;if(!await confirmAction('结束并永久删除「'+r.title+'」的临时讨论？未带出的内容无法恢复，已保存的独立记忆保留。',{destructive:true}))return;if(!current(officeId,epoch))return;await api('discussions',{action:'close',id:r.id,expectedRevision:card.record.revision});if(current(officeId,epoch))await refresh(true);}));details.addEventListener('toggle',()=>{if(details.open)void draw(r.id,card,officeId,epoch);});return card;
+   const more=act('加载更早消息',()=>draw(r.id,card,officeId,epoch,true));more.hidden=true;card.more=more;details.append(summary,card.lockButton,progress,question,meta,members,requests,messages,more,exports,form,message,act('结束并删除临时讨论',async()=>{if(!card.record)return;if(!await confirmAction('结束并永久删除「'+r.title+'」的临时讨论？未带出的内容无法恢复，已保存的独立记忆保留。',{destructive:true}))return;if(!current(officeId,epoch))return;await api('discussions',{action:'close',id:r.id,expectedRevision:card.record.revision});if(current(officeId,epoch))await refresh(true);}));details.addEventListener('toggle',()=>{if(details.open)void draw(r.id,card,officeId,epoch);});return card;
   }
   async function refresh(force=false){const state=getState(),officeId=state.office?.office.id,epoch=state.authEpoch;if(!state.logged||!officeId)return;
    if(loadedRoom!==officeId){generation++;inflight=false;loadedRoom=officeId;signature='';cards.clear();body.replaceChildren();}

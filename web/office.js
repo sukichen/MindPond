@@ -157,6 +157,56 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  function clearConnectionConfig() {
+    const dialog = el('officeConnectionConfig');
+    const body = el('officeConnectionConfigBody');
+    const field = body.querySelector('textarea');
+    if (field) field.value = '';
+    body.replaceChildren();
+    if (dialog.open) dialog.close();
+  }
+  function showConnectionConfig({text,filename}, place, hasCredential) {
+    clearConnectionConfig();
+    const epoch = state.authEpoch;
+    const dialog = el('officeConnectionConfig');
+    const body = el('officeConnectionConfigBody');
+    const field = make('textarea');
+    field.value = text;
+    field.readOnly = true;
+    field.rows = 12;
+    field.spellcheck = false;
+    field.setAttribute('aria-label', 'MCP 配置内容');
+    const status = make('p');
+    status.setAttribute('role', 'status');
+    const copy = button('复制配置', async () => {
+      if (!state.logged || state.authEpoch !== epoch || !dialog.open || !field.isConnected) return;
+      try {
+        await navigator.clipboard.writeText(field.value);
+        if (field.isConnected) status.textContent = '已复制配置。';
+      } catch {
+        if (!field.isConnected) return;
+        field.focus();
+        field.select();
+        status.textContent = '已选中配置，请按 Ctrl+C 或 ⌘C 复制。';
+      }
+    });
+    const actions = make('div');
+    actions.className = 'office-dialog-actions';
+    actions.append(copy,button('下载配置', () => {
+      if (state.logged && state.authEpoch === epoch && dialog.open && field.isConnected) download(field.value,filename);
+    }));
+    el('officeConnectionConfigTitle').textContent = hasCredential ? '完整 MCP 配置' : 'MCP 配置模板';
+    body.append(
+      make('p','将 Office 和 Memory 两项合并到 '+place+'，然后重新连接宿主。'),
+      make('p',hasCredential
+        ? '此配置含访问凭据，仅在本次签发后显示。请私下保管。'
+        : '模板使用环境变量读取凭据。已有凭据时可继续使用，无需重新签发。'),
+      field, actions, status
+    );
+    dialog.showModal();
+    copy.focus();
+  }
+  let issuingConnectionConfig = false;
   function connectionDetails(agent, box, selectedMode=null, customTemplate=null) {
     const details = make('details'),
       summary = make('summary', 'HTTP MCP 配置与凭据');
@@ -188,7 +238,16 @@
     },mode));
     details.append(make('p',selectedMode==='connection'?'无需插件。共享这份配置的聊天共享一个角色；需要不同角色时分别创建连接。':'不同聊天可绑定不同角色；宿主需要提供可靠聊天标识。宿主版本或公司封装可能不提供聊天标识，须实际核对；OpenCode 可选下方插件。缺少标识时可改用通用连接身份。'));
     for(const [filename,source] of Object.entries(cfg.files??{}))details.append(button('下载逐聊天身份插件',async()=>{if(state.logged)download(source,filename.split('/').at(-1));}));
-    details.append(make('p','下载的配置包含 Office 和 Memory。合并到宿主设置并重连后，调用 role_sync 和 memory_identity 核对身份。'));
+    details.append(make('p','配置包含 Office 和 Memory。合并到宿主设置并重连后，调用 role_sync 和 memory_identity 核对身份。'));
+    if (['localhost','127.0.0.1','[::1]'].includes(new URL(url).hostname)) {
+      details.append(make('p','当前 MCP 地址只适用于本机。其它电脑请使用中心电脑的局域网地址。'));
+    }
+    const configFilename = agent.id + (agent.host === 'codex' ? '.toml' : agent.host === 'other' ? '.txt' : '.json');
+    details.append(button('查看 / 复制配置模板', () => {
+      if (!state.logged || !details.isConnected || issuingConnectionConfig) return;
+      if (details.dataset.configurationStale || mode.value !== selectedMode) throw Error('请先读取当前配置。');
+      showConnectionConfig({text:cfg.text,filename:configFilename}, cfg.place, false);
+    }));
     const advanced=make('details');advanced.append(make('summary','高级：环境变量模板与访问范围'),make('p','连接编号：'+agent.id+' · 账户：'+agent.principal),make('p',cfg.place),make('pre',cfg.text),make('p','上面的模板使用环境变量 '+cfg.env+'；完整配置下载会直接包含凭据。请私下保存配置，不要发给模型或提交仓库。'));
     for(const warning of cfg.warnings)advanced.append(make('p',warning));
     for(const filename of Object.keys(cfg.files??{}))advanced.append(make('p','逐聊天模式：将上方下载的插件保存到项目 '+filename+'，或用户配置目录 plugins/。'));
@@ -201,32 +260,43 @@
     advanced.append(label('限制可用分工', restrictions));
     advanced.append(make('p','不需要填写记忆范围。重新生成保留工位限制，清空已有列表会解除限制。'));
     const issue = button(
-      agent.state === 'pending' ? '生成并下载完整配置' : '重新生成配置（当前凭据失效）',
+      agent.state === 'pending' ? '生成完整配置（含凭据）' : '重新生成配置（当前凭据失效）',
       async () => {
-        const epoch=state.authEpoch;
-        if (
-          agent.state !== 'pending' &&
-          !(await confirmAction('重新签发会撤销当前凭据。请在宿主中替换后重连；是否继续？'))
-        )
-          return;
-        const assignmentIds = restrictions.value.split(',').map(s => s.trim()).filter(Boolean);
-        const restrictionsChanged = assignmentIds.join(',') !== initialRestrictions;
-        if (policy?.assignmentIds?.length && restrictionsChanged && !assignmentIds.length &&
-          !(await confirmAction('清空后此凭据可以选择该 agent 的所有已授权工位。确认解除工位限制？'))) return;
-        if(epoch!==state.authEpoch||!state.logged||!details.isConnected)return;
-        if(details.dataset.configurationStale)throw Error('配置已更新，草稿仍保留。请先核对并重新读取配置。');
-        const response = await api('credential', {
-          id: agent.id,identityMode:selectedMode,
-          expectedRevision: agent.revision,
-          ...(restrictionsChanged ? { assignmentIds: assignmentIds.length ? assignmentIds : null } : {})
-        });
-        if(epoch!==state.authEpoch||!state.logged){response.token='';if(response.download)response.download.text='';return;}
-        if(response.download){download(response.download.text,response.download.filename);response.download.text='';}else download(response.token + '\n', agent.id + '.token');
-        response.token = '';
-        notice(
-          '完整配置已下载，包含 Office 和 Memory。将它合并到宿主 MCP 设置后重连；文件内含访问凭据，请私下保存，不要发给 agent 或提交仓库。'
-        );
-        await refresh();
+        if (issuingConnectionConfig || el('officeConnectionConfig').open) return;
+        const epoch = state.authEpoch;
+        issuingConnectionConfig = true;
+        mode.disabled = true;
+        try {
+          if (
+            agent.state !== 'pending' &&
+            !(await confirmAction('重新签发会撤销当前凭据。请在宿主中替换后重连；是否继续？'))
+          )
+            return;
+          const assignmentIds = restrictions.value.split(',').map(s => s.trim()).filter(Boolean);
+          const restrictionsChanged = assignmentIds.join(',') !== initialRestrictions;
+          if (policy?.assignmentIds?.length && restrictionsChanged && !assignmentIds.length &&
+            !(await confirmAction('清空后此凭据可以选择该 agent 的所有已授权工位。确认解除工位限制？'))) return;
+          if(epoch!==state.authEpoch||!state.logged||!details.isConnected)return;
+          if(details.dataset.configurationStale)throw Error('配置已更新，草稿仍保留。请先核对并重新读取配置。');
+          const response = await api('credential', {
+            id: agent.id, identityMode: selectedMode,
+            expectedRevision: agent.revision,
+            ...(restrictionsChanged ? { assignmentIds: assignmentIds.length ? assignmentIds : null } : {})
+          });
+          try {
+            if(epoch!==state.authEpoch||!state.logged)return;
+            const config = response.download ?? {text:response.token+'\n',filename:agent.id+'.token'};
+            if (response.download) showConnectionConfig(config, cfg.place, true);
+            else download(config.text,config.filename);
+          } finally {
+            response.token = '';
+            if (response.download) response.download.text = '';
+          }
+          await refresh();
+        } finally {
+          issuingConnectionConfig = false;
+          mode.disabled = false;
+        }
       }
     );
     issue.dataset.issueCredential='';
@@ -243,7 +313,7 @@
       );
     advanced.append(
       button('下载无秘密配置模板', () =>
-        download(cfg.text, agent.id + (agent.host === 'codex' ? '.toml' : '.json'))
+        download(cfg.text, configFilename)
       )
     );
 
@@ -1639,7 +1709,7 @@
           }
         } catch (error) {
           if (epoch !== state.authEpoch || !state.logged) return;
-          if(error.status===401){state.logged=false;window.MindPondOfficeOperations?.reset?.();state.authEpoch++;el('officeRoleConnection').close();stopObserver();el('officeLogin').hidden=false;el('officeSettings').hidden=true;el('officeLoginStatus').textContent='管理会话已过期';notice('管理会话已过期，请重新登录。当前编辑草稿仍保留。',true);showAppView('officeSetup');return;}
+          if(error.status===401){state.logged=false;window.MindPondOfficeOperations?.reset?.();state.authEpoch++;el('officeRoleConnection').close();clearConnectionConfig();stopObserver();el('officeLogin').hidden=false;el('officeSettings').hidden=true;el('officeLoginStatus').textContent='管理会话已过期';notice('管理会话已过期，请重新登录。当前编辑草稿仍保留。',true);showAppView('officeSetup');return;}
           state.pollFailed = true;state.pollFailures=(state.pollFailures??0)+1;
           el('officeSync').textContent = '观察连接中断 · 正在重试，保留上次状态';
         }
@@ -1733,6 +1803,10 @@
       await refresh();
       await updateOffice();
     });
+  el('officeConnectionConfigClose').onclick = clearConnectionConfig;
+  el('officeConnectionConfig').addEventListener('close', () => {
+    if (!el('officeConnectionConfig').open) clearConnectionConfig();
+  });
   el('officeLogout').onclick = () =>
     run(async () => {
       if ((state.containerDirty||window.MindPondOfficeRules?.hasDraft?.()) && !(await confirmAction('有尚未保存的修改，仍要退出管理？'))) return;
@@ -1740,7 +1814,7 @@
       await closeOfficeDetail(true);
       state.containerDirty = false;
       setExpanded(null);
-      state.authEpoch++;el('officeRoleConnection').close();
+      state.authEpoch++;el('officeRoleConnection').close();clearConnectionConfig();
       await api('logout');stopObserver();
       replayController.close();state.replayIndexRoom=null;
       scenePlayer.reset();
@@ -1762,7 +1836,7 @@
       for(const id of ['officeApplications','officeCharacterList','officeRoleMessages','officeRoleLinks','officeRoleEvents'])el(id).replaceChildren();
       notice('已退出管理。');
     });
-  window.addEventListener('pagehide', () => {replayController.close();scenePlayer.reset();state.authEpoch++;el('officeRoleConnection').close();stopObserver();clearTimeout(state.poll);});
+  window.addEventListener('pagehide', () => {replayController.close();scenePlayer.reset();state.authEpoch++;el('officeRoleConnection').close();clearConnectionConfig();stopObserver();clearTimeout(state.poll);});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.logged)schedule(150);});
   window.addEventListener('pageshow', event => {if(event.persisted && state.logged){startObserver();schedule(0);}});
   if(window.MindPondOfficeCollaboration?.mount){const mounted=window.MindPondOfficeCollaboration.mount({getState:()=>state,api,run,showDetail,showMaterial,setRoomTab,notice,confirmAction,download,fitScene});Object.assign(window.MindPondOfficeCollaboration,mounted);}

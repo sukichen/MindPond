@@ -17,6 +17,12 @@ import {previewText} from './office-context.js';
 const id=z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),text=(n:number)=>z.string().trim().min(1).max(n);
 export const discussionSchema=z.object({action:z.enum(['list','create','get','join','decline','leave','post','finish','export','close','wait','request_participants','review_participants','cancel_request','request_get','departures','departure_get','send_departure','discard_departure']),postSeqs:z.array(z.number().int().positive()).min(1).max(128).optional(),summary:text(4000).optional(),messages:z.array(z.object({recipient:id,body:text(4000),replyTo:id.optional(),officeId:id.nullable().optional()}).strict()).max(7).optional(),departureId:id.optional(),messageIndex:z.number().int().min(0).max(6).optional(),requestId:id.optional(),reason:text(800).optional(),decision:z.enum(['approve','reject']).optional(),note:text(800).optional(),afterRevision:z.number().int().positive().optional(),waitMs:z.number().int().min(100).max(300000).optional(),officeId:id.optional(),id:id.optional(),afterId:id.optional(),title:text(200).optional(),question:text(2000).optional(),doneWhen:text(1000).optional(),participants:id.array().min(1).max(7).optional(),body:text(4000).optional(),memoryId:id.optional(),key:text(256).optional(),expectedRevision:z.number().int().positive().optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(20).default(10),contextBudgetBytes:z.number().int().min(2048).max(65536).default(16384),ttlHours:z.number().int().min(1).max(72).default(24)}).strict();
 type Row=Record<string,any>;
+export const discussionHistorySchema=discussionSchema.pick({id:true,limit:true,contextBudgetBytes:true}).extend({
+ id,
+ beforeSeq:z.number().int().positive().optional()
+}).strict();
+type DiscussionPage=Pick<z.infer<typeof discussionSchema>,'afterSeq'|'limit'|'contextBudgetBytes'>;
+type NewestPage={beforeSeq?:number};
 export const discussionLockSchema=z.object({id,locked:z.boolean(),expectedLockRevision:z.number().int().positive()}).strict();
 const DISCUSSION_NOTICE='Human-locked rooms block join/leave/close and pause expiry; only the human can unlock. Existing members continue discussing. Only a currently joined participant or human manager may close; creators outside cannot. Decline never closes. get: oldest unprocessed posts from others. wait: unseen posts from others. Omit id for your active room; omit afterSeq for normal work (explicit afterSeq reads history, 0 from the start). After handling posts, submit returned finish or a handled subset; reading is not completion. Unprocessed includes unread. While joined, ordinary sends/replies/broadcasts/handoffs and outside completion feedback are blocked. Helpers: request_participants(id,participants,reason,key), human approval, explicit join; no memory grants. Before leave: summary,key,optional selected messages sent after exit. Failed notifications: departures → departure_get/send_departure/discard_departure. Save reusable knowledge via separate Memory MCP. Fetched/waiting does not prove understanding, completion or a running host.';
 function fail(code:'invalid_input'|'not_found'|'scope_denied'|'stale_version'|'idempotency_conflict'|'material_over_budget',message:string):never{throw new MindPondError(code,message);}
@@ -30,8 +36,14 @@ export class OfficeDiscussions{
   if(!active)throw new MindPondError('invalid_input','No active discussion can be selected for this identity.',{field:'id',nextAction:'Use role_sync to inspect your discussion invitations and explicitly join one, or supply an authorized discussion id. Human inspection requires an explicit id.'});
   await this.room(active.id,a);return active.id as string;
  }
- private async posts(roomId:string,roleId:string|undefined,afterSeq:number|undefined,limit:number,selection:'unprocessed'|'unread'){
+ private async posts(roomId:string,roleId:string|undefined,afterSeq:number|undefined,limit:number,selection:'unprocessed'|'unread',newest?:NewestPage){
   const columns='SELECT p.seq,p.author,r.name authorName,p.body,p.created_at FROM office_discussion_posts p LEFT JOIN character_roles r ON r.id=p.author WHERE p.room_id=?';
+  if(newest){
+   const {beforeSeq}=newest;
+   const boundary=beforeSeq===undefined?'':' AND p.seq<?';
+   const params=beforeSeq===undefined?[roomId,limit]:[roomId,beforeSeq,limit];
+   return this.db.all<Row[]>(columns+boundary+' ORDER BY p.seq DESC LIMIT ?',params);
+  }
   if(afterSeq!==undefined||!roleId)return this.db.all<Row[]>(columns+' AND p.seq>? ORDER BY p.seq LIMIT ?',[roomId,afterSeq??0,limit]);
   const filter=selection==='unprocessed'
    ?'NOT EXISTS(SELECT 1 FROM office_discussion_handled h WHERE h.room_id=p.room_id AND h.role_id=? AND h.post_seq=p.seq)'
@@ -306,12 +318,20 @@ export class OfficeDiscussions{
  }
 
  private async changed(row:Row){await this.db.run('UPDATE office_discussions SET revision=revision+1 WHERE id=?',[row.id]);await this.log('discussion_updated',row.id,row.office_id);this.waiter.notify();}
- private async view(roomId:string,i:z.infer<typeof discussionSchema>,a?:TrustedCallContext,observe=true):Promise<Row>{
+ async history(value:unknown,a?:TrustedCallContext):Promise<Row>{
+  const page=discussionHistorySchema.parse(value);
+  return this.write(async()=>{
+   if(!(await this.actor(a)).human)fail('scope_denied','Discussion history in newest-first order is for human management');
+   await this.cleanup();
+   return this.view(page.id,page,a,false,{beforeSeq:page.beforeSeq});
+  });
+ }
+ private async view(roomId:string,i:DiscussionPage,a?:TrustedCallContext,observe=true,newest?:NewestPage):Promise<Row>{
   const {row,actor,state}=await this.room(roomId,a),members=await this.observations.members(roomId);
   row.locked=!!row.locked;row.lockRevision=row.lock_revision;
   if(!actor.human&&state!=='joined')return {room:row,members,posts:[],invitation:state,notice:row.locked?'This discussion is locked by the human. Ask the human to unlock it before joining.':'Join to read discussion posts. Leaving removes access to discussion posts.'};
   const history=i.afterSeq!==undefined||actor.human;
-  const rows=await this.posts(roomId,actor.human?undefined:actor.roleId!,i.afterSeq,i.limit+1,'unprocessed');
+  const rows=await this.posts(roomId,actor.human?undefined:actor.roleId!,i.afterSeq,i.limit+1,'unprocessed',newest);
   if(!actor.human){
    const handled=await this.observations.handled(roomId,actor.roleId!);
    for(const post of rows)post.processingState=post.author===actor.roleId?'own':handled.has(post.seq)?'handled':'unprocessed';
@@ -319,22 +339,26 @@ export class OfficeDiscussions{
   const exports=await this.db.all('SELECT memory_id memoryId,fingerprint FROM office_discussion_exports WHERE room_id=?',[roomId]);
   const lastSeq=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM office_discussion_posts WHERE room_id=?',[roomId]))!.n;
   const participantRequests=await this.requests(roomId),status=await this.observations.status(roomId,members);
-  const base={room:row,members,exports,lastSeq,status,participantRequests,selection:history?'history':'unprocessed',notice:DISCUSSION_NOTICE,posts:[] as Row[],nextAfterSeq:i.afterSeq??0,hasMore:false};
-  const commands=(posts:Row[],cursor:number)=>({...this.finishCommand(roomId,posts),nextGet:{action:'get',id:roomId,...(history?{afterSeq:cursor}:{}),limit:i.limit,contextBudgetBytes:i.contextBudgetBytes}});
+  const base={room:row,members,exports,lastSeq,status,participantRequests,selection:history?'history':'unprocessed',notice:DISCUSSION_NOTICE,posts:[] as Row[],hasMore:false};
+  const pageFields=(posts:Row[])=>{
+   if(newest)return {nextBeforeSeq:posts.at(-1)?.seq??null};
+   const cursor=posts.at(-1)?.seq??i.afterSeq??0;
+   return {nextAfterSeq:cursor,...this.finishCommand(roomId,posts),nextGet:{action:'get',id:roomId,...(history?{afterSeq:cursor}:{}),limit:i.limit,contextBudgetBytes:i.contextBudgetBytes}};
+  };
   for(const post of rows.slice(0,i.limit)){
    const candidate=[...base.posts,post];
    // Reserve space for both updated observation metadata and usable follow-ups.
-   if(Buffer.byteLength(JSON.stringify({...base,posts:candidate,...commands(candidate,post.seq)}))+128>i.contextBudgetBytes){
+   if(Buffer.byteLength(JSON.stringify({...base,posts:candidate,...pageFields(candidate)}))+128>i.contextBudgetBytes){
     if(!base.posts.length)fail('material_over_budget','Raise contextBudgetBytes to read the next complete post');
     break;
    }
-   base.posts.push(post);base.nextAfterSeq=post.seq;
+   base.posts.push(post);
   }
   base.hasMore=rows.length>base.posts.length;
-  const result={...base,...commands(base.posts,base.nextAfterSeq)};
+  const result={...base,...pageFields(base.posts)};
   if(Buffer.byteLength(JSON.stringify(result))>i.contextBudgetBytes)fail('material_over_budget','Raise contextBudgetBytes to read the full discussion metadata');
   if(observe&&!actor.human){
-   const advanced=await this.observations.delivered(roomId,actor.roleId!,i.afterSeq??0,result.nextAfterSeq,result.posts.map(p=>p.seq));
+   const advanced=await this.observations.delivered(roomId,actor.roleId!,i.afterSeq??0,result.posts.at(-1)?.seq??i.afterSeq??0,result.posts.map(p=>p.seq));
    if(advanced)await this.log('discussion_fetched',roomId,row.office_id);
    result.members=await this.observations.members(roomId);result.status=await this.observations.status(roomId,result.members);
    if(Buffer.byteLength(JSON.stringify(result))>i.contextBudgetBytes)fail('material_over_budget','Raise contextBudgetBytes to include the updated complete discussion metadata');

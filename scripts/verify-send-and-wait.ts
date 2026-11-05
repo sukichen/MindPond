@@ -101,11 +101,82 @@ try{
  });
  await test('policy is human-only, CAS-protected, idempotent and visible across SQLite processes',async()=>{
   await rejects(()=>graph.building.replyWaitPolicy.manage({action:'set',minimumSeconds:1,expectedRevision:0},actor('a')),'scope_denied');
+  const legacy=await graph.building.replyWaitPolicy.get();
+  await db.run("UPDATE office_meta SET value=? WHERE key='sendReplyWaitPolicy'",[JSON.stringify({minimumSeconds:legacy.minimumSeconds,revision:legacy.revision})]);
+  assert.equal((await peer.building.replyWaitPolicy.get()).enabled,true);
   const old=await peer.building.replyWaitPolicy.get(),input={action:'set',minimumSeconds:4,expectedRevision:old.revision};const changed=await peer.building.replyWaitPolicy.manage(input,admin);assert.equal((await graph.building.replyWaitPolicy.get()).minimumSeconds,4);assert.equal((await peer.building.replyWaitPolicy.manage(input,admin)).replayed,true);await rejects(()=>graph.building.replyWaitPolicy.manage({...input,minimumSeconds:5},admin),'stale_version');assert.equal(changed.maximumSeconds,300);assert.equal(changed.toolTimeoutSeconds,360);
+ });
+ await test('human can disable automatic waiting without preventing send, explicit waits or pending mail',async()=>{
+  const old=await peer.building.replyWaitPolicy.get();
+  await peer.building.replyWaitPolicy.manage({action:'set',enabled:false,minimumSeconds:old.minimumSeconds,expectedRevision:old.revision},admin);
+  const incoming=await peer.building.message({action:'send',recipient:roles[0],body:'Keep this pending',key:'disabled-inbox'},actor('b'));
+  const args=send('disabled',{waitForReply:true,waitSeconds:300});
+  const waitsBefore=(await db.get('SELECT count(*) n FROM role_message_waits')).n;
+  const first=await call(args),retry=await call(args);
+  assert.equal(first.sent,true);
+  assert.equal(first.replyWait.status,'disabled');
+  assert.equal(first.receivedMessageId,undefined);
+  assert.equal(first.messageId,retry.messageId);
+  assert.equal((await db.get('SELECT count(*) n FROM role_message_waits')).n,waitsBefore);
+  const observed=await graph.building.wait({waitMs:100},actor('a'));
+  assert.equal(observed.status,'matched');
+  assert.equal(observed.message.id,incoming.messageId);
+  assert.equal((await graph.building.message({action:'get',messageId:incoming.messageId},actor('a'))).message.state,'pending');
+ });
+ await test('disabling from a peer process interrupts an active wait and re-enabling preserves the minimum',async()=>{
+  const setEnabled=async(enabled:boolean)=>{
+   const {minimumSeconds,revision}=await peer.building.replyWaitPolicy.get();
+   return peer.building.replyWaitPolicy.manage({action:'set',enabled,minimumSeconds,expectedRevision:revision},admin);
+  };
+  const enabled=await setEnabled(true);
+  assert.equal(enabled.minimumSeconds,4);
+  const waiting=call(send('disable-active',{waitForReply:true,waitSeconds:300}));
+  await until(()=>db.get("SELECT id FROM role_message_waits WHERE state='waiting'"));
+  const disabled=await setEnabled(false);
+  const replay=await peer.building.replyWaitPolicy.manage({action:'set',enabled:false,minimumSeconds:4,expectedRevision:enabled.revision},admin);
+  assert.equal(replay.replayed,true);
+  const result=await waiting;
+  const recovery=(await graph.roles.sync(actor('a'))).waitRecovery.find((w:any)=>w.sentMessageId===result.messageId);
+  assert.equal(recovery.resume,undefined);
+  assert.equal(recovery.sendKey,undefined);
+  assert.equal(result.sent,true);
+  assert.equal(result.replyWait.status,'disabled');
+  assert.equal(result.receivedMessageId,undefined);
+  assert.equal((await db.get("SELECT count(*) n FROM role_message_waits WHERE state='waiting'")).n,0);
+  assert.equal((await db.get('SELECT count(*) n FROM office_wait_queue')).n,0);
+  assert.equal(disabled.minimumSeconds,4);
+  await setEnabled(true);
+ });
+ await test('a shutdown between inbox discovery and claim survives immediate re-enable',async()=>{
+  const original=graph.building.wait.bind(graph.building);
+  (graph.building as any).wait=async(...args:any[])=>{
+   const result=await (original as any)(...args);
+   if(result.status==='matched'){
+    for(const enabled of [false,true]){
+     const {minimumSeconds,revision}=await peer.building.replyWaitPolicy.get();
+     await peer.building.replyWaitPolicy.manage({action:'set',enabled,minimumSeconds,expectedRevision:revision},admin);
+    }
+   }
+   return result;
+  };
+  try{
+   const incoming=await peer.building.message({action:'send',recipient:roles[0],body:'Pending across the shutdown',key:'switch-race-inbox'},actor('b'));
+   const result=await call(send('switch-race',{waitForReply:true,waitSeconds:300}));
+   assert.equal(result.replyWait.status,'disabled');
+   assert.equal(result.receivedMessageId,undefined);
+   assert.equal((await graph.building.message({action:'get',messageId:incoming.messageId},actor('a'))).message.state,'pending');
+  }finally{(graph.building as any).wait=original;}
  });
  await test('HTTP management requires login and returns policy in the normal state snapshot',async()=>{
   const app=express();app.use('/api/office-admin',express.json(),officeWorkbench(graph,{apiKey:'',operatorKey:'fixture-user',contextSecret:''}));http=app.listen(0,'127.0.0.1');await new Promise<void>(r=>http.once('listening',r));const base='http://127.0.0.1:'+http.address().port+'/api/office-admin/';let cookie='';const post=(route:string,body:any)=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify(body)});
   assert.equal((await post('reply-wait-policy',{action:'get'})).status,401);const login=await post('login',{operatorKey:'fixture-user'});cookie=login.headers.get('set-cookie')!.split(';')[0];const state=await post('state',{});assert.equal(state.status,200);assert.equal((await state.json() as any).replyWaitPolicy.minimumSeconds,4);
+  const current=(await (await post('reply-wait-policy',{action:'get'})).json()) as any;
+  const saved=await post('reply-wait-policy',{action:'set',enabled:false,minimumSeconds:current.minimumSeconds,expectedRevision:current.revision});
+  assert.equal(saved.status,200);
+  assert.equal((await saved.json() as any).enabled,false);
+  const previousVersionRow=await db.get("SELECT value FROM office_meta WHERE key='sendReplyWaitPolicy'");
+  assert.deepEqual(Object.keys(JSON.parse(previousVersionRow.value)).sort(),['minimumSeconds','revision']);
+  assert.equal((await (await post('state',{})).json() as any).replyWaitPolicy.enabled,false);
   assert.equal((await post('reply-wait-policy',{action:'set',minimumSeconds:301,expectedRevision:0})).status,400);assert.equal((await post('reply-wait-policy',{action:'get',minimumSeconds:0})).status,400);
  });
  assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);assert.equal((await db.get('SELECT count(*) n FROM office_wait_queue')).n,0);
