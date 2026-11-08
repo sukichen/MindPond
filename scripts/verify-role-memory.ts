@@ -62,6 +62,14 @@ try {
     for (const t of (await memory.listTools()).tools)
         assert(!['domains', 'domain', 'sessionId', 'spaceId', 'ownerId', 'roleId'].some(k => k in (t.inputSchema.properties ?? {})));
     const human = await graph.saveMemory('isolation fixture human environment knowledge', { domain: { kind: 'personal', id: 'another-workspace' }, memberships: [{ spaceId: 'old-project', memoryType: 'work' }] });
+    const wrongDimension=await call(memory,'memory_save',{
+      content:'isolation fixture A task knowledge',dimensions:['procedure','verification'],idempotencyKey:'save-a'
+    },'chat-a');
+    assert(wrongDimension.r.isError);
+    assert.equal(wrongDimension.data.error.code,'invalid_input');
+    assert.equal(wrongDimension.data.error.field,'dimensions');
+    assert.deepEqual(wrongDimension.data.error.details.rejected,['procedure','verification']);
+    assert.match(wrongDimension.data.error.nextAction,/omit dimensions/);
     const saved = await call(memory, 'memory_save', { content: 'isolation fixture A task knowledge', idempotencyKey: 'save-a' }, 'chat-a');
     assert(!saved.r.isError, JSON.stringify(saved.data));
     const own = await call(memory, 'memory_get', { nodeId: saved.data.id }, 'chat-a');

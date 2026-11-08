@@ -297,7 +297,15 @@ export class OfficeCollaboration {
             const characters=Math.min(1024,Math.max(64,Math.floor((budget-1200)/12)));
             const response:Row={ ...(result.isError ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify({ paged: true, id, tool: 'office_context', action: 'page', offset: 0, characters, nextCall:{tool:'office_context',arguments:{action:'page',id,offset:0,characters}}, totalBytes: Buffer.byteLength(JSON.stringify(result)), notice: 'Complete invocation snapshot retained for one hour, not live state. Read pages before repeating a mutation; recheck role_sync before new work. Correlation and identity are in the retained response.' }) }] };
             // Keep whole human guidance visible when it fits, even if the large payload needs paging.
-            for(const entry of result.content??[]){if(entry.type!=='text')continue;let data:Row;try{data=JSON.parse(entry.text);}catch{continue;}if(!data.officeGuidance)continue;const candidate={...response,content:[...response.content,entry]};if(Buffer.byteLength(JSON.stringify(candidate))<=budget)response.content.push(entry);}
+            for(const entry of result.content??[]){
+                if(entry.type!=='text')continue;
+                let data:Row;
+                try{data=JSON.parse(entry.text);}catch{continue;}
+                if(!data.officeGuidance&&!data.guidance?.guidanceRevision)continue;
+                const guidance=data.guidance?.guidanceRevision?{type:'text' as const,text:JSON.stringify({guidance:data.guidance})}:entry;
+                const candidate={...response,content:[...response.content,guidance]};
+                if(Buffer.byteLength(JSON.stringify(candidate))<=budget)response.content.push(guidance);
+            }
             return response;
         });
     }

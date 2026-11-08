@@ -718,6 +718,33 @@
     name.required = true;name.maxLength = 120;intro.required = true;intro.rows = 5;intro.maxLength = 4000;
     intro.value = record.introduction;
     form.append(label('名字', name), label('能力与介绍', intro));
+    const guidance=application?null:make('textarea');
+    let guidanceLoaded=false,guidanceLimit=2048;
+    if(guidance){
+      guidance.rows=6;guidance.maxLength=guidanceLimit;guidance.disabled=true;
+      guidance.placeholder='例：离线验收先核对 Node ABI 和锁文件。缺证时标明待确认。交接前记下可复用的验证步骤。';
+      const guidanceHint=make('p','正在读取角色常用提示…');guidanceHint.className='office-hint';
+      const epoch=state.authEpoch,current=()=>state.roleDraft===draft&&state.authEpoch===epoch;
+      const refreshGuidance=async()=>{
+        retry.hidden=true;guidanceHint.textContent='正在读取角色常用提示…';
+        try{
+          const result=await api('role/guidance',{roleId:record.id});
+          if(!current())return;
+          if(result.profileRevision!==record.revision){guidanceHint.textContent='角色资料已更新，请关闭后重新打开。';return;}
+          guidanceLimit=result.maxTextBytes;
+          guidance.value=result.workingGuidance;guidanceLoaded=true;guidance.disabled=Boolean(draft.saving);
+          showBytes();
+        }catch(error){
+          if(current()){guidanceHint.textContent=error.message;retry.hidden=false;}
+        }
+      };
+      const showBytes=()=>{guidanceHint.textContent='角色同步时恢复，留空可清除。'+
+        new TextEncoder().encode(guidance.value.trim()).length+' / '+guidanceLimit+' 字节。';};
+      const retry=button('重新读取角色提示',refreshGuidance);
+      guidance.addEventListener('input',showBytes);
+      form.append(label('角色常用提示词',guidance),guidanceHint,retry);
+      void refreshGuidance();
+    }
     const meta = make('p', `账户 ${record.principal} · ${application ? '待审核' : record.state === 'active' ? '已批准 · 运行状态未知' : '已停用'}`);meta.className = 'office-hint';
     const profile=make('section');profile.append(meta,form);body.append(profile);let initialFocus=name;
     if(!application){
@@ -774,6 +801,11 @@
       const draft = state.roleDraft, epoch = state.authEpoch;
       const payload = {expectedRevision: record.revision, name: name.value.trim(), introduction: intro.value.trim()};
       if (!payload.name || !payload.introduction) throw Error('名字与介绍不能为空。');
+      if(guidance&&guidanceLoaded){
+        payload.workingGuidance=guidance.value.trim();
+        if(new TextEncoder().encode(payload.workingGuidance).length>guidanceLimit)
+          throw Error('角色常用提示词超过 '+guidanceLimit+' 字节，请保留最重要的内容。');
+      }
       saving = true;draft.saving = true;el('officeRoleInspectorClose').disabled = true;
       const fields = [...form.querySelectorAll('input,textarea,button')];fields.forEach(n => n.disabled = true);
       try {
@@ -781,8 +813,8 @@
         if (epoch !== state.authEpoch) return;
         if (state.roleDraft === draft) await closeRoleInspector(true);
         await refresh();
-        notice(application ? (action === 'approve' ? '已批准，下次 MCP 调用即可同步身份。' : '已拒绝申请。') : '角色资料已保存，后续 MCP 调用会自动返回新版介绍。');
-      } finally {saving = false;draft.saving = false;el('officeRoleInspectorClose').disabled = false;fields.forEach(n => n.disabled = false);}
+        notice(application ? (action === 'approve' ? '已批准，下次 MCP 调用即可同步身份。' : '已拒绝申请。') : '角色资料已保存。角色可用 role_sync 读取最新指引。');
+      } finally {saving = false;draft.saving = false;el('officeRoleInspectorClose').disabled = false;fields.forEach(n => n.disabled = false);if(guidance&&!guidanceLoaded)guidance.disabled=true;}
     }
 
     const save = button(application ? '批准这个角色' : '保存修改', () => saveProfile(application ? 'approve' : record.state));save.className = 'office-primary';
@@ -866,6 +898,7 @@
     if (!Object.hasOwn(appViews,id)) id='officeRooms';
     if(state.expanded)setExpanded(null);
     state.appView=id;
+    el('officeToggleRoomList').hidden=id!=='officeRooms';
     if(id==='officeOperations'&&state.logged)void window.MindPondOfficeOperations?.refresh();
     for(const panel of document.querySelectorAll('[data-app-view]'))panel.hidden=panel.dataset.appView!==id;
     for(const link of document.querySelectorAll('[data-app-route]')){
@@ -884,8 +917,35 @@
     for(const tab of tabs){const selected=tab.dataset.roomTab===id;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;if(selected&&focus)tab.focus();}
     for(const panel of document.querySelectorAll('[data-room-panel]'))panel.hidden=panel.id!==id;
     if(id!=='officeCanvas'){replayController.pause();scenePlayer.setActive(false);if(id==='officeMessagePanel'&&state.office)void run(()=>loadMail());}
-    else requestAnimationFrame(()=>{scenePlayer.setActive(state.appView==='officeRooms');layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
+    if(id==='officeGuidedTasks')void window.MindPondOfficeGuidedTasks?.refresh?.();
+    if(id==='officeCanvas')requestAnimationFrame(()=>{scenePlayer.setActive(state.appView==='officeRooms');layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
   }
+  function setupPanelToggle(buttonId,panelId,parent,klass,caption) {
+    const control=el(buttonId),panel=el(panelId),key='mindpond-office:'+panelId+':collapsed';
+    const label=control.querySelector('.office-panel-toggle-label');
+    let collapsed=false;
+    try{collapsed=localStorage.getItem(key)==='1';}catch{}
+    function update(){
+      if(collapsed&&panel.contains(document.activeElement))control.focus();
+      panel.hidden=collapsed;
+      parent.classList.toggle(klass,collapsed);
+      control.setAttribute('aria-expanded',String(!collapsed));
+      const action=(collapsed?'展开':'收起')+caption;
+      control.setAttribute('aria-label',action);
+      control.title=action;
+      if(label)label.textContent=action;
+    }
+    control.addEventListener('click',()=>{
+      collapsed=!collapsed;
+      try{localStorage.setItem(key,collapsed?'1':'0');}catch{}
+      update();
+      if(state.office&&state.appView==='officeRooms'&&state.roomTab==='officeCanvas'&&state.scene.autoFit)
+        requestAnimationFrame(()=>fitScene());
+    });
+    update();
+  }
+  setupPanelToggle('officeToggleSidebar','officeSidebar',document.querySelector('.office-app-layout'),'sidebar-collapsed','侧栏');
+  setupPanelToggle('officeToggleRoomList','officeRooms',el('officeWorkspace'),'room-list-collapsed','办公室列表');
   function syncAppRoute(){showAppView(location.hash.slice(1)||'officeRooms',false);}
   document.querySelector('.office-sidebar nav').addEventListener('click',event=>{
     const link=event.target.closest('[data-app-route]');if(!link)return;
@@ -1037,7 +1097,7 @@
       else if (!e.shiftKey && document.activeElement === last) {e.preventDefault();first?.focus();}
     }
   });
-  window.addEventListener('beforeunload', e => {if (state.roleDraft?.dirty || state.containerDirty || window.MindPondOfficeRules?.hasDraft?.() || window.MindPondOfficeResources?.hasDraft?.()) {e.preventDefault();e.returnValue = '';}});
+  window.addEventListener('beforeunload', e => {if (state.roleDraft?.dirty || state.containerDirty || window.MindPondOfficeRules?.hasDraft?.() || window.MindPondOfficeResources?.hasDraft?.() || window.MindPondOfficeGuidedTasks?.hasDraft?.()) {e.preventDefault();e.returnValue = '';}});
   new ResizeObserver(() => {if (state.scene.autoFit) requestAnimationFrame(()=>{if(!replayController.active)layoutScene(el('officeDesks').querySelectorAll('.office-desk').length);fitScene();});}).observe(stage);
   function renderProjects() {
     const members = el('officeProjectMembers'),
@@ -1117,7 +1177,7 @@
     el('officeSeatRows').append(row);
   }
   async function openOffice(id) {
-    if ((state.containerDirty||window.MindPondOfficeRules?.hasDraft?.()||window.MindPondOfficeResources?.hasDraft?.()) && !(await confirmAction('有尚未保存的内容，仍要切换办公室？'))) return;
+    if ((state.containerDirty||window.MindPondOfficeRules?.hasDraft?.()||window.MindPondOfficeResources?.hasDraft?.()||window.MindPondOfficeGuidedTasks?.hasDraft?.()) && !(await confirmAction('有尚未保存的内容，仍要切换办公室？'))) return;
     state.containerDirty = false;
     replayController.close();state.replayIndexRoom=null;
     const generation = ++state.generation;
@@ -1300,6 +1360,7 @@
       `${officeStates[o.state]??o.state} · ${data.seats.filter(s=>s.enabled).length} 位参与者`;
     renderFacilities(data.facilities);
     void window.MindPondOfficeResources?.refresh?.();
+    if(state.appView==='officeRooms')void window.MindPondOfficeGuidedTasks?.refresh?.();
     el('officeSync').textContent = data.hasMore
       ? '有更多事件，继续同步中'
       : '最近同步 ' + new Date().toLocaleTimeString();
@@ -1809,7 +1870,7 @@
   });
   el('officeLogout').onclick = () =>
     run(async () => {
-      if ((state.containerDirty||window.MindPondOfficeRules?.hasDraft?.()) && !(await confirmAction('有尚未保存的修改，仍要退出管理？'))) return;
+      if ((state.containerDirty||window.MindPondOfficeRules?.hasDraft?.()||window.MindPondOfficeResources?.hasDraft?.()||window.MindPondOfficeGuidedTasks?.hasDraft?.()) && !(await confirmAction('有尚未保存的修改，仍要退出管理？'))) return;
       if (!(await closeRoleInspector())) return;
       await closeOfficeDetail(true);
       state.containerDirty = false;
@@ -1823,7 +1884,7 @@
       clearTimeout(state.poll);
       state.data = null;state.directoryThrough={};state.directoryGeneration++;state.directoryLoading=false;
       state.office = null;
-      window.MindPondOfficeCollaboration?.reset?.();window.MindPondOfficeResources?.reset?.();window.MindPondOfficeRules?.reset?.();
+      window.MindPondOfficeCollaboration?.reset?.();window.MindPondOfficeResources?.reset?.();window.MindPondOfficeRules?.reset?.();window.MindPondOfficeGuidedTasks?.reset?.();
       state.events = [];
       el('officeLogin').hidden = false;
       el('officeSettings').hidden = true;
@@ -1841,6 +1902,7 @@
   window.addEventListener('pageshow', event => {if(event.persisted && state.logged){startObserver();schedule(0);}});
   if(window.MindPondOfficeCollaboration?.mount){const mounted=window.MindPondOfficeCollaboration.mount({getState:()=>state,api,run,showDetail,showMaterial,setRoomTab,notice,confirmAction,download,fitScene});Object.assign(window.MindPondOfficeCollaboration,mounted);}
   if(window.MindPondOfficeRules?.mount)Object.assign(window.MindPondOfficeRules,window.MindPondOfficeRules.mount({getState:()=>state,api,notice,confirmAction}));
+  if(window.MindPondOfficeGuidedTasks?.mount)Object.assign(window.MindPondOfficeGuidedTasks,window.MindPondOfficeGuidedTasks.mount({getState:()=>state,api,run,setRoomTab,notice,memberForSeat:characterForSeat,confirmAction,showMaterial}));
   if(window.MindPondOfficeResources?.mount)Object.assign(window.MindPondOfficeResources,window.MindPondOfficeResources.mount({getState:()=>state,api,run,setRoomTab,notice,confirmAction,download}));
   if(window.MindPondOfficeOperations?.mount)Object.assign(window.MindPondOfficeOperations,window.MindPondOfficeOperations.mount({getState:()=>state,api,run,showDetail,notice,confirmAction,download,openOffice,refreshOffice:()=>loadMail({refresh:true})}));
   syncAppRoute();

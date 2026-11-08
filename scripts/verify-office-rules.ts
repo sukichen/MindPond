@@ -38,12 +38,36 @@ try{
  const post=(route:string,body:any,cookie='',origin?:string)=>fetch(webBase+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,...(origin?{Origin:origin}:{})},body:JSON.stringify(body)});
  assert.equal((await post('rules',{action:'get',officeId:'room'})).status,401);
  const login=await post('login',{operatorKey:'synthetic-operator'}),cookie=login.headers.get('set-cookie')!.split(';')[0];assert.equal((await post('rules',{action:'get',officeId:'room'},cookie)).status,200);assert.equal((await post('rules',{action:'save',officeId:'room',expectedRevision:0,rules:[]},cookie,'https://untrusted.example')).status,403);
+ const firstRole=roles[0].roleId, secondRole=roles[1].roleId;
+ const roleConfig={roleId:firstRole,expectedRevision:1,name:'Synthetic a',introduction:'Generic knowledge',state:'active'};
+ const guidanceText='先核对 Node ABI。缺证时说明待确认。';
+ assert.equal((await post('role/guidance',{roleId:firstRole})).status,401);
+ assert.equal((await post('role/configure',{...roleConfig,workingGuidance:guidanceText},cookie,'https://untrusted.example')).status,403);
+ assert.equal((await post('role/configure',{...roleConfig,workingGuidance:'中'.repeat(700)},cookie)).status,400);
+ assert.equal((await post('role/configure',{...roleConfig,workingGuidance:guidanceText},cookie)).status,200);
+ assert.equal((await (await post('role/guidance',{roleId:firstRole},cookie)).json()).workingGuidance,guidanceText);
+ assert.equal((await (await post('role/guidance',{roleId:secondRole},cookie)).json()).workingGuidance,'');
+ assert.equal((await post('role/configure',{...roleConfig,workingGuidance:'stale'},cookie)).status,409);
+ const restored=payload(await call('role_sync')).guidance;
+ assert.deepEqual(restored.roleGuidance,{roleId:firstRole,profileRevision:2,text:guidanceText});
+ assert.equal(restored.officeGuidance[0].rules[0].text,DEFAULT_MEMORY_RULE);
+ assert.equal(payload(await call('role_sync',{},'b')).guidance.roleGuidance.text,'');
+ assert.equal(payload(await call('role_sync',{},'unbound')).guidance,undefined);
+ assert.equal(payload(await call('role_sync',{includeGuidance:false})).guidance,undefined);
+ assert.deepEqual(payload(await call('role_sync',{knownGuidanceRevision:restored.guidanceRevision})).guidance,
+  {guidanceRevision:restored.guidanceRevision,unchanged:true});
+ assert.deepEqual(payload(await call('role_sync')).guidance,restored,'context loss can recover the exact same text');
+ assert.equal((await db.get('SELECT COUNT(*) n FROM office_rule_delivery')).n,0,'recovery must not consume message cadence');
  const first=await call('office_message',{action:'send',officeId:'room',recipient:roles[1].roleId,body:'Keep the original body',key:'original'});assert(guidance(first).length,JSON.stringify(first));assert.equal(guidance(first)[0].rules[0].text,DEFAULT_MEMORY_RULE);const originalId=payload(first).messageId;
  const received=await call('office_receive',{action:'list'},'b');assert.equal(guidance(received)[0].rules[0].text,DEFAULT_MEMORY_RULE);assert.equal(payload(received).messages[0].body,'Keep the original body');assert.equal((await db.get('SELECT body FROM role_messages WHERE id=?',[originalId])).body,'Keep the original body');
  assert(!(await client.listTools()).tools.some(t=>/office.*rules/.test(t.name)),'roles cannot configure human rules');
  console.log('PASS rule management: concise defaults, authenticated/CSRF-protected human configuration and unmodified collaborator messages');
  const officeRevision=(await db.get('SELECT revision FROM offices WHERE id=?',['room'])).revision;
  const policy=await save([sample('memory','balanced','Only shared verified knowledge'),sample('gentle','light'),sample('always','strong'),sample('disabled','off'),...[16,32,64,128].map(n=>sample('every'+n,'every'+n))]);
+ const changed=payload(await call('role_sync',{knownGuidanceRevision:restored.guidanceRevision})).guidance;
+ assert.notEqual(changed.guidanceRevision,restored.guidanceRevision);
+ assert(!changed.unchanged);
+ assert(!changed.officeGuidance[0].rules.some((r:any)=>r.id==='disabled'),'disabled rules are excluded from recovery');
  const hits:Record<string,number[]>={memory:[],gentle:[],always:[],disabled:[],every16:[],every32:[],every64:[],every128:[]};
  for(let n=1;n<=129;n++){const r=await call('office_message',{action:'send',officeId:'room',recipient:roles[1].roleId,body:'Count '+n,key:'cadence-'+n});for(const item of guidance(r).flatMap((g:any)=>g.rules))hits[item.id].push(n);}
  const expected=(every:number)=>Array.from({length:Math.floor(128/every)+1},(_,n)=>1+n*every);
@@ -75,15 +99,50 @@ try{
  peer=new GraphMemory('.',{dbPath});await peer.init();
  const responses=await Promise.all(Array.from({length:8},(_,n)=>(n%2?peer!:graph).officeRules.reminders('office_broadcast',{officeId:'secondary'},{},actor())));assert.equal(responses.filter(r=>r.length).length,2,'shared SQL counters serialize across processes');await peer.close();peer=undefined;
  const rebound=await raw('role_sync',{},'replacement');assert(!rebound.isError);const role=await db.get('SELECT revision FROM character_roles WHERE id=?',[roles[0].roleId]);await graph.roles.connect({roleId:roles[0].roleId,expectedRevision:role.revision,targetRuntimeId:actor('replacement').runtimeId},admin);
- assert.equal(guidance(await call('role_sync',{},'replacement'))[0].officeId,'secondary');assert.equal(guidance(await call('role_sync',{},'replacement')).length,0,'repeated sync never consumes communication frequency');assert.equal(guidance(await raw('role_sync')).length,0);
+ const beforeRebindSync=await counter();
+ const moved=payload(await call('role_sync',{},'replacement')).guidance;
+ assert.equal(moved.roleGuidance.text,guidanceText);
+ assert.deepEqual(moved.officeGuidance.map((entry:any)=>entry.officeId),['secondary']);
+ assert.deepEqual(payload(await call('role_sync',{},'replacement')).guidance,moved);
+ assert.equal(payload(await raw('role_sync')).guidance,undefined,'former chat must not recover private role guidance');
+ assert.equal(await counter(),beforeRebindSync,'repeated sync leaves communication counters untouched');
  const remCount=await db.get('SELECT COUNT(*) n FROM office_rule_delivery');
- for(let n=0;n<5;n++){const id='budget-'+n;await graph.roles.configureOffice({id,title:'Budget '+n,state:'active',expectedRevision:0,seats:[{id:'budget-seat-'+n,roleId:roles[0].roleId,label:'Synthetic'}]},admin);await save([sample('long','strong','长'.repeat(650))],id);}
- const covered=new Set<string>();for(let n=0;n<5;n++){const r=await call('role_sync',{},'replacement'),entries=guidance(r);assert(Buffer.byteLength(JSON.stringify(entries))<=8192);for(const e of entries)if(e.officeId.startsWith('budget-'))covered.add(e.officeId);}assert.equal(covered.size,5,'deferred whole reminders get a later turn');
+ for(let n=0;n<5;n++){const id='budget-'+n;await graph.roles.configureOffice({id,title:'Budget '+n,state:'active',expectedRevision:0,seats:[{id:'budget-seat-'+n,roleId:firstRole,label:'Synthetic'}]},admin);await save([sample('long','strong','长'.repeat(650))],id);}
+ const covered=new Set<string>();let page=payload(await call('role_sync',{},'replacement')).guidance;
+ const staleCursor=page.guidanceNextCall.arguments.guidanceCursor;
+ const revision=page.guidanceRevision;
+ for(let n=0;n<5;n++){
+  assert(Buffer.byteLength(JSON.stringify(page.officeGuidance))<=6144);
+  assert.equal(page.guidanceRevision,revision);
+  for(const e of page.officeGuidance)if(e.officeId.startsWith('budget-'))covered.add(e.officeId);
+  if(!page.guidanceNextCall)break;
+  page=payload(await call('role_sync',page.guidanceNextCall.arguments,'replacement')).guidance;
+  assert.equal(page.roleGuidance,undefined,'continuation pages do not repeat the private role prompt');
+ }
+ assert.equal(covered.size,5,'stateless guidance pages cover every authorized office');
+ const small=payload(await call('role_sync',{responseBudgetBytes:2048},'replacement'));
+ assert(small.paged);
+ let joined='',offset=0;
+ for(let n=0;n<200;n++){
+  const part=payload(await call('office_context',{action:'page',id:small.id,offset,characters:1024},'replacement'));
+  joined+=part.text;
+  if(part.nextOffset===null)break;
+  offset=part.nextOffset;
+ }
+ assert.equal(payload(JSON.parse(joined)).guidance.roleGuidance.text,guidanceText,'transport paging retains the exact prompt');
+ const currentRole=await db.get('SELECT revision FROM character_roles WHERE id=?',[firstRole]);
+ assert.equal((await post('role/configure',{...roleConfig,expectedRevision:currentRole.revision,workingGuidance:''},cookie)).status,200);
+ const cleared=payload(await call('role_sync',{knownGuidanceRevision:revision},'replacement')).guidance;
+ assert.equal(cleared.roleGuidance.text,'');
+ assert.notEqual(cleared.guidanceRevision,revision);
+ assert.equal(payload(await raw('role_sync',{guidanceCursor:staleCursor},'replacement')).error.code,'stale_version');
+ assert.equal((await raw('office_context',{action:'page',id:small.id,offset:0,characters:1024},'replacement')).isError,true,
+  'old transport snapshots must be revoked when the private role prompt is edited');
  await save([sample('failure','balanced')],'secondary');
  await db.exec("CREATE TRIGGER synthetic_guidance_failure BEFORE UPDATE ON office_rule_delivery WHEN NEW.office_id='secondary' BEGIN SELECT RAISE(ABORT,'synthetic reminder failure'); END");
  const committed=await call('office_message',{action:'send',officeId:'secondary',recipient:roles[1].roleId,body:'Committed independently',key:'committed'},'replacement');assert(payload(committed).messageId);assert(committed.content.some((c:any)=>c.type==='text'&&JSON.parse(c.text).officeGuidanceUnavailable));assert(await db.get('SELECT id FROM role_messages WHERE id=?',[payload(committed).messageId]));await db.exec('DROP TRIGGER synthetic_guidance_failure');
  assert((await db.get('SELECT COUNT(*) n FROM office_rule_delivery')).n>=remCount.n);assert.equal((await db.get('PRAGMA quick_check')).quick_check,'ok');assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);
- console.log('PASS recovery: shared/restarted counters, new binding reminder, sync suppression, fair whole-text budgets and nonfatal reminder failure after committed messages');
+ console.log('PASS recovery: shared/restarted counters, stateless role and office restoration, revision hints, bounded paging, old-chat fencing and nonfatal reminder failure after committed messages');
  await graph.roles.configureOffice({id:'budget-0',title:'Budget 0',state:'cancelled',expectedRevision:1},admin);
  await assert.rejects(save([sample('archive','strong')],'budget-0'),(e:any)=>e.code==='invalid_input');
  await graph.roles.deleteOffice({id:'budget-0',expectedRevision:2},admin);

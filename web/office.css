@@ -499,7 +499,7 @@ body.office-hidden .office-scene *{animation-play-state:paused!important}@media(
 /* Application shell: quiet workspace, distinct navigation, content-sized panels. */
 body.office-application{height:100dvh;overflow:hidden;background:var(--o-background);color:var(--o-ink)}
 .office-application .office-header{display:flex;align-items:center;height:64px;min-height:64px;padding:0 24px 0 20px;gap:24px;background:#fff;border-bottom:1px solid var(--o-line);position:relative;z-index:30;flex-wrap:nowrap}
-.office-application .office-app-brand{width:166px;flex:none;display:flex;align-items:center;gap:8px;font-size:21px;letter-spacing:-.7px;line-height:1;position:relative;padding-bottom:13px;text-decoration:none;color:var(--o-ink)}
+.office-application .office-app-brand{flex:none;display:flex;align-items:center;gap:8px;font-size:21px;letter-spacing:-.7px;line-height:1;position:relative;padding-bottom:13px;text-decoration:none;color:var(--o-ink)}
 .office-brand-mark{color:var(--o-green);font-size:29px}.office-brand-sub{position:absolute;left:37px;bottom:0;font-size:10px;color:var(--o-muted);letter-spacing:2px;font-weight:400}
 .office-app-breadcrumb{display:flex;gap:14px;align-items:center;font-size:13px;color:#7d8b82}.office-app-breadcrumb strong{font-weight:600;color:var(--o-ink)}
 .office-header-help{margin-left:auto;font-size:12px!important;font-weight:500!important;color:var(--o-muted)!important;white-space:nowrap;text-decoration:none;padding:7px 11px;border:1px solid var(--o-line);border-radius:8px}.office-header-help:hover{background:var(--o-soft)}
@@ -555,8 +555,8 @@ body.office-application{height:100dvh;overflow:hidden;background:var(--o-backgro
 .office-room-editor{width:min(740px,calc(100vw - 24px))}.office-room-editor header{height:auto;padding:0;background:transparent;border:0}.office-room-editor #officeSeatRows{max-height:35dvh;overflow:auto}.office-room-editor textarea{min-height:70px}
 .office-room-editor #officeCreate{border:0;padding:0;margin:0}.office-room-editor #officeCreate>summary{display:none}.office-room-editor .office-seat-row{padding:12px;border:1px solid var(--o-line);border-radius:9px;background:var(--o-soft);margin:8px 0}
 .office-room-workspace .office-canvas.is-expanded{margin:0;min-height:0;overflow:auto}.office-room-workspace .office-canvas.is-list .office-stage{flex:initial}
-@media(min-width:1600px){.office-workspace{grid-template-columns:264px minmax(0,1fr)}.office-app-layout{grid-template-columns:208px minmax(0,1fr)}.office-application .office-app-brand{width:182px}}
-@media(max-width:1150px) and (min-width:761px){.office-app-layout{grid-template-columns:168px minmax(0,1fr)}.office-workspace{grid-template-columns:206px minmax(0,1fr)}.office-application .office-app-brand{width:142px}.office-sidebar{padding-left:8px;padding-right:8px}.office-sidebar nav a{font-size:12px;padding-left:9px;padding-right:9px;gap:7px}.office-room-workspace>.office-section-head{padding:18px}.office-workspace-tabs{padding:0 12px}.office-room-workspace .office-canvas{margin:12px}.office-room-workspace #officeSync{display:none}}
+@media(min-width:1600px){.office-workspace{grid-template-columns:264px minmax(0,1fr)}.office-app-layout{grid-template-columns:208px minmax(0,1fr)}}
+@media(max-width:1150px) and (min-width:761px){.office-app-layout{grid-template-columns:168px minmax(0,1fr)}.office-workspace{grid-template-columns:206px minmax(0,1fr)}.office-sidebar{padding-left:8px;padding-right:8px}.office-sidebar nav a{font-size:12px;padding-left:9px;padding-right:9px;gap:7px}.office-room-workspace>.office-section-head{padding:18px}.office-workspace-tabs{padding:0 12px}.office-room-workspace .office-canvas{margin:12px}.office-room-workspace #officeSync{display:none}}
 @media(max-width:760px){
  .office-application .office-header{height:57px;min-height:57px;padding:0 14px;gap:12px}.office-application .office-app-brand{width:auto;font-size:18px;padding:0}.office-brand-mark{font-size:24px}.office-brand-sub{display:none}.office-app-breadcrumb{gap:9px;font-size:11px}.office-app-breadcrumb>span{display:none}.office-header-help{font-size:10px!important}
  .office-app-layout{height:calc(100dvh - 57px);grid-template-columns:minmax(0,1fr);grid-template-rows:58px minmax(0,1fr)}
@@ -818,4 +818,48 @@ body.office-application{height:100dvh;overflow:hidden;background:var(--o-backgro
   width: 100%;
   min-height: 9rem;
   font: 13px/1.5 ui-monospace, monospace;
+}
+
+/* Task cards share the office palette and wrap names at narrow widths. */
+#officeGuidedTasks{padding:clamp(12px,2vw,24px);min-width:0}
+#officeGuidedTasks .office-toolbar{flex-wrap:wrap;gap:8px}
+#officeGuidedTasks .office-task-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:10px;margin:12px 0}
+#officeGuidedTasks .office-item{min-width:0;overflow-wrap:anywhere}
+#officeGuidedTasks .office-task-list .office-item{display:grid;align-content:start;justify-items:start;gap:6px;margin:0;padding:12px}
+#officeGuidedTasks .office-task-title{max-width:100%;min-width:0;text-align:left;white-space:normal;overflow-wrap:anywhere}
+#officeGuidedTasks .office-task-state{border-radius:12px;background:#e9f1e5;color:#2c5640;padding:3px 8px;font-size:12px}
+#officeGuidedTasks [data-task-status="review"] .office-task-state,#officeGuidedTasks [data-task-status="blocked"] .office-task-state{background:#f7eedb;color:#624516}
+#officeGuidedTasks fieldset{min-width:0;border:0;padding:0}
+#officeGuidedTasks textarea{min-height:68px;resize:vertical}
+.office-discussion-card>label:has(>textarea){display:grid;gap:5px;margin:10px 0}
+.office-discussion-card>label[hidden]{display:none}
+#officeGuidedTasks .office-task-people{display:flex;flex-wrap:wrap;flex-basis:100%;gap:8px 16px}
+#officeGuidedTasks .office-task-people label{display:flex;align-items:center;gap:6px;min-width:0}
+#officeGuidedTasks .office-task-people input{margin:0;width:auto;min-height:0;flex:none}
+.office-task-outcome{border:1px solid var(--o-line);border-radius:10px;min-width:0;padding:10px;margin:14px 0}
+.office-task-outcome label{display:block;margin-bottom:8px}
+.office-task-outcome[hidden]{display:none}
+.office-task-check{border-top:1px solid var(--o-line);padding:8px 0;overflow-wrap:anywhere}
+
+/* Each left panel can be collapsed independently. Header controls stay in view. */
+.office-header-panels{display:flex;gap:5px;flex:none}
+.office-header-panels button{display:grid;place-items:center;width:36px;height:34px;padding:0;border:1px solid var(--o-line);border-radius:8px;background:white;color:var(--o-green);cursor:pointer}
+.office-header-panels button:hover,.office-header-panels button[aria-expanded=false]{background:var(--o-soft)}
+.office-header-panels button svg{width:19px;height:19px}
+.office-header-panels #officeToggleSidebar{display:inline-flex;align-items:center;gap:5px;width:auto;padding-inline:8px;white-space:nowrap;font-size:12px}
+.office-header-panels button:focus-visible{outline:2px solid var(--o-green);outline-offset:2px}
+.office-app-layout.sidebar-collapsed{grid-template-columns:minmax(0,1fr)}
+.office-workspace.room-list-collapsed{grid-template-columns:minmax(0,1fr)}
+.office-workspace.room-list-collapsed .office-workspace-empty{grid-column:1}
+.office-sidebar[hidden],.office-workspace>#officeRooms[hidden],.office-header-panels button[hidden]{display:none!important}
+@media(max-width:760px){
+ .office-app-layout.sidebar-collapsed{grid-template-rows:minmax(0,1fr)}
+ .office-application .office-header{gap:8px}
+ .office-header-panels button{width:32px}
+ .office-application .office-header-help{padding:6px}
+}
+@media(max-width:430px){.office-app-breadcrumb{display:none}}
+@media(max-width:360px){
+ .office-application .office-header{padding-inline:8px;gap:5px}
+ .office-header-panels #officeToggleSidebar{padding-inline:6px}
 }

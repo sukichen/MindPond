@@ -4,11 +4,12 @@ import {randomUUID} from 'node:crypto';
 import type {Database} from 'sqlite';
 import type {GraphMemory} from './graph-memory.js';
 import type {TrustedCallContext} from './trust.js';
+import type {TaskOutcome} from './office-guidance-tasks.js';
 import {digest} from './growth.js';
 import {MindPondError,toStructuredError} from './errors.js';
 import {previewText} from './office-context.js';
 type Row=Record<string,any>;
-export type DepartureInput={action:string;id?:string;officeId?:string;summary?:string;key?:string;expectedRevision?:number;messages?:{recipient:string;body:string;replyTo?:string;officeId?:string|null}[]};
+export type DepartureInput={action:string;id?:string;officeId?:string;summary?:string;key?:string;expectedRevision?:number;taskConclusion?:string;taskOutcome?:TaskOutcome;messages?:{recipient:string;body:string;replyTo?:string;officeId?:string|null}[]};
 export class DiscussionDepartures{
  constructor(private db:Database,private graph:GraphMemory,private write:<T>(fn:()=>Promise<T>)=>Promise<T>,private clock:()=>number){}
  async init(){await this.write(async()=>{
@@ -23,7 +24,7 @@ export class DiscussionDepartures{
    ALTER TABLE office_discussion_departures_next RENAME TO office_discussion_departures;`);
   await this.db.exec('CREATE INDEX IF NOT EXISTS discussion_departure_role ON office_discussion_departures(role_id,pending_count,created_at,id)');
  });}
- private hash(i:DepartureInput){return digest({action:i.action,id:i.id,summary:i.summary,key:i.key,expectedRevision:i.expectedRevision,messages:i.messages??[]});}
+ private hash(i:DepartureInput){return digest({action:i.action,id:i.id,summary:i.summary,key:i.key,expectedRevision:i.expectedRevision,messages:i.messages??[],...(i.taskConclusion?{taskConclusion:i.taskConclusion}:{}),...(i.taskOutcome?{taskOutcome:i.taskOutcome}:{})});}
  async replay(i:DepartureInput,roleId:string){
   if(!i.id||!i.key)return;
   const row=await this.db.get<Row>('SELECT * FROM office_discussion_departures WHERE role_id=? AND room_id=? AND key=?',[roleId,i.id,i.key]);

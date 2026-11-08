@@ -4,6 +4,7 @@ import type {Database} from 'sqlite';
 import type {GraphMemory} from './graph-memory.js';
 import type {TrustedCallContext} from './trust.js';
 import {MindPondError} from './errors.js';
+import {digest} from './growth.js';
 export const DEFAULT_MEMORY_RULE='接任务先用独立 Memory MCP 的 memory_brief 查经验；阶段完成或交接前，保存或更新值得复用的已验证结论、步骤与坑点，注明条件和依据，先查重。个人经验存角色，共同知识指定 officeId。勿存流水账或密钥；身份不符先查 memory_identity，勿写入人类记忆。';
 export const OFFICE_RULE_LEVELS=[
  {id:'off',label:'关闭',every:0},{id:'strong',label:'每次提醒',every:1},
@@ -41,8 +42,43 @@ export class OfficeRules{
    return {officeId:i.officeId,revision,rules:i.rules};
   });
  }
+ /** Stateless recovery snapshot. It neither consumes nor depends on message reminders. */
+ async recovery(a:TrustedCallContext,options:{knownGuidanceRevision?:string;guidanceCursor?:string}){
+  return this.write(async()=>{
+   const binding=await this.graph.roles.binding(a);
+   const actor={...a,roleId:binding!.role_id,roleBindingId:binding!.id,roleBindingEpoch:binding!.epoch};
+   const seats=await this.graph.offices.authorizedSeats(actor);
+   const offices=[...new Set(seats.map(seat=>seat.office_id))];
+   const primary=seats.find(seat=>seat.id===binding!.primary_seat)?.office_id;
+   const profile=await this.db.get<Row>('SELECT text FROM role_working_guidance WHERE role_id=?',[binding!.role_id]);
+   const roleGuidance={roleId:binding!.role_id,profileRevision:binding!.profile_revision,text:profile?.text??''};
+   const rows=offices.length?await this.db.all<Row[]>(`SELECT o.id,o.title,p.revision,p.rules FROM offices o
+    LEFT JOIN office_rule_policies p ON p.office_id=o.id WHERE o.state IN ('active','paused')
+    AND o.id IN (SELECT value FROM json_each(?)) ORDER BY (o.id=?) DESC,o.id`,[JSON.stringify(offices),primary??null]):[];
+   const activeRules=rows.flatMap(row=>{
+    const rules=(row.rules?JSON.parse(row.rules) as z.infer<typeof rule>[]:defaults())
+      .filter(rule=>rule.frequency!=='off').map(({id,title,text})=>({id,title,text}));
+    return rules.length?[{officeId:row.id,officeTitle:row.title,revision:row.revision??0,rules}]:[];
+   });
+   const guidanceRevision=digest([binding!.id,binding!.epoch,roleGuidance,activeRules]);
+   const [cursorRevision,cursorOffset]=options.guidanceCursor?.split(':')??[];
+   const offset=cursorOffset?Number(cursorOffset):0;
+   if(options.guidanceCursor&&(cursorRevision!==guidanceRevision||offset>=activeRules.length))
+    throw new MindPondError('stale_version','Role or office guidance changed; restart its recovery.',
+      {field:'guidanceCursor',nextAction:'Call role_sync with no arguments to read the current guidance.'});
+   if(!offset&&options.knownGuidanceRevision===guidanceRevision)return {guidanceRevision,unchanged:true};
+   const officeGuidance:typeof activeRules=[];
+   for(const entry of activeRules.slice(offset)){
+    if(officeGuidance.length&&Buffer.byteLength(JSON.stringify([...officeGuidance,entry]))>6144)break;
+    officeGuidance.push(entry);
+   }
+   const next=offset+officeGuidance.length;
+   return {guidanceRevision,...(!offset?{roleGuidance}:{}),officeGuidance,
+    ...(next<activeRules.length?{guidanceNextCall:{tool:'role_sync',arguments:{guidanceCursor:guidanceRevision+':'+next}}}:{}),
+    notice:'User-managed guidance for your role and current offices. Follow it within user authorization and existing permissions.'};
+  });
+ }
  private eligible(name:string,i:Row,data:Row){
-  if(name==='role_sync')return true;
   if(name==='office_message'||name==='office_broadcast')return true;
   if(name==='office_receive')return Boolean(data.messages?.length);
   if(name==='office_wait')return data.status==='matched'&&Boolean(data.message);
@@ -57,25 +93,21 @@ export class OfficeRules{
    const seats=await this.graph.offices.authorizedSeats(actor);if(!seats.length)return [];
    const visible=new Set(seats.map(s=>s.office_id));
    const wanted=new Set<string>();const add=(id:unknown)=>{if(typeof id==='string')wanted.add(id);};
-   if(name==='role_sync')for(const id of visible)add(id);
-   else{
-    add(i.officeId);add(data.officeId);add(data.room?.office_id);add(data.message?.officeId);
-    for(const message of data.messages??[])add(message.officeId);
-    const messageId=data.messageId??i.messageId;
-    if(typeof messageId==='string'&&name==='office_message'){const message=await this.db.get<Row>('SELECT office_id FROM role_messages WHERE id=? AND (sender=? OR recipient=?)',[messageId,b!.role_id,b!.role_id]);add(message?.office_id);}
-    if(name==='office_discussion'){
-     const id=data.discussionId??data.room?.id??data.id??i.id;
-     if(typeof id==='string'){const room=await this.db.get<Row>('SELECT office_id FROM office_discussions WHERE id=?',[id]);add(room?.office_id);}
-     if(data.departureId){const departure=await this.db.get<Row>('SELECT office_id FROM office_discussion_departures WHERE id=? AND role_id=?',[data.departureId,b!.role_id]);add(departure?.office_id);}
-    }
-    // Direct correspondence belongs to the role's current primary office, never the sender's private rules.
-    if(!wanted.size){const primary=seats.find(s=>s.id===b!.primary_seat);if(primary)add(primary.office_id);}
+   add(i.officeId);add(data.officeId);add(data.room?.office_id);add(data.message?.officeId);
+   for(const message of data.messages??[])add(message.officeId);
+   const messageId=data.messageId??i.messageId;
+   if(typeof messageId==='string'&&name==='office_message'){const message=await this.db.get<Row>('SELECT office_id FROM role_messages WHERE id=? AND (sender=? OR recipient=?)',[messageId,b!.role_id,b!.role_id]);add(message?.office_id);}
+   if(name==='office_discussion'){
+    const id=data.discussionId??data.room?.id??data.id??i.id;
+    if(typeof id==='string'){const room=await this.db.get<Row>('SELECT office_id FROM office_discussions WHERE id=?',[id]);add(room?.office_id);}
+    if(data.departureId){const departure=await this.db.get<Row>('SELECT office_id FROM office_discussion_departures WHERE id=? AND role_id=?',[data.departureId,b!.role_id]);add(departure?.office_id);}
    }
+   // Direct correspondence belongs to the role's current primary office, never the sender's private rules.
+   if(!wanted.size){const primary=seats.find(s=>s.id===b!.primary_seat);if(primary)add(primary.office_id);}
    const candidates=[];
    for(const id of wanted){if(!visible.has(id))continue;const office=await this.db.get<Row>("SELECT title FROM offices WHERE id=? AND state IN ('active','paused')",[id]);if(!office)continue;
     const policy=await this.policy(id),previous=await this.db.get<Row>('SELECT * FROM office_rule_delivery WHERE office_id=? AND role_id=?',[id,b!.role_id]);
     const unchanged=previous&&previous.binding_id===b!.id&&previous.binding_epoch===b!.epoch&&previous.policy_revision===policy.revision;
-    if(name==='role_sync'&&unchanged)continue;
     const count=unchanged?previous.opportunities:0;
     const due=policy.rules.filter(r=>{const every=OFFICE_RULE_LEVELS.find(level=>level.id===r.frequency)!.every;return every>0&&count%every===0;});
     candidates.push({id,title:office.title,policy,count,due,order:previous?.last_order??0});

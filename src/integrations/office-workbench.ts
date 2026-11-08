@@ -229,6 +229,7 @@ export function officeWorkbench(
   route('/role/clones',req=>graph.roleClones.manage(req.body,operator));
   route('/role/memory-permissions',req=>graph.roleMemoryPermissions.manage(req.body,operator));
   route('/role/configure', req => graph.roles.configure(roleConfigureSchema.parse(req.body), operator));
+  route('/role/guidance',req=>graph.roles.workingGuidance(roleConfigureSchema.pick({roleId:true}).strict().parse(req.body).roleId,operator));
   route('/role/reorganization/choices',req=>graph.roleReorganization.choices(req.body,operator));
   route('/role/reorganization/preview',req=>graph.roleReorganization.preview(req.body,operator));
   route('/role/reorganization/apply',req=>graph.roleReorganization.apply(z.object({previewId:z.string().uuid()}).strict().parse(req.body).previewId,operator));
@@ -261,6 +262,9 @@ export function officeWorkbench(
   route('/discussions',req=>graph.discussions.run(discussionSchema.parse(req.body),operator));
   route('/discussion-history',req=>graph.discussions.history(req.body,operator));
   route('/rules',req=>graph.officeRules.manage(req.body,operator));
+  route('/guided-tasks',req=>graph.guidedTasks.run(req.body,operator));
+  route('/guided-tasks/settings',req=>graph.guidedTasks.settings(req.body,operator));
+  route('/guided-tasks/usage',req=>graph.guidedTasks.usage(req.body,operator));
   route('/scripts',req=>graph.scripts.run(managedScriptSchema.parse(req.body),operator));
   route('/discussion-memory',async req=>{
     const i=z.object({id:z.string().uuid(),expectedRevision:z.number().int().positive(),content:z.string().trim().min(1).max(10000),key:z.string().min(1).max(256)}).strict().parse(req.body);

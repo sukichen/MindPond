@@ -1,6 +1,7 @@
 import {RoleClones} from './role-clones.js';
 import {RoleMemoryPermissions} from './role-memory-permissions.js';
 import {OfficeDiscussions} from './office-discussions.js';
+import {OfficeGuidanceTasks} from './office-guidance-tasks.js';
 import {OfficeRules} from './office-rules.js';
 import {RoleReorganization} from './role-reorganization.js';
 import {OfficeArtifacts} from './office-artifacts.js';
@@ -435,6 +436,7 @@ export class GraphMemory {
   roleMemoryPermissions!:RoleMemoryPermissions;
   roleContinuity!:RoleContinuityStore;
   discussions!:OfficeDiscussions;
+  guidedTasks!:OfficeGuidanceTasks;
   scripts!:OfficeScripts;
   artifacts!:OfficeArtifacts;
   officeRules!:OfficeRules;
@@ -1163,7 +1165,7 @@ export class GraphMemory {
     await this.collaboration.init();
     this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','choices','agent','officeExists','agentSeats','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
     await this.offices.init();
-    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','connect','disconnect','init','migrateModel','application','sync','identity','binding','review','configure','deleteRole','deleteOffice','registry','state','configureOffice','link']);
+    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','connect','disconnect','init','migrateModel','application','sync','identity','binding','review','configure','workingGuidance','deleteRole','deleteOffice','registry','state','configureOffice','link']);
     await this.roles.init();
     this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay','pollWait']);
     await this.building.init();
@@ -1175,6 +1177,8 @@ export class GraphMemory {
     await this.roles.migrateModel();
     this.roleContinuity=this.coordinator.service(new RoleContinuityStore(this.db,this,work=>this.growthWrite(work),this.clock),['init','resume','checkpoint','updateTask','tasks','history','archive']);
     await this.roleContinuity.init();
+    this.guidedTasks=this.coordinator.service(new OfficeGuidanceTasks(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','settings','attention','usage']);
+    await this.guidedTasks.init();
     this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','assertCommunication','sweep','setLock']);await this.discussions.init();
     this.scripts=this.coordinator.service(new OfficeScripts(this.db,this,work=>this.growthWrite(work),this.clock),['init','run']);await this.scripts.init();
     // Streaming intentionally stays outside the connection coordinator; only its short metadata phases transact.
@@ -1190,6 +1194,7 @@ export class GraphMemory {
     const expireDiscussions=async()=>{try{await this.discussions.sweep();}finally{this.later(expireDiscussions,60000);}};this.later(expireDiscussions,60000);
     this.roles.discussionStatus=a=>this.discussions.attention(a);
     this.building.discussionStatus=a=>this.discussions.attention(a);
+    this.building.taskChange=async(a,after)=>(await this.guidedTasks.attention(a,after,false)).change;
     this.building.assertMailbox=a=>this.discussions.assertMailbox(a);
     this.building.assertCommunication=(a,recipient,feedback)=>this.discussions.assertCommunication(a,recipient,feedback);
     // Additive, transactional migration: never reclassify historical events or
@@ -1649,8 +1654,12 @@ export class GraphMemory {
   }
   private async assertDimensions(dimensions:string[],retained:string[]=[]) {
     const config=await this.getDimensionConfiguration();
-    for(const id of dimensions)if(!config.definitions.some(d=>d.id===id&&(d.enabled||retained.includes(id))))
-      throw new Error('Unknown or archived dimension: '+id+'; read memory_dimension_policy and choose a configured identity');
+    const rejected = dimensions.filter(id => !config.definitions.some(d => d.id===id && (d.enabled || retained.includes(id))));
+    if (rejected.length) throw new MindPondError('invalid_input', 'Unknown or archived dimension: '+rejected.join(', '), {
+      field:'dimensions',
+      nextAction:'Use an enabled dimension from the current policy. For memory_save, omit dimensions to use the default.',
+      details:{rejected, defaultDimension:config.defaultDimension}
+    });
   }
 
   private resolveSavePlacements(options: { memberships?: Array<{ spaceId: string; memoryType?: string }>; dimensions?: KnowledgeDimension[] },

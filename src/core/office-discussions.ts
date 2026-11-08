@@ -1,4 +1,5 @@
 import {roleControlAttention} from './role-control-attention.js';
+import {taskOutcomeSchema} from './office-guidance-tasks.js';
 import {DiscussionDepartures} from './office-discussion-departures.js';
 import {DiscussionObservations} from './office-discussion-observations.js';
 import {memoryAccess} from './memory-access.js';
@@ -15,7 +16,7 @@ import {MindPondError} from './errors.js';
 import {digest} from './growth.js';
 import {previewText} from './office-context.js';
 const id=z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),text=(n:number)=>z.string().trim().min(1).max(n);
-export const discussionSchema=z.object({action:z.enum(['list','create','get','join','decline','leave','post','finish','export','close','wait','request_participants','review_participants','cancel_request','request_get','departures','departure_get','send_departure','discard_departure']),postSeqs:z.array(z.number().int().positive()).min(1).max(128).optional(),summary:text(4000).optional(),messages:z.array(z.object({recipient:id,body:text(4000),replyTo:id.optional(),officeId:id.nullable().optional()}).strict()).max(7).optional(),departureId:id.optional(),messageIndex:z.number().int().min(0).max(6).optional(),requestId:id.optional(),reason:text(800).optional(),decision:z.enum(['approve','reject']).optional(),note:text(800).optional(),afterRevision:z.number().int().positive().optional(),waitMs:z.number().int().min(100).max(300000).optional(),officeId:id.optional(),id:id.optional(),afterId:id.optional(),title:text(200).optional(),question:text(2000).optional(),doneWhen:text(1000).optional(),participants:id.array().min(1).max(7).optional(),body:text(4000).optional(),memoryId:id.optional(),key:text(256).optional(),expectedRevision:z.number().int().positive().optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(20).default(10),contextBudgetBytes:z.number().int().min(2048).max(65536).default(16384),ttlHours:z.number().int().min(1).max(72).default(24)}).strict();
+export const discussionSchema=z.object({action:z.enum(['list','create','get','join','decline','leave','post','finish','export','close','wait','request_participants','review_participants','cancel_request','request_get','departures','departure_get','send_departure','discard_departure']),taskId:id.optional(),taskConclusion:text(2000).optional(),taskOutcome:taskOutcomeSchema.optional(),postSeqs:z.array(z.number().int().positive()).min(1).max(128).optional(),summary:text(4000).optional(),messages:z.array(z.object({recipient:id,body:text(4000),replyTo:id.optional(),officeId:id.nullable().optional()}).strict()).max(7).optional(),departureId:id.optional(),messageIndex:z.number().int().min(0).max(6).optional(),requestId:id.optional(),reason:text(800).optional(),decision:z.enum(['approve','reject']).optional(),note:text(800).optional(),afterRevision:z.number().int().positive().optional(),waitMs:z.number().int().min(100).max(300000).optional(),officeId:id.optional(),id:id.optional(),afterId:id.optional(),title:text(200).optional(),question:text(2000).optional(),doneWhen:text(1000).optional(),participants:id.array().min(1).max(8).optional(),body:text(4000).optional(),memoryId:id.optional(),key:text(256).optional(),expectedRevision:z.number().int().positive().optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(20).default(10),contextBudgetBytes:z.number().int().min(2048).max(65536).default(16384),ttlHours:z.number().int().min(1).max(72).default(24)}).strict();
 type Row=Record<string,any>;
 export const discussionHistorySchema=discussionSchema.pick({id:true,limit:true,contextBudgetBytes:true}).extend({
  id,
@@ -91,6 +92,7 @@ export class OfficeDiscussions{
  CREATE TABLE IF NOT EXISTS office_discussion_conclusions(room_id TEXT NOT NULL REFERENCES office_discussions(id) ON DELETE CASCADE,key TEXT NOT NULL,hash TEXT NOT NULL,memory_id TEXT NOT NULL,PRIMARY KEY(room_id,key));
  CREATE TABLE IF NOT EXISTS office_discussion_requests(id TEXT PRIMARY KEY,room_id TEXT NOT NULL REFERENCES office_discussions(id) ON DELETE CASCADE,requester TEXT NOT NULL REFERENCES character_roles(id) ON DELETE CASCADE,participants TEXT NOT NULL,reason TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,created_at INTEGER NOT NULL,reviewed_at INTEGER,review_note TEXT,UNIQUE(room_id,requester,key));
  `);await this.write(async()=>{const columns=await this.db.all<Row[]>('PRAGMA table_info(office_discussions)');
+  if(!columns.some(c=>c.name==='guided_task_id'))await this.db.exec('ALTER TABLE office_discussions ADD COLUMN guided_task_id TEXT REFERENCES office_guided_tasks(id) ON DELETE SET NULL');
   if(!columns.some(c=>c.name==='locked'))await this.db.exec('ALTER TABLE office_discussions ADD COLUMN locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0,1))');
   if(!columns.some(c=>c.name==='locked_at'))await this.db.exec('ALTER TABLE office_discussions ADD COLUMN locked_at INTEGER');
   if(!columns.some(c=>c.name==='lock_revision'))await this.db.exec('ALTER TABLE office_discussions ADD COLUMN lock_revision INTEGER NOT NULL DEFAULT 1');
@@ -135,6 +137,7 @@ export class OfficeDiscussions{
   if(i.action==='request_participants'){
    if(actor.human||state!=='joined')fail('scope_denied','Only a joined participant can request additional helpers');
    if(!i.participants||!i.reason||!i.key)fail('invalid_input','request_participants requires id,participants,reason,key');
+   if(i.participants.length>7)fail('invalid_input','Request up to seven other roles.');
    const people=[...new Set(i.participants)].sort(),hash=digest({participants:people,reason:i.reason});
    const old=await this.db.get<Row>('SELECT * FROM office_discussion_requests WHERE room_id=? AND requester=? AND key=?',[room.id,actor.roleId,i.key]);
    if(old){if(old.hash!==hash)fail('idempotency_conflict','This request key has a different helper list or reason');return {requestId:old.id,state:old.state,revision:old.revision,note:old.review_note,notice:'Read request_get for the human decision; do not send ordinary messages while joined.'};}
@@ -225,6 +228,10 @@ export class OfficeDiscussions{
  }
  async assertMailbox(a?:TrustedCallContext){const priority=await this.attention(a);if(priority.active||priority.activeUnavailable)throw new MindPondError('invalid_input','Finish or leave your active discussion before taking ordinary mailbox work',{details:priority.active?{discussionId:priority.active.id}:undefined,nextAction:priority.activeUnavailable?priority.next:priority.active?.locked?'Your discussion is human-locked; continue get/post/finish/wait. Ask the human to unlock before leaving to take ordinary work. Inbox messages remain pending.':'Use office_discussion get/post; leave requires summary,key and optional selected messages. Ordinary messages remain pending.'});}
  async run(value:unknown,a?:TrustedCallContext):Promise<Row>{const i=discussionSchema.parse(value);
+  if(i.taskId && i.action!=='create')fail('invalid_input','taskId is for create.');
+  if((i.taskConclusion || i.taskOutcome) && i.action!=='close')
+   fail('invalid_input','taskOutcome or taskConclusion is for close.');
+  if(i.taskOutcome && i.taskConclusion)fail('invalid_input','Choose taskOutcome or taskConclusion.');
   if(['departure_get','send_departure','discard_departure'].includes(i.action)){
    if(!i.departureId)fail('invalid_input','This action requires departureId from leave or departures; it does not use discussion id');
    return i.action==='send_departure'?this.departures.send(i.departureId,a,i.officeId):i.action==='discard_departure'?this.departures.discard(i.departureId,a,i.officeId):this.departures.get(i.departureId,a,i.messageIndex,i.officeId);
@@ -239,21 +246,25 @@ export class OfficeDiscussions{
 
   if(i.action==='create'){
    if(!i.officeId||!i.title||!i.question||!i.doneWhen||!i.participants||!i.key)fail('invalid_input','Create requires officeId,title,question,doneWhen,participants,key');
-   await this.office(i.officeId,a,true);if(actor.human)fail('invalid_input','Create a discussion from an approved role; human management can inspect and close discussions');
-   const old=await this.db.get<Row>('SELECT * FROM office_discussion_creations WHERE role_id=? AND key=?',[actor.roleId,i.key]);const hash=digest(i);
+   await this.office(i.officeId,a,true);if(actor.human&&!i.taskId)fail('invalid_input','The human can start a task-linked discussion, or ask an approved role to start an open discussion.');
+   const creator=actor.roleId??'human';
+   const old=await this.db.get<Row>('SELECT * FROM office_discussion_creations WHERE role_id=? AND key=?',[creator,i.key]);const hash=digest(i);
    if(old){if(old.hash!==hash)fail('idempotency_conflict','Discussion creation key has another payload');const exists=await this.db.get('SELECT 1 FROM office_discussions WHERE id=?',[old.room_id]);return exists?this.view(old.room_id,i,a):{id:old.room_id,closed:true};}
-   await this.attention(a);
-   const focus=await this.focus(actor.roleId!);if(focus){this.assertUnlocked(focus);fail('invalid_input','Leave your current discussion before opening another');}
-   const members=[...new Set([actor.roleId!,...i.participants])];if(members.length<2||members.length>8)fail('invalid_input','Choose 2–8 distinct office roles including yourself');
+   if(!actor.human){
+    await this.attention(a);
+    const focus=await this.focus(actor.roleId!);if(focus){this.assertUnlocked(focus);fail('invalid_input','Leave your current discussion before opening another');}
+   }
+   const members=[...new Set(actor.roleId?[actor.roleId,...i.participants]:i.participants)];if(members.length<2||members.length>8)fail('invalid_input','Choose two to eight distinct office roles');
    for(const role of members)if(!await this.member(i.officeId,role))fail('scope_denied','Every participant must be an active member of this office');
    if((await this.db.get<Row>('SELECT COUNT(*) n FROM office_discussions WHERE office_id=?',[i.officeId]))!.n>=16)fail('invalid_input','At most 16 discussions may be open per office');
-   const roomId=randomUUID();await this.db.run('INSERT INTO office_discussions(id,office_id,creator,title,question,done_when,revision,expires_at,created_at) VALUES(?,?,?,?,?,?,1,?,?)',[roomId,i.officeId,actor.roleId,i.title,i.question,i.doneWhen,this.clock()+i.ttlHours*3600000,this.clock()]);
+   if(i.taskId)await this.graph.guidedTasks.assertDiscussionLink(i.officeId,i.taskId,a);
+   const roomId=randomUUID();await this.db.run('INSERT INTO office_discussions(id,office_id,creator,title,question,done_when,revision,expires_at,created_at,guided_task_id) VALUES(?,?,?,?,?,?,1,?,?,?)',[roomId,i.officeId,creator,i.title,i.question,i.doneWhen,this.clock()+i.ttlHours*3600000,this.clock(),i.taskId??null]);
    for(const role of members)await this.db.run('INSERT INTO office_discussion_members VALUES(?,?,?)',[roomId,role,role===actor.roleId?'joined':'invited']);
-   await this.db.run('INSERT INTO office_discussion_creations VALUES(?,?,?,?)',[actor.roleId,i.key,hash,roomId]);await this.log('discussion_created',roomId,i.officeId);return this.view(roomId,i,a);
+   await this.db.run('INSERT INTO office_discussion_creations VALUES(?,?,?,?)',[creator,i.key,hash,roomId]);await this.log('discussion_created',roomId,i.officeId);return this.view(roomId,i,a);
   }
   if(i.action==='list'){
    if(!i.officeId)fail('invalid_input','List requires officeId');await this.office(i.officeId,a);
-   const records=await this.db.all<Row[]>(`SELECT r.id,r.title,r.creator,r.revision,r.expires_at,r.locked,r.lock_revision lockRevision,m.state FROM office_discussions r LEFT JOIN office_discussion_members m ON m.room_id=r.id AND m.role_id=? WHERE r.office_id=? AND r.id>? ${actor.human?'':"AND m.state IS NOT NULL"} ORDER BY r.id LIMIT ?`,[actor.roleId,i.officeId,i.afterId??'',i.limit+1]);const rooms:Row[]=[];
+   const records=await this.db.all<Row[]>(`SELECT r.id,r.title,r.creator,r.revision,r.expires_at,r.locked,r.lock_revision lockRevision,r.guided_task_id,m.state FROM office_discussions r LEFT JOIN office_discussion_members m ON m.room_id=r.id AND m.role_id=? WHERE r.office_id=? AND r.id>? ${actor.human?'':"AND m.state IS NOT NULL"} ORDER BY r.id LIMIT ?`,[actor.roleId,i.officeId,i.afterId??'',i.limit+1]);const rooms:Row[]=[];
    for(const record of records.slice(0,i.limit)){const item={...record,locked:!!record.locked,status:await this.observations.status(record.id)};if(Buffer.byteLength(JSON.stringify(rooms))+Buffer.byteLength(JSON.stringify(item))+256>i.contextBudgetBytes)break;rooms.push(item);}return {rooms,hasMore:records.length>rooms.length,nextAfterId:rooms.at(-1)?.id??i.afterId??''};
   }
   if(i.action==='get'&&!i.id)i.id=await this.currentId(a);
@@ -282,6 +293,8 @@ export class OfficeDiscussions{
    if(!actor.human)this.assertJoinedCloser(row,state);if(i.expectedRevision!==row.revision)fail('stale_version','Discussion changed; read the latest posts and exports before closing');
    let departureId:string|undefined;
    if(!actor.human){departureId=await this.departures.prepare(i,actor.roleId!,row.office_id);await this.exitSummary(i.id,actor.roleId!,i.summary!,departureId);await this.db.run("UPDATE office_discussion_members SET state='left' WHERE room_id=? AND role_id=?",[i.id,actor.roleId]);}
+   const outcome=i.taskOutcome??i.taskConclusion;
+   if(outcome)await this.graph.guidedTasks.keepDiscussionOutcome(row,outcome,actor.roleId??'human');
    await this.purge(i.id);return {id:i.id,closed:true,contentDeleted:true,...(departureId?{departureId,left:true}: {})};
   }
   if(!actor.human&&state!=='joined')fail('scope_denied','Join the discussion before reading or contributing content');

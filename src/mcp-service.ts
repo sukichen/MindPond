@@ -160,9 +160,23 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       await options.authorizeWait?.();
       if(name==='role_sync'&&!result.isError){
         const entry=result.content?.find((c:any)=>c.type==='text');
-        if(entry){const data=JSON.parse(entry.text);data.pondId=await graphMemory.pondIdentity();if(activation)data.activation={...activation,notice:activation.notice??'If the user wants a role, ask them to activate an existing role or submit a role application. An unbound chat uses human memory. Reconnection never chooses a role by recency.'};entry.text=JSON.stringify(data);}
+        if(entry){
+          const data=JSON.parse(entry.text);
+          data.pondId=await graphMemory.pondIdentity();
+          if(roleIdentity&&args.includeGuidance!==false)
+            data.guidance=await graphMemory.officeRules.recovery(current,{
+              knownGuidanceRevision:args.knownGuidanceRevision,guidanceCursor:args.guidanceCursor
+            });
+          if(roleIdentity&&!data.discussions?.active&&!data.discussions?.activeUnavailable&&!data.controlRequests?.length){
+            const guided=await graphMemory.guidedTasks.attention(current,args.afterTaskChange);
+            if(guided.change)data.guidedTaskAttention=guided.change;
+            if(guided.inProgress)data.guidedTaskInProgress=guided.inProgress;
+          }
+          if(activation)data.activation={...activation,notice:activation.notice??'If the user wants a role, ask them to activate an existing role or submit a role application. An unbound chat uses human memory. Reconnection never chooses a role by recency.'};
+          entry.text=JSON.stringify(data);
+        }
       }
-      if(roleIdentity&&!result.isError){
+      if(roleIdentity&&name!=='role_sync'&&!result.isError){
         const entry=result.content?.find((c:any)=>c.type==='text');
         if(entry){try{const reminders=await graphMemory.officeRules.reminders(name,args,JSON.parse(entry.text),current);if(reminders.length)result.content.push({type:'text' as const,text:JSON.stringify({officeGuidance:reminders,notice:'Human-configured office guidance; does not change permissions, message state or user authorization.'})});}
         catch(error){const failure=toStructuredError(error);if(failure.code==='internal')failure.message='Office reminders are temporarily unavailable.';result.content.push({type:'text' as const,text:JSON.stringify({officeGuidanceUnavailable:{...failure,nextAction:'The communication result above remains valid. Retry reminders on later communication; do not repeat a completed mutation.'},notice:'Only the office reminder was unavailable; the operation result above is unchanged.'})});}}
@@ -175,7 +189,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         // Keep routine tool calls cheap; explicit sync/receive always include
         // the full profile in their normal result. Cache is NOT authorization.
         const badge={...(changed&&!(name==='office_context'&&args.action==='page')?roleIdentity:{roleId:roleIdentity.roleId,bindingId:roleIdentity.bindingId,bindingEpoch:roleIdentity.bindingEpoch,name:roleIdentity.name,profileRevision:roleIdentity.profileRevision,primaryAssignmentId:roleIdentity.primaryAssignmentId})};
-        result.content.push({type:'text' as const,text:JSON.stringify({mindpondIdentity:badge,profileChanged:changed,notice:changed?'Use this updated server profile. role_sync restores the full introduction after context loss.':'role_sync restores your full introduction if needed.'})});
+        result.content.push({type:'text' as const,text:JSON.stringify({mindpondIdentity:badge,profileChanged:changed,notice:changed?'Use this updated server profile. role_sync restores the full profile and guidance after context loss.':'role_sync restores your profile and guidance.'})});
       }
       await graphMemory.logAction({action:result.isError?'host_tool_failed':'host_tool_completed',nodeId:typeof args.nodeId==='string'?args.nodeId:undefined,domain:trustBound&&!trusted.operator?(trusted.sessionId?{kind:'session',id:trusted.sessionId}:TRUST_DOMAINS[0]):undefined,reason:JSON.stringify({tool:name,...(trustBound?{principal:trusted.principal,agentId:trusted.agentId,workSessionId:trusted.workSessionId,roleId:trusted.roleId,roleBindingEpoch:trusted.roleBindingEpoch}:{})})});
       if (name === 'memory_capabilities') {
@@ -205,8 +219,15 @@ function tool(name: string, description: string, shape: any, handler: (args: any
 
 for (const op of [...roleOperations(graphMemory),...buildingOperations(graphMemory)]) {
   tool(op.name,op.description,op.schema.shape,async(args:any,runtime)=>{
-    if(op.name==='office_context'&&args.action==='page')args={...args,characters:Math.min(args.characters??1024,Math.max(64,Math.floor(((args.responseBudgetBytes??16384)-1200)/12)))};
-    return {content:[{type:'text' as const,text:JSON.stringify(await op.run(op.schema.parse(args),trustBound?(contextStorage.getStore()??baseTrusted):undefined,runtime))}]};
+    const {responseBudgetBytes,...operationInput}=args;
+    if(op.name==='office_context'&&operationInput.action==='page'){
+      const availableBytes=(responseBudgetBytes??16384)-1200;
+      operationInput.characters=Math.min(operationInput.characters??1024,Math.max(64,Math.floor(availableBytes/12)));
+    }
+    // The response envelope is handled by tool(); strict domain schemas only
+    // receive the operation fields advertised by their own schema.
+    const input=op.schema.parse(operationInput);
+    return {content:[{type:'text' as const,text:JSON.stringify(await op.run(input,trustBound?(contextStorage.getStore()??baseTrusted):undefined,runtime))}]};
   });
 }
 

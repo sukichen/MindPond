@@ -17,6 +17,7 @@ import { deleteRoleData, deleteOfficeData } from './office-deletion.js';
 
 type Row = Record<string, any>;
 export const ROLE_INSTRUCTIONS = BUILDING_INSTRUCTIONS;
+export const MAX_ROLE_GUIDANCE_BYTES=2048;
 
 export function roleRuntimeId(principal: string, connector: string, source: string, label: string) {
   return createHash('sha256').update(JSON.stringify([principal, connector, source, label])).digest('hex');
@@ -33,6 +34,9 @@ export class RoleStore {
   async init() {
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS character_roles(id TEXT PRIMARY KEY,principal TEXT NOT NULL,name TEXT NOT NULL,introduction TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,primary_seat TEXT,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS role_working_guidance(
+        role_id TEXT PRIMARY KEY REFERENCES character_roles(id) ON DELETE CASCADE, text TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS role_applications(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL,mode TEXT NOT NULL,name TEXT NOT NULL,introduction TEXT NOT NULL,reason TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,role_id TEXT,created_at INTEGER NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS role_application_pending ON role_applications(principal,connector_id,runtime_id) WHERE state='pending';
       CREATE TABLE IF NOT EXISTS role_bindings(id TEXT PRIMARY KEY,principal TEXT NOT NULL,connector_id TEXT NOT NULL,runtime_id TEXT NOT NULL,role_id TEXT NOT NULL REFERENCES character_roles(id),epoch INTEGER NOT NULL,state TEXT NOT NULL,last_seen INTEGER NOT NULL,UNIQUE(principal,connector_id,runtime_id));
@@ -267,7 +271,7 @@ export class RoleStore {
           nextAction:'The send is committed. Automatic waiting was stopped. Use the processing inbox to recover unfinished work; do not replay the send to wait.'
         };
       }
-      const resume={afterSeq:conditions.afterSeq??0,...(!inbox&&conditions.replyTo?{replyTo:conditions.replyTo}:{}),waitMs:conditions.waitMs??300000};
+      const resume={afterSeq:conditions.afterSeq??0,...(!inbox&&conditions.replyTo?{replyTo:conditions.replyTo}:{}),...(Number.isSafeInteger(conditions.afterTaskChange)?{afterTaskChange:conditions.afterTaskChange}:{}),waitMs:conditions.waitMs??300000};
       if(!inbox)return {...wait,conditions,resume};
       return {...wait,conditions,resume,sentMessageId:conditions.replyTo,sendKey:conditions.sendKey,
         nextAction:'This send was already committed. Retry its original office_message send payload/key with waitForReply=true only within the user-authorized waiting budget. The ordinary office_wait resume below observes inbox arrivals only; do not resend with a new key.'};
@@ -324,6 +328,14 @@ export class RoleStore {
       return { state: 'approved', roleId, bindingId:bound!.id };
     });
   }
+  async workingGuidance(roleId:string, a?:TrustedCallContext) {
+    this.admin(a);
+    const role=await this.db.get<Row>(`SELECT r.revision,g.text FROM character_roles r
+      LEFT JOIN role_working_guidance g ON g.role_id=r.id WHERE r.id=? AND r.state<>'merged'`,[roleId]);
+    if(!role) return fail('Character unavailable','not_found');
+    return {roleId,profileRevision:role.revision,workingGuidance:role.text??'',maxTextBytes:MAX_ROLE_GUIDANCE_BYTES};
+  }
+
   async configure(i: Row, a?: TrustedCallContext) {
     this.admin(a);
     return this.write(async () => {
@@ -333,6 +345,18 @@ export class RoleStore {
       if(old.state==='merged')fail('角色已合并，无法重新启用；请使用合并后的角色。','invalid_input');
       const revision = old.revision + 1;
       await this.db.run('UPDATE character_roles SET name=?,introduction=?,state=?,revision=? WHERE id=?', [i.name, i.introduction, i.state, revision, old.id]);
+      if (i.workingGuidance!==undefined) {
+        if(typeof i.workingGuidance!=='string'||Buffer.byteLength(i.workingGuidance.trim())>MAX_ROLE_GUIDANCE_BYTES)
+          throw new MindPondError('invalid_input','Role guidance exceeds the UTF-8 byte limit.',{field:'workingGuidance',details:{maxTextBytes:MAX_ROLE_GUIDANCE_BYTES}});
+        const guidance=i.workingGuidance.trim(),previous=await this.db.get<Row>(
+          'SELECT text FROM role_working_guidance WHERE role_id=?',[old.id]);
+        if(guidance!==(previous?.text??'')){
+          if(guidance)await this.db.run(`INSERT INTO role_working_guidance(role_id,text) VALUES(?,?)
+            ON CONFLICT(role_id) DO UPDATE SET text=excluded.text`,[old.id,guidance]);
+          else await this.db.run('DELETE FROM role_working_guidance WHERE role_id=?',[old.id]);
+          await this.db.run('DELETE FROM office_response_pages');
+        }
+      }
       if (old.state !== i.state) {
         await this.db.run('UPDATE role_bindings SET epoch=epoch+1 WHERE role_id=?', [old.id]);
         await this.fenceRole(old.id);

@@ -257,13 +257,40 @@ const routePanels=['officeRooms','officeCharacters','officeProjects','officeAgen
 const routeLinks=routePanels.map(p=>({dataset:{appRoute:p.dataset.appView},attrs:{},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];}}));
 const roomPanels=['officeCanvas','officeMaterialPanel','officeTaskPanel','officeMessagePanel','officeTimelinePanel'].map(id=>({id,hidden:false}));
 const roomTabs=roomPanels.map(p=>({dataset:{roomTab:p.id},attrs:{},setAttribute(k,v){this.attrs[k]=v;},focus(){this.focused=true;}}));
-const routeElements={officePageTitle:{},officeWorkspaceEmpty:{}};
+const panelToggle=(withLabel=false)=>{
+  const label=withLabel?{}:null;
+  return {label,attrs:{},querySelector:()=>label,setAttribute(k,v){this.attrs[k]=v;},focus(){this.focused=true;},
+    addEventListener(_event,fn){this.click=fn;}};
+};
+const layout=()=>({classList:{toggle(_name,value){this.collapsed=value;}}});
+const routeElements={officePageTitle:{},officeWorkspaceEmpty:{},officeToggleSidebar:panelToggle(true),
+  officeToggleRoomList:panelToggle(),officeSidebar:{contains:()=>false},officeRooms:{contains:()=>false},officeWorkspace:layout()};
+const appLayout=layout();
+const panelPreferences=new Map();
 let pauseCount=0,stopCount=0;const historyEntries=[];
 const routeState={appView:'officeRooms',roomTab:'officeCanvas',office:{},scene:{autoFit:true}};
-const routeContext=vm.createContext({state:routeState,el:id=>routeElements[id],document:{querySelectorAll:s=>s==='[data-app-view]'?routePanels:s==='[data-app-route]'?routeLinks:s==='[data-room-tab]'?roomTabs:roomPanels},
+const routeContext=vm.createContext({state:routeState,el:id=>routeElements[id],
+ localStorage:{getItem:key=>panelPreferences.get(key),setItem:(key,value)=>panelPreferences.set(key,value)},
+ document:{querySelector:()=>appLayout,querySelectorAll:s=>s==='[data-app-view]'?routePanels:s==='[data-app-route]'?routeLinks:s==='[data-room-tab]'?roomTabs:roomPanels},
  replayController:{pause(){pauseCount++;}},scenePlayer:{stop(){stopCount++;},setActive(on){assert.equal(on,false);stopCount++;}},requestAnimationFrame(){},location:{hash:'#officeRooms'},history:{pushState(_a,_b,hash){historyEntries.push(hash);}},Object});
 vm.runInContext(source.slice(source.indexOf('  const appViews ='),source.indexOf("  document.querySelector('.office-sidebar nav')")),routeContext);
+const sidebarToggle=routeElements.officeToggleSidebar,roomsToggle=routeElements.officeToggleRoomList;
+assert.equal(sidebarToggle.label.textContent,'收起侧栏');
+sidebarToggle.click();
+assert.equal(routeElements.officeSidebar.hidden,true);
+assert.equal(routeElements.officeRooms.hidden,false);
+assert.equal(sidebarToggle.label.textContent,'展开侧栏');
+assert.equal(sidebarToggle.attrs['aria-expanded'],'false');
+assert.equal(panelPreferences.get('mindpond-office:officeSidebar:collapsed'),'1');
+assert.equal(appLayout.classList.collapsed,true);
+roomsToggle.click();
+sidebarToggle.click();
+assert.equal(routeElements.officeSidebar.hidden,false);
+assert.equal(routeElements.officeRooms.hidden,true);
+assert.equal(sidebarToggle.label.textContent,'收起侧栏');
+roomsToggle.click();
 routeContext.showAppView('officeCharacters');assert.equal(routePanels.filter(p=>!p.hidden)[0].dataset.appView,'officeCharacters');assert.equal(routeLinks[1].attrs['aria-current'],'page');assert.equal(pauseCount,1);assert.equal(stopCount,1);
+assert.equal(roomsToggle.hidden,true);
 routeContext.setRoomTab('officeMaterialPanel',true);assert.deepEqual(roomPanels.filter(p=>!p.hidden).map(p=>p.id),['officeMaterialPanel']);assert.equal(roomTabs[1].tabIndex,0);assert(roomTabs[1].focused);
 routeContext.setRoomTab('missing');assert.equal(routeState.roomTab,'officeMaterialPanel');
 routeContext.syncAppRoute();assert.equal(routeState.appView,'officeRooms');assert.equal(historyEntries.length,1,'history restore cannot push another entry');
