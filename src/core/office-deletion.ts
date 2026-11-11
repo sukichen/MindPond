@@ -14,7 +14,8 @@ export async function deleteRoleData(db: Database, roleId: string) {
   await db.run("DELETE FROM office_protocol_tasks WHERE EXISTS (SELECT 1 FROM role_bindings b WHERE b.role_id=? AND instr(owner,':'||b.id||':')>0)",[roleId]);
   await db.run('DELETE FROM office_control_requests WHERE role_id=?',[roleId]);
   await db.run('DELETE FROM office_host_reports WHERE role_id=?',[roleId]);
-  await db.run('DELETE FROM office_collaboration_receipts WHERE EXISTS (SELECT 1 FROM role_bindings b WHERE b.role_id=? AND substr(actor,1,length(b.id)+1)=b.id||\':\')',[roleId]);
+  await db.run('DELETE FROM office_collaboration_receipts WHERE actor=? OR EXISTS (SELECT 1 FROM role_bindings b WHERE b.role_id=? AND substr(actor,1,length(b.id)+1)=b.id||\':\')',
+    ['assessment:role:'+roleId,roleId]);
   const seats = 'SELECT seat_id FROM role_seats WHERE role_id=?';
   // Keep office history and materials, but fence every old assignment and
   // cancel work that can no longer be completed by its assigned participants.

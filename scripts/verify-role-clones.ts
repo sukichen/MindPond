@@ -33,16 +33,36 @@ try{
  await graph.scripts.run({action:'save',roleId:parent,filename:'skill.sh',description:'Synthetic script',usage:'Read before running',language:'sh',content:'printf synthetic',expectedRevision:0,key:'script',locked:true},admin);
  const script=await db.get('SELECT id FROM office_scripts WHERE role_id=?',[parent]);
  await db.run("INSERT INTO memory_embedding_spaces VALUES('fixture-space','{}',?,0)",[Date.now()]);await db.run('INSERT INTO memory_profile_body_versions VALUES(?,4)',[first.id]);await db.run("INSERT INTO memory_profile_vectors VALUES('fixture-space','body',?,?,0,'4',?)",[first.id,first.id,Buffer.from(new Float32Array(384).fill(.1).buffer)]);
- const dispatch={action:'dispatch',roleId:parent,name:'Helper',mission:'Help recipient, record verified lessons and report back',principal:'recipient',memoryIds:[first.id,second.id],scriptIds:[script.id],key:'dispatch-1'};
+ const dispatch={action:'dispatch',roleId:parent,name:'Helper',mission:'Help recipient, record verified lessons and report back',principal:'recipient',key:'dispatch-1'};
  let child:any;
- await test('dispatch is human-only, atomic, immutable and idempotent; invalid ownership copies nothing',async()=>{
+ await test('default dispatch inherits all private assets; dispatch is human-only, atomic and idempotent',async()=>{
   await rejects(()=>graph.roleClones.manage(dispatch,actor('parent')),'scope_denied');
   const before=(await db.get('SELECT count(*) n FROM character_roles')).n;
   await rejects(()=>graph.roleClones.manage({...dispatch,key:'bad',memoryIds:[human.id]},admin),'not_found');assert.equal((await db.get('SELECT count(*) n FROM character_roles')).n,before);
   const callsBefore=embeddingCalls;child=await graph.roleClones.manage(dispatch,admin);assert.equal(embeddingCalls,callsBefore,'dispatch must not call an embedding model');assert.equal((await graph.roleClones.manage(dispatch,admin)).roleId,child.roleId);await rejects(()=>graph.roleClones.manage({...dispatch,mission:'Changed payload'},admin),'idempotency_conflict');assert.notEqual(child.roleId,parent);
   assert.equal((await db.get('SELECT count(*) n FROM role_bindings WHERE role_id=?',[child.roleId])).n,0);assert.equal((await db.get('SELECT count(*) n FROM role_seats WHERE role_id=?',[child.roleId])).n,0);
  });
- const childAssets=await db.all('SELECT * FROM role_clone_assets WHERE role_id=?',[child.roleId]),childFirst=childAssets.find((a:any)=>a.source_id===first.id).copy_id,childSecond=childAssets.find((a:any)=>a.source_id===second.id).copy_id,childScript=childAssets.find((a:any)=>a.kind==='script').copy_id;
+ const childAssets=await db.all('SELECT * FROM role_clone_assets WHERE role_id=?',[child.roleId]);
+ assert.deepEqual(new Set(childAssets.filter((a:any)=>a.kind==='memory').map((a:any)=>a.source_id)),new Set([first.id,second.id]));
+ assert.deepEqual(childAssets.filter((a:any)=>a.kind==='script').map((a:any)=>a.source_id),[script.id]);
+ await test('explicit selections and empty lists override inheritance; oversized defaults create no partial clone',async()=>{
+  const selected=await graph.roleClones.manage({...dispatch,memoryIds:[first.id],scriptIds:[],key:'custom-inheritance'},admin);
+  assert.deepEqual(await db.all('SELECT kind,source_id FROM role_clone_assets WHERE role_id=?',[selected.roleId]),[{kind:'memory',source_id:first.id}]);
+  const empty=await graph.roleClones.manage({...dispatch,memoryIds:[],scriptIds:[],key:'empty-inheritance'},admin);
+  assert.equal(empty.memories+empty.scripts,0);
+  await db.run(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<100)
+    INSERT INTO office_scripts(id,role_id,office_id,filename,description,usage,language,content,sha256,revision,locked,updated_by,updated_at)
+    SELECT 'capacity-'||n,s.role_id,NULL,'capacity-'||n||'.sh',s.description,s.usage,s.language,s.content,s.sha256,1,0,s.updated_by,s.updated_at
+    FROM seq JOIN office_scripts s ON s.id=?`,[script.id]);
+  try{
+   const before=(await db.get('SELECT count(*) n FROM character_roles')).n;
+   await rejects(()=>graph.roleClones.manage({...dispatch,key:'over-capacity'},admin),'material_over_budget');
+   assert.equal((await db.get('SELECT count(*) n FROM character_roles')).n,before);
+   assert(!await db.get("SELECT 1 FROM role_clone_receipts WHERE operation='dispatch' AND key='over-capacity'"));
+   assert.equal((await graph.roleClones.manage(dispatch,admin)).snapshotHash,child.snapshotHash,'retry returns the frozen snapshot despite changes to the parent library');
+  }finally{await db.run("DELETE FROM office_scripts WHERE role_id=? AND id LIKE 'capacity-%'",[parent]);}
+ });
+ const childFirst=childAssets.find((a:any)=>a.source_id===first.id).copy_id,childSecond=childAssets.find((a:any)=>a.source_id===second.id).copy_id,childScript=childAssets.find((a:any)=>a.kind==='script').copy_id;
  await test('private copies retain internal ripple graph, original score/evidence, anchors and script locks without cross-owner edges',async()=>{
   assert.notEqual(childFirst,first.id);assert.notEqual(childScript,script.id);
   const edge=(await graph.listAssociations(childFirst))[0];assert.equal(edge.weight,.8);assert.equal(edge.evidenceStatus,'supported','copied evidence must refer to copied membership IDs and versions');assert.equal(edge.memoryB?.id===childSecond||edge.memoryA?.id===childSecond,true);assert.equal(edge.evidence[0].reason,'Both solve the synthetic environment');

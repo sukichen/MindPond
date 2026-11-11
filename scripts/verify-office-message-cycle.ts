@@ -52,6 +52,23 @@ try{
   assert.equal(receipt.feedbackMessageId,null,'handling a completion receipt cannot create a feedback loop');assert.equal(receipt.feedbackDelivery,'not_required');
   await graph.building.message({action:'finish',messageId:two.messageId,result:'Second task done',key:'finish-two'},b);
   assert.equal((await graph.building.snapshot('room',admin)).activity.find((x:any)=>x.roleId===b.roleId).processing,0,'last completion releases working state');
+  await graph.roles.configureOffice({id:'room-other',title:'Other office',state:'active',expectedRevision:0,
+    seats:people.map((p,n)=>({id:'other-seat-'+n,roleId:p.roleId,label:String(n),role:'member'}))},admin);
+  const foreign=await graph.building.message({action:'send',key:'room-other',recipient:b.roleId,officeId:'room-other',body:'Other office'},a);
+  const privateMail=await graph.building.message({action:'send',key:'private',recipient:b.roleId,body:'Private message'},a);
+  for(const m of [foreign,privateMail])await graph.building.message({action:'take',messageId:m.messageId,key:'take-'+m.messageId},b);
+  const inRoom=async(id:string)=>(await graph.building.snapshot(id,admin)).activity.find((x:any)=>x.roleId===b.roleId);
+  assert.equal((await inRoom('room')).processing,0,'office animation excludes other offices and direct mail');
+  assert.equal((await inRoom('room-other')).processing,1);
+  const guided=(await graph.guidedTasks.run({action:'create',officeId:'room',ownerId:b.roleId,title:'核对目标版本',
+    goal:'Read the release manifest',acceptance:'Version recorded',key:'scene-task'},admin)).task;
+  assert.equal((await inRoom('room')).guidedTaskTitle,null,'queued tasks do not animate as working');
+  const claimed=(await graph.guidedTasks.run({action:'claim',officeId:'room',taskId:guided.id,expectedRevision:guided.revision,key:'claim-scene'},b)).task;
+  assert.equal((await inRoom('room')).guidedTaskTitle,guided.title);
+  assert.equal((await inRoom('room-other')).guidedTaskTitle,null);
+  await graph.guidedTasks.run({action:'submit',officeId:'room',taskId:guided.id,expectedRevision:claimed.revision,note:'Recorded',key:'submit-scene'},b);
+  assert.equal((await inRoom('room')).guidedTaskTitle,null,'submission ends work animation unless other actual work remains');
+  for(const m of [foreign,privateMail])await graph.building.message({action:'finish',messageId:m.messageId,result:'Handled',key:'finish-'+m.messageId},b);
   const three=await send('race');
   const racers=await Promise.all([graph,other].map((g,n)=>g.building.receive({action:'take',key:'race-'+n,limit:1},b)));
   assert.equal(racers.flatMap(r=>r.messages).filter(m=>m.id===three.messageId).length,1,'concurrent connections claim once');
@@ -73,13 +90,28 @@ try{
   const nextContacts=await graph.building.directory({action:'contacts',afterId:contacts.nextAfterId,limit:1,contextBudgetBytes:2048},a);
   assert.notEqual(nextContacts.contacts[0].roleId,contacts.contacts[0].roleId);
   const profile=await graph.building.directory({roleId:c.roleId},a);assert(profile.contact.introduction.length>240,'full permitted profile remains accessible');
-  const roomPage=await graph.building.directory({action:'rooms',limit:1},a);assert.equal(roomPage.rooms[0].officeId,'room');
+  const roomPage=await graph.building.directory({action:'rooms',limit:1},a);
+  assert.equal(roomPage.rooms.length,1);assert(roomPage.hasMore);
+  const otherRoomPage=await graph.building.directory({action:'rooms',limit:1,afterId:roomPage.nextAfterId},a);
+  assert.deepEqual(new Set([...roomPage.rooms,...otherRoomPage.rooms].map(r=>r.officeId)),new Set(['room','room-other']));
   const replayIndex=await graph.building.replay({action:'index',officeId:'room',threadId:message.messageId},admin);
   assert(replayIndex.count>=4);
   const replayPage=await graph.building.replay({action:'page',officeId:'room',threadId:message.messageId},admin);
   const expectedIds=new Set([message.messageId,done.feedbackMessageId]);
   assert(replayPage.events.every((e:any)=>expectedIds.has(e.body.messageId)),'topic replay excludes unrelated messages and actions');
   const revision=await graph.building.observationRevision(admin);await send('observer');assert(await other.building.observationRevision(admin)>revision,'notification revision observes cross-process commits');
+  const toReassign=await send('reassign-before-delete');
+  const claimedBeforeDelete=await graph.building.message({action:'take',messageId:toReassign.messageId,key:'take-reassignment'},b);
+  const retry=await graph.building.recoverMessage({officeId:'room',messageId:toReassign.messageId,action:'retry',
+    recipient:c.roleId,expectedTakenAt:claimedBeforeDelete.takenAt,reason:'Operator moved the work',key:'reassign-before-delete'},admin);
+  const checkRequest=()=>graph.building.message({action:'request_status',messageId:toReassign.messageId},a);
+  assert.equal((await checkRequest()).replacementMessageId,retry.replacementMessageId);
+  await graph.roles.deleteRole({roleId:c.roleId,expectedRevision:2},admin);
+  const recoveredAfterDeletion=await checkRequest();
+  assert.equal(recoveredAfterDeletion.outcome,'cancelled_by_human');
+  assert.equal(recoveredAfterDeletion.replacementMessageId,null);
+  assert.equal(recoveredAfterDeletion.replacementStatusCall,undefined);
+  assert.match(recoveredAfterDeletion.nextAction,/replacement is no longer available/);
   const unavailable=await send('sender-unavailable');await graph.building.message({action:'take',messageId:unavailable.messageId,key:'take-unavailable'},b);
   await graph.roles.configure({roleId:a.roleId,expectedRevision:1,name:'a',introduction:'Synthetic fixture',state:'disabled'},admin);
   const unnotified=await graph.building.message({action:'finish',messageId:unavailable.messageId,key:'finish-unavailable',result:'Verified result retained for the unavailable sender'},b);

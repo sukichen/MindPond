@@ -257,7 +257,7 @@ export class OfficeDiscussions{
    const members=[...new Set(actor.roleId?[actor.roleId,...i.participants]:i.participants)];if(members.length<2||members.length>8)fail('invalid_input','Choose two to eight distinct office roles');
    for(const role of members)if(!await this.member(i.officeId,role))fail('scope_denied','Every participant must be an active member of this office');
    if((await this.db.get<Row>('SELECT COUNT(*) n FROM office_discussions WHERE office_id=?',[i.officeId]))!.n>=16)fail('invalid_input','At most 16 discussions may be open per office');
-   if(i.taskId)await this.graph.guidedTasks.assertDiscussionLink(i.officeId,i.taskId,a);
+   if(i.taskId)await this.graph.guidedTasks.assertActiveTaskLink(i.officeId,i.taskId,a);
    const roomId=randomUUID();await this.db.run('INSERT INTO office_discussions(id,office_id,creator,title,question,done_when,revision,expires_at,created_at,guided_task_id) VALUES(?,?,?,?,?,?,1,?,?,?)',[roomId,i.officeId,creator,i.title,i.question,i.doneWhen,this.clock()+i.ttlHours*3600000,this.clock(),i.taskId??null]);
    for(const role of members)await this.db.run('INSERT INTO office_discussion_members VALUES(?,?,?)',[roomId,role,role===actor.roleId?'joined':'invited']);
    await this.db.run('INSERT INTO office_discussion_creations VALUES(?,?,?,?)',[creator,i.key,hash,roomId]);await this.log('discussion_created',roomId,i.officeId);return this.view(roomId,i,a);

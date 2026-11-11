@@ -140,14 +140,21 @@ export class OfficeRiskReview {
       [task.review_submission_id,task.id])??null;
   }
 
-  async packet(task:RiskTask,run:Run,showAll=false,refs?:EvidenceReferences) {
+  async readCurrent(officeId:string,taskIds:string[]) {
+    const runs=taskIds.length?await this.db.all<Run[]>(`SELECT r.* FROM office_guided_review_runs r
+      JOIN office_guided_tasks t ON t.id=r.task_id AND t.review_submission_id=r.id
+      WHERE t.office_id=? AND t.id IN (SELECT value FROM json_each(?))`,[officeId,JSON.stringify(taskIds)]):[];
+    return new Map(runs.map(run=>[run.task_id,run]));
+  }
+
+  async packet(task:RiskTask,run:Run,showAll=false,refs?:EvidenceReferences,auditReferences?:EvidenceReferences) {
     const checks=JSON.parse(run.checks) as Check[];
     const audits=JSON.parse(run.audits) as AuditEvent[];
     const sample=new Set<number>(JSON.parse(run.sample));
     const spec=JSON.parse(task.risk_spec??'{"level":"normal"}') as Spec;
     const references=refs??await this.references(task.office_id,checks);
     const recorded=audits.flatMap(a=>a.entries);
-    const auditRefs=recorded.some(e=>e.materialId||e.artifactId)?await this.references(task.office_id,recorded):null;
+    const auditRefs=auditReferences??(recorded.some(e=>e.materialId||e.artifactId)?await this.references(task.office_id,recorded):null);
     const broadened=recorded.some(e=>e.outcome==='discrepancy');
     const items=checks.map((check,index)=>{
       const observations=recorded.filter(e=>e.index===index);

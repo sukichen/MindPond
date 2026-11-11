@@ -29,17 +29,27 @@ export async function knowledgeFingerprint(db:Database,id:string,kind:'memory'|'
   profiles:await db.all(`SELECT * FROM profile_records WHERE membership_id IN (${selected}) ORDER BY membership_id`,[ids]),
   supports:await db.all(`SELECT * FROM profile_supports WHERE profile_id IN (${selected}) ORDER BY profile_id,source_id`,[ids])});
 }
-export async function captureKnowledge(db:Database,roleId:string,memoryIds:string[],scriptIds:string[]):Promise<CloneKnowledge>{
- if(memoryIds.length>CLONE_LIMITS.memories||scriptIds.length>CLONE_LIMITS.scripts)throw new MindPondError('material_over_budget','Select at most 100 memories and 100 scripts per package.');
- const ns=await db.get<Row>('SELECT domain_id FROM memory_role_namespaces WHERE role_id=?',[roleId]),ids=JSON.stringify(memoryIds);
- const owned=await db.get<Row>(`SELECT count(*) n FROM nodes WHERE id IN (${selected}) AND domain_kind='personal' AND domain_id=? AND dimension<>'event'`,[ids,ns?.domain_id??null]);
+export async function captureKnowledge(db:Database,roleId:string,memoryIds?:string[],scriptIds?:string[]):Promise<CloneKnowledge>{
+ const ns=await db.get<Row>('SELECT domain_id FROM memory_role_namespaces WHERE role_id=?',[roleId]);
+ const domainId=ns?.domain_id??null;
+ memoryIds??=(await db.all<{id:string}[]>(`SELECT id FROM nodes
+   WHERE domain_kind='personal' AND domain_id=? AND dimension<>'event' ORDER BY id LIMIT ?`,
+   [domainId,CLONE_LIMITS.memories+1])).map(row=>row.id);
+ scriptIds??=(await db.all<{id:string}[]>('SELECT id FROM office_scripts WHERE role_id=? ORDER BY id LIMIT ?',
+   [roleId,CLONE_LIMITS.scripts+1])).map(row=>row.id);
+ if(memoryIds.length>CLONE_LIMITS.memories||scriptIds.length>CLONE_LIMITS.scripts)
+   throw new MindPondError('material_over_budget','This snapshot exceeds the limit of 100 memories or 100 scripts. Select a smaller set.',{
+    nextAction:'Use custom inheritance to select up to 100 memories and 100 scripts for a dispatch. No partial snapshot was created.'
+   });
+ const ids=JSON.stringify(memoryIds);
+ const owned=await db.get<Row>(`SELECT count(*) n FROM nodes WHERE id IN (${selected}) AND domain_kind='personal' AND domain_id=? AND dimension<>'event'`,[ids,domainId]);
  const ownScripts=await db.get<Row>(`SELECT count(*) n FROM office_scripts WHERE id IN (${selected}) AND role_id=?`,[JSON.stringify(scriptIds),roleId]);
  if(owned!.n!==memoryIds.length||ownScripts!.n!==scriptIds.length)throw new MindPondError('not_found','Selected assets must belong to this role’s private knowledge/script library.');
  // Check lengths in SQLite before loading potentially large bodies into the process.
  const size=await db.get<Row>(`SELECT COALESCE(sum(length(CAST(content AS BLOB))+COALESCE(length(embedding),0)),0) bytes FROM nodes WHERE id IN (${selected})`,[ids]);
  const scriptSize=await db.get<Row>(`SELECT COALESCE(sum(length(CAST(content AS BLOB))),0) bytes FROM office_scripts WHERE id IN (${selected})`,[JSON.stringify(scriptIds)]);
  if(size!.bytes+scriptSize!.bytes>CLONE_LIMITS.bytes)throw new MindPondError('material_over_budget','Selected bodies exceed the 16 MiB package limit. Select a smaller set.');
- const nodes=await db.all<Row[]>(`SELECT * FROM nodes WHERE id IN (${selected}) AND domain_kind='personal' AND domain_id=? AND dimension<>'event' ORDER BY id`,[ids,ns?.domain_id??null]);
+ const nodes=await db.all<Row[]>(`SELECT * FROM nodes WHERE id IN (${selected}) AND domain_kind='personal' AND domain_id=? AND dimension<>'event' ORDER BY id`,[ids,domainId]);
  const scripts=await db.all<Row[]>(`SELECT * FROM office_scripts WHERE id IN (${selected}) AND role_id=? ORDER BY id`,[JSON.stringify(scriptIds),roleId]);
  if(nodes.length!==memoryIds.length||scripts.length!==scriptIds.length)throw new MindPondError('not_found','Selections must be existing private knowledge/scripts belonging to this role. Office/human/other-role data and raw events cannot be exported.');
  let estimatedBytes=size!.bytes+scriptSize!.bytes;

@@ -81,7 +81,7 @@
     "verify:network-mcp": "tsx scripts/verify-network-mcp.ts && tsx scripts/verify-network-lifecycle.ts && tsx scripts/verify-memory-access-contract.ts",
     "verify:collaboration": "tsx scripts/verify-collaboration.ts && tsx scripts/verify-collaboration-workbench.ts",
     "verify:collaboration-wait": "tsx scripts/verify-collaboration-wait.ts",
-    "verify:office": "tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && npm run verify:admin-directory && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-meetings && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection && npm run verify:office-collaboration",
+    "verify:office": "tsx scripts/verify-office-seat-retirement.ts && tsx scripts/verify-office.ts && tsx scripts/verify-office-workbench.ts && npm run verify:admin-directory && tsx scripts/verify-office-edge-cases.ts && node scripts/verify-office-ui.mjs && node scripts/verify-office-scene.mjs && npm run verify:office-meetings && npm run verify:office-markdown && npm run verify:office-message-cycle && npm run verify:office-connection && npm run verify:office-collaboration",
     "verify:office-deletion": "tsx scripts/verify-office-deletion.ts",
     "verify:roles": "npm run verify:office-model-migration && tsx scripts/verify-role-workflow.ts && tsx scripts/verify-role-review.ts && tsx scripts/verify-role-connection-switch.ts",
     "verify:office-building": "tsx scripts/verify-office-building.ts",

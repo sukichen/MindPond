@@ -677,7 +677,7 @@ export class OfficeStore {
     );
     if (i.roundId) {
       const round = await this.db.get<Row>(
-        'SELECT r.* FROM office_rounds r JOIN office_items t ON t.id=r.item_id WHERE r.id=? AND t.office_id=?',
+        'SELECT r.* FROM office_seat_rounds_observed r JOIN office_seat_items_observed t ON t.id=r.item_id WHERE r.id=? AND t.office_id=?',
         [i.roundId, o.id]
       );
       if (!round) fail('Round unavailable','not_found');
@@ -700,11 +700,14 @@ export class OfficeStore {
     }
     if (i.itemId) {
       const item = await this.db.get<Row>(
-        'SELECT id,title,acceptance,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to FROM office_items WHERE office_id=? AND id=?',
+        'SELECT id,title,acceptance,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,archived,continuationId,ownerName,reviewerName FROM office_seat_items_observed WHERE office_id=? AND id=?',
         [o.id, i.itemId]
       );
       if (!item) fail('Work item unavailable','not_found');
-      return { officeId: o.id, item };
+      const rounds=await this.db.all(
+        'SELECT id,number,code_version,material_id,state FROM office_seat_rounds_observed WHERE item_id=? ORDER BY number DESC',
+        [i.itemId]);
+      return { officeId: o.id, item, rounds };
     }
     if (i.eventSeq) {
       const event = await this.db.get<Row>(
@@ -752,6 +755,12 @@ export class OfficeStore {
                     'requestId',
                     'recipient',
                     'itemId',
+                    'taskId',
+                    'title',
+                    'ownerName',
+                    'previousOwnerName',
+                    'actorName',
+                    'status',
                     'materialId',
                     'action',
                     'why',
@@ -771,7 +780,7 @@ export class OfficeStore {
       eventBytes += bytes;
     }
     const items = await this.db.all<Row[]>(
-      'SELECT id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch FROM office_items WHERE office_id=? AND id>? ORDER BY id LIMIT 50',
+      'SELECT id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch,archived,continuationId,ownerName,reviewerName FROM office_seat_items_observed WHERE office_id=? AND id>? ORDER BY id LIMIT 50',
       [o.id, i.itemsAfterId ?? '']
     );
     const access = (
@@ -787,7 +796,7 @@ export class OfficeStore {
     }));
     const rounds = (
       await this.db.all<Row[]>(
-        'SELECT r.id,r.item_id,r.number,r.code_version,r.material_id,r.state FROM office_rounds r JOIN office_items t ON t.id=r.item_id WHERE t.office_id=? ORDER BY r.number DESC LIMIT 100',
+        'SELECT r.id,r.item_id,r.number,r.code_version,r.material_id,r.state FROM office_seat_rounds_observed r JOIN office_seat_items_observed t ON t.id=r.item_id WHERE t.office_id=? ORDER BY r.number DESC LIMIT 100',
         [o.id]
       )
     ).map((r) => ({ ...r, detailAvailable: true }));
@@ -805,7 +814,7 @@ export class OfficeStore {
       ...(i.afterSeq === undefined ? [] : events.flatMap(e => e.body.materialId ? [e.body.materialId] : []))])];
     if (itemIds.length) {
       const rows = await this.db.all<Row[]>(
-        `SELECT id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch FROM office_items WHERE office_id=? AND id IN (${itemIds.map(() => '?').join(',')})`,
+        `SELECT id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch,archived,continuationId,ownerName,reviewerName FROM office_seat_items_observed WHERE office_id=? AND id IN (${itemIds.map(() => '?').join(',')})`,
         [o.id, ...itemIds]
       );
       for (const row of rows) if (!items.some(t => t.id === row.id)) items.push(row);

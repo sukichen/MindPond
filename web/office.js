@@ -63,6 +63,7 @@
     blocked: '条件不足'
   };
   const mailStates={pending:'待处理',processing:'处理中',archived:'已处理（归档）'};
+  const eventLabel=e=>e.kind==='guided_task'?(window.MindPondOfficeGuidedTasks?.eventLabel(e.body)??'任务更新'):(kinds[e.kind]??e.kind);
   const kinds = {message_take:'领取消息',message_finish:'处理完成',message:'消息',message_read:'阅读消息',message_archive:'归档消息',container:'更新容器',
     inform: '通知',
     request: '请求答复',
@@ -668,7 +669,7 @@
   async function deleteCharacter(record) {
     const draft=state.roleDraft, epoch=state.authEpoch;
     if (!draft || draft.saving) return;
-    if (!(await confirmAction(`永久删除角色「${record.name}」？这会删除角色资料、会话绑定、接续摘要、工作任务及其历史、角色收发的私信、相关临时讨论、角色脚本和退会通知草稿，撤销所有工位权限，并取消该角色参与的未完成任务。办公室历史材料与操作审计保留。删除后无法恢复。`,{destructive:true,title:'永久删除角色'}))) return;
+    if (!(await confirmAction(`永久删除角色「${record.name}」？这会删除角色资料、会话绑定、接续摘要、角色待办及历史、该角色负责的办公室任务、收发消息、相关临时讨论、角色脚本和退会草稿，撤销工位和角色私有附件访问。记忆、办公室历史材料、工位档案与操作审计保留。删除后无法恢复。`,{destructive:true,title:'永久删除角色'}))) return;
     if (epoch!==state.authEpoch || !state.logged || state.roleDraft!==draft) return;
     draft.saving=true;
     const fields=[...el('officeRoleInspectorBody').querySelectorAll('input,textarea,button')];
@@ -683,7 +684,7 @@
   }
   async function deleteRoom(record) {
     const epoch=state.authEpoch;
-    if (!(await confirmAction(`永久删除办公室「${record.title}」？该办公室的消息、文本材料、容器、任务及历史记录、临时讨论和共享脚本会一并删除，所有工位访问立即失效。角色本身、角色私有脚本、未发退会通知草稿、其他办公室和个人记忆保留。此操作无法撤销。`,{destructive:true,title:'永久删除办公室'}))) return;
+    if (!(await confirmAction(`永久删除办公室「${record.title}」？该办公室的消息、文本材料、容器、任务及历史记录、临时讨论和共享脚本会一并删除，工位和办公室共享附件访问立即失效。角色本身、角色私有脚本、未发退会通知草稿、其他办公室和个人记忆保留。此操作无法撤销。`,{destructive:true,title:'永久删除办公室'}))) return;
     if (epoch!==state.authEpoch || !state.logged) return;
     await api('office/delete',{id:record.id,expectedRevision:record.revision});
     if (epoch!==state.authEpoch) return;
@@ -912,12 +913,12 @@
   }
   function setRoomTab(id, focus = false) {
     const tabs=[...document.querySelectorAll('[data-room-tab]')];
-    if(!tabs.some(tab=>tab.dataset.roomTab===id))return;
+    if(!tabs.some(tab=>!tab.hidden&&tab.dataset.roomTab===id))return;
     state.roomTab=id;
     for(const tab of tabs){const selected=tab.dataset.roomTab===id;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;if(selected&&focus)tab.focus();}
     for(const panel of document.querySelectorAll('[data-room-panel]'))panel.hidden=panel.id!==id;
     if(id!=='officeCanvas'){replayController.pause();scenePlayer.setActive(false);if(id==='officeMessagePanel'&&state.office)void run(()=>loadMail());}
-    if(id==='officeGuidedTasks')void window.MindPondOfficeGuidedTasks?.refresh?.();
+    if(id==='officeGuidedTasks'||id==='officeTaskDashboard')void window.MindPondOfficeGuidedTasks?.refresh?.();
     if(id==='officeCanvas')requestAnimationFrame(()=>{scenePlayer.setActive(state.appView==='officeRooms');layoutScene(el('officeDesks').children.length);if(state.scene.autoFit)fitScene();});
   }
   function setupPanelToggle(buttonId,panelId,parent,klass,caption) {
@@ -956,7 +957,7 @@
   document.querySelector('.office-workspace-tabs').addEventListener('click',event=>{const tab=event.target.closest('[data-room-tab]');if(tab)setRoomTab(tab.dataset.roomTab);});
   document.querySelector('.office-workspace-tabs').addEventListener('keydown',event=>{
     const tab=event.target.closest('[data-room-tab]');if(!tab||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
-    const tabs=[...document.querySelectorAll('[data-room-tab]')],index=tabs.indexOf(tab);
+    const tabs=[...document.querySelectorAll('[data-room-tab]')].filter(tab=>!tab.hidden),index=tabs.indexOf(tab);
     const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
     event.preventDefault();setRoomTab(tabs[next].dataset.roomTab,true);
   });
@@ -1011,13 +1012,16 @@
     },
     select(event,index,total,player){
       window.MindPondOfficeCollaboration?.applyReplayLayout?.(player.meta,event.layoutId);
-      el('officeReplayNow').textContent=`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`;
-      el('officeReplaySeek').value=String(index);const current=el('officeReplayCurrent');current.hidden=false;current.replaceChildren(make('h4',`#${event.seq} · ${replayName(event.actorKey)} · ${kinds[event.kind]??event.kind}`),make('small',new Date(event.ts).toLocaleString()));
-      const body=event.body;current.append(typeof body.body==='string'?window.MindPondOfficeMarkdown.render(body.body):make('p',body.result??body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
+      el('officeReplayNow').textContent=`#${event.seq} · ${replayName(event.actorKey)} · ${eventLabel(event)}`;
+      el('officeReplaySeek').value=String(index);const current=el('officeReplayCurrent');current.hidden=false;current.replaceChildren(make('h4',`#${event.seq} · ${replayName(event.actorKey)} · ${eventLabel(event)}`),make('small',new Date(event.ts).toLocaleString()));
+      const body=event.body;current.append(typeof body.body==='string'?window.MindPondOfficeMarkdown.render(body.body):make('p',(event.kind==='guided_task'?body.title:null)??body.result??body.action??body.summary??body.title??(body.materialId?'材料 '+body.materialId:body.itemId?'任务 '+body.itemId:'事件已记录')));
+      if(event.kind==='guided_task'&&body.ownerName)current.append(make('p',
+        body.previousOwnerName?'负责人 · '+body.previousOwnerName+' → '+body.ownerName:'负责人 · '+body.ownerName));
+      if(body.reason)current.append(make('p',body.reason));
       if(body.why)current.append(make('p','原因：'+body.why));if(event.recipientKey)current.append(make('p','发送给：'+replayName(event.recipientKey)));
       current.append(button(event.detailAvailable?'查看完整事件':'查看事件详情',()=>event.detailAvailable?showRecord({eventSeq:event.seq},'事件 #'+event.seq):showDetail('事件 #'+event.seq,event)));
       for(const n of el('officeDesks').children)n.classList.toggle('replay-selected',n.dataset.replayKey===event.actorKey);
-      const list=el('officeReplayEvents');list.replaceChildren();for(let i=Math.max(0,index-3);i<Math.min(total,index+5);i++){const e=player.events[i],jump=button(`#${e.seq} · ${replayName(e.actorKey)} · ${kinds[e.kind]??e.kind}`,()=>player.seek(i));jump.setAttribute('aria-current',String(i===index));list.append(jump);}
+      const list=el('officeReplayEvents');list.replaceChildren();for(let i=Math.max(0,index-3);i<Math.min(total,index+5);i++){const e=player.events[i],jump=button(`#${e.seq} · ${replayName(e.actorKey)} · ${eventLabel(e)}`,()=>player.seek(i));jump.setAttribute('aria-current',String(i===index));list.append(jump);}
     },
     progress(progress,player){if(player.playing)el('officeReplayProgress').textContent=`历史回放 · ${player.index+1} / ${player.events.length} · 当前事件 ${Math.round(progress*100)}% · ${player.speed}×`;},
     error(error){notice('回放暂停：'+error.message,true);}
@@ -1030,7 +1034,14 @@
     for(const id of ['officeReplayFrom','officeReplayTo']){el(id).min=String(meta.firstSeq??1);el(id).max=String(meta.lastSeq??1);}
     if(state.replayIndexRoom!==room){el('officeReplayFrom').value=meta.firstSeq??'';el('officeReplayTo').value=meta.lastSeq??'';state.replayIndexRoom=room;}
   }
-  function setReplayBoundary(which,seq){setRoomTab('officeCanvas');el('officeReplay').open=true;el(which==='from'?'officeReplayFrom':'officeReplayTo').value=String(seq);el('officeReplay').scrollIntoView({block:'start'});}
+  async function setReplayBoundary(which,seq){
+    const generation=state.generation;
+    if(state.replayIndexRoom!==state.office?.office.id)await refreshReplayIndex();
+    if(generation!==state.generation||!state.logged)return;
+    setRoomTab('officeCanvas');
+    el(which==='from'?'officeReplayFrom':'officeReplayTo').value=String(seq);
+    el('officeReplay').open=true;el('officeReplay').scrollIntoView({block:'start'});
+  }
   el('officeReplay').addEventListener('toggle',()=>{if(el('officeReplay').open)void run(refreshReplayIndex);});
   el('officeReplayRange').onsubmit=event=>{event.preventDefault();void run(async()=>{if(!state.office)return;await replayController.load(state.office.office.id,el('officeReplayFrom').valueAsNumber,el('officeReplayTo').valueAsNumber,undefined,window.MindPondOfficeCollaboration?.replayFilters?.()??{});});};
   el('officeReplayPlay').onclick=()=>{replayController.play();if(replayController.active){el('officeReplay').open=false;el('officeStage').scrollIntoView({block:'center',behavior:'instant'});}};el('officeReplayPause').onclick=()=>replayController.pause();
@@ -1358,6 +1369,9 @@
     el('officeGoal').textContent = o.goal;el('officeGoal').title = o.goal;
     el('officeRoomMeta').textContent =
       `${officeStates[o.state]??o.state} · ${data.seats.filter(s=>s.enabled).length} 位参与者`;
+    const seatItemsTab=el('officeTabTasks');
+    seatItemsTab.hidden=!data.items.length;
+    if(seatItemsTab.hidden&&state.roomTab===seatItemsTab.dataset.roomTab)setRoomTab('officeCanvas');
     renderFacilities(data.facilities);
     void window.MindPondOfficeResources?.refresh?.();
     if(state.appView==='officeRooms')void window.MindPondOfficeGuidedTasks?.refresh?.();
@@ -1413,7 +1427,7 @@
     const removeOffice=button('永久删除办公室',()=>deleteRoom(o));removeOffice.className='office-danger';
     controls.append(button('查看删除影响',()=>window.MindPondOfficeCollaboration?.deleteImpact?.('office',o.id)),removeOffice);
     const people=el('officeMessagePerson');if(people){const selected=people.value;people.replaceChildren(new Option('全部人物',''),...roleChoices().map(r=>new Option(r.name,r.id)));people.value=selected;}
-    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => t.status === 'claimed'), data.facilities?.activity, data.facilities?.activity?.map(r=>[Boolean(r.hostSeenAt&&Date.now()-r.hostSeenAt<120000),Boolean(r.presenceAt&&Date.now()-r.presenceAt<120000)]), roleChoices().map(r => [r.id, r.name, r.state])]);
+    const deskSnapshot = JSON.stringify([o.id, data.seats, data.access, data.waits, data.items.filter(t => !t.archived && t.status === 'claimed'), data.facilities?.activity, data.facilities?.activity?.map(r=>[Boolean(r.hostSeenAt&&Date.now()-r.hostSeenAt<120000),Boolean(r.presenceAt&&Date.now()-r.presenceAt<120000)]), roleChoices().map(r => [r.id, r.name, r.state])]);
     if (state.deskSnapshot !== deskSnapshot) {
       state.deskSnapshot = deskSnapshot;
       const focusedSeat = document.activeElement?.closest('[data-seat]')?.dataset.seat;
@@ -1437,11 +1451,11 @@
       person.dataset.appearance=String(tone%4);person.style.setProperty('--blink-delay',`-${tone%50/10}s`);
       const body = make('span'),
         wait = data.waits.find((w) => w.seat_id === seat.id);
-      const task = data.items.find((t) => t.owner === seat.id && t.status === 'claimed');
+      const seatTask = data.items.find((t) => t.owner === seat.id && !t.archived && t.status === 'claimed');
       const activity=data.facilities?.activity?.find(r=>r.seatId===seat.id);
-      const processing=Number(activity?.processing??0);
+      const processing=Number(activity?.processing??0),taskTitle=activity?.guidedTaskTitle??seatTask?.title;
       const disabled=characterForSeat(seat)?.state==='disabled';
-      node.dataset.busy=String(!disabled&&Boolean(task||processing||activity?.discussionTitle));
+      node.dataset.busy=String(!disabled&&Boolean(taskTitle||processing||activity?.discussionTitle));
       body.className='office-desk-caption';
       const shared = access?.mode === 'shared_worktree';
       body.append(
@@ -1455,11 +1469,11 @@
             ? '讨论中：'+activity.discussionTitle+' · 未读 '+activity.discussionUnread+' · 未处理 '+activity.discussionUnprocessed+'（含未读）'
             : processing
             ? `已领取 ${processing} 条消息（待反馈）`
-            : wait
+            : taskTitle
+              ? '任务进行中 · ' + taskTitle
+              : wait
               ? '最近报告：等待回复（窗口内）'
-              : task
-              ? '已领取：' + task.title
-              : '暂无正在处理的报告'
+              : '暂无进行中的任务或消息'
         ),
         make(
           'small',
@@ -1477,7 +1491,7 @@
       if(presence){if(Date.now()-activity.presenceAt<120000)node.dataset.phase=presence.phase;body.append(make('small','角色自报（'+new Date(activity.presenceAt).toLocaleTimeString()+'）：'+({working:'处理事情',waiting_reply:'等待对方反馈',needs_user:'需要用户补充信息',learning:'整理经验',resting:'休息',unknown:'状态未确认'})[presence.phase]));}
       body.append(make('small',activity?.hostSeenAt&&Date.now()-activity.hostSeenAt<120000?'服务端观测：最近有通信':'服务端观测：当前宿主运行未知'));
       const station=window.MindPondOfficeScene.props(person);
-      if(!disabled&&(task||processing))person.dataset.facing='desk';
+      if(!disabled&&(taskTitle||processing))person.dataset.facing='desk';
       const papers=station.querySelector('.office-paper-stack');
       papers.style.setProperty('--paper-count',Math.min(12,pending));papers.hidden=!pending;
       if(pending){papers.textContent=String(pending);body.append(make('small',`待处理消息 ${pending} 条`));}
@@ -1500,45 +1514,16 @@
         make('strong', item.title),
         make(
           'p',
-          `${states[item.status] ?? item.status} · ${seatName(item.owner)} → ${seatName(item.reviewer)}`
+          `${states[item.status] ?? item.status} · ${(item.ownerName??seatName(item.owner))} → ${(item.reviewerName??seatName(item.reviewer))}`
         )
       );
       if (item.code_version)
         n.append(make('p', `第 ${item.round_number} 轮 · ${item.code_version}`));
-      if (item.transfer_to)
-        n.append(make('p', '等待 ' + seatName(item.transfer_to) + ' 接受移交，原负责人继续负责'));
-      n.append(
-        button('查看工作项详情', async () => {
-          const generation = state.generation;
-          const full = await api('view', { officeId: o.id, itemId: item.id });
-          if (generation !== state.generation || !state.logged) return;
-          showDetail('工作项', full.item);
-          if (full.item.round_id)
-            el('officeDetail').append(
-              button('读取本轮完整证据', () =>
-                showRecord({ roundId: full.item.round_id }, '本轮验收记录')
-              )
-            );
-        })
-      );
-      if (!['completed', 'cancelled'].includes(item.status))
-        n.append(
-          button('用户取消此工作项', async () => {
-            if (!(await confirmAction('取消此工作项并撤销当前领取凭据？历史证据仍保留。'))) return;
-            await api('item/cancel', {
-              itemId: item.id,
-              expectedRevision: item.revision,
-              reason: '用户在协作页面取消工作项'
-            });
-            await updateOffice();
-          })
-        );
+      if(item.continuationId)n.append(button('打开接续任务',()=>window.MindPondOfficeGuidedTasks.openTask(item.continuationId)));
+      else if(!['completed','cancelled'].includes(item.status))n.append(make('p','保留原记录 · 如需继续，请在任务页重新分派。'));
+      n.append(button('查看工位档案',()=>showSeatArchive(item.id)));
       items.append(n);
     }
-    if (!data.items.length)
-      items.append(
-        make('p', '没有工作项记录。')
-      );
     const materials = el('officeMaterials');
     materials.replaceChildren();
     for (const m of data.materials) {
@@ -1587,6 +1572,18 @@
         make('pre', JSON.stringify(access, null, 2))
       );
     detail.scrollIntoView({ block: 'nearest' });
+  }
+  async function showSeatArchive(itemId) {
+    const officeId=state.office.office.id,generation=state.generation,epoch=state.authEpoch;
+    const {item,rounds}=await api('view',{officeId,itemId});
+    if(!state.logged||generation!==state.generation||epoch!==state.authEpoch)return;
+    showDetail('工位档案 · '+item.title,{...item,body:'### 验收要求\n\n'+item.acceptance});
+    const detail=el('officeDetail');
+    for(const round of rounds){
+      const row=make('p','第 '+round.number+' 轮 · '+round.code_version+' · '+(states[round.state]??round.state)+' ');
+      row.append(button('读取本轮证据',()=>showRecord({roundId:round.id},'本轮验收记录')));
+      detail.append(row);
+    }
   }
   async function showMaterial(id, number) {
     const generation = state.generation;
@@ -1666,7 +1663,7 @@
       const n = make('article');
       n.className = 'office-event';
       n.append(
-        make('b', `${seatName(e.seat_id??e.body.sender??e.actor?.roleId)} · ${kinds[e.kind] ?? e.kind}`),
+        make('b', `${seatName(e.seat_id??e.body.sender??e.actor?.roleId)} · ${eventLabel(e)}`),
         make('small', ` #${e.seq} / ${new Date(e.ts).toLocaleTimeString()}`)
       );
       const b = e.body;
@@ -1674,6 +1671,7 @@
         make(
           'p',
           b.body ??
+            (e.kind==='guided_task'?b.title:null) ??
             b.action ??
             b.summary ??
             b.item?.title ??
@@ -1902,7 +1900,7 @@
   window.addEventListener('pageshow', event => {if(event.persisted && state.logged){startObserver();schedule(0);}});
   if(window.MindPondOfficeCollaboration?.mount){const mounted=window.MindPondOfficeCollaboration.mount({getState:()=>state,api,run,showDetail,showMaterial,setRoomTab,notice,confirmAction,download,fitScene});Object.assign(window.MindPondOfficeCollaboration,mounted);}
   if(window.MindPondOfficeRules?.mount)Object.assign(window.MindPondOfficeRules,window.MindPondOfficeRules.mount({getState:()=>state,api,notice,confirmAction}));
-  if(window.MindPondOfficeGuidedTasks?.mount)Object.assign(window.MindPondOfficeGuidedTasks,window.MindPondOfficeGuidedTasks.mount({getState:()=>state,api,run,setRoomTab,notice,memberForSeat:characterForSeat,confirmAction,showMaterial}));
+  if(window.MindPondOfficeGuidedTasks?.mount)Object.assign(window.MindPondOfficeGuidedTasks,window.MindPondOfficeGuidedTasks.mount({getState:()=>state,api,run,setRoomTab,notice,memberForSeat:characterForSeat,confirmAction,showMaterial,showSeatArchive,showRecord}));
   if(window.MindPondOfficeResources?.mount)Object.assign(window.MindPondOfficeResources,window.MindPondOfficeResources.mount({getState:()=>state,api,run,setRoomTab,notice,confirmAction,download}));
   if(window.MindPondOfficeOperations?.mount)Object.assign(window.MindPondOfficeOperations,window.MindPondOfficeOperations.mount({getState:()=>state,api,run,showDetail,notice,confirmAction,download,openOffice,refreshOffice:()=>loadMail({refresh:true})}));
   syncAppRoute();

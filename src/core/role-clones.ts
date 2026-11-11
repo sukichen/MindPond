@@ -135,12 +135,12 @@ export class RoleClones{
   if(i.action==='review')return this.review(role.id,i,i.kind??'memory',true);
   if(i.action==='submit')return this.submit(role.id,i);
   if(i.action==='dispatch'){
-   required(i,'name','mission','key','memoryIds','scriptIds');if(role.state!=='active')fail('invalid_input','Enable the parent role before dispatching.');await this.assertUsable(role.id);
+   required(i,'name','mission','key');if(role.state!=='active')fail('invalid_input','Enable the parent role before dispatching.');await this.assertUsable(role.id);
    const principal=i.principal??role.principal;
    if(!await this.db.get("SELECT 1 FROM office_agents WHERE principal=? AND state='active'",[principal]))fail('invalid_input','Choose an account with a registered active host connection before dispatching.');
    return this.receipt('human:'+role.id,'dispatch',i.key!,i,async()=>{
     if((await this.db.get<Row>("SELECT count(*) n FROM role_clones WHERE parent_id=? AND state<>'purged'",[role.id]))!.n>=CLONE_LIMITS.children)fail('material_over_budget','At most 64 retained dispatches per parent. Revoke and clean up completed dispatches first.');
-    const b=await captureKnowledge(this.db,role.id,i.memoryIds!,i.scriptIds!),snapshot=encodeKnowledge(b),childId=randomUUID(),now=this.clock();
+    const b=await captureKnowledge(this.db,role.id,i.memoryIds,i.scriptIds),snapshot=encodeKnowledge(b),childId=randomUUID(),now=this.clock();
     await this.db.run("INSERT INTO character_roles VALUES(?,?,?,?,'active',1,NULL,?)",[childId,principal,i.name,role.introduction,now]);
     await this.db.run("INSERT INTO role_clones VALUES(?,?,?,?,'active',1,?,?,?)",[childId,role.id,role.name,i.mission,snapshot,contentHash(snapshot),now]);
     const copies=await installKnowledge(this.db,b,childId,'Clone dispatch '+childId,now);

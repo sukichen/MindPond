@@ -7,7 +7,7 @@ import { roleOperations } from './core/role-tools.js';
 import { buildingOperations } from './core/building-tools.js';
 import { BUILDING_INSTRUCTIONS } from './core/office-building.js';
 import { recallEntry } from './core/context-assembly.js';
-import { MEMORY_BOOTSTRAP, OFFICE_MEMORY_BOOTSTRAP } from './core/bootstrap.js';
+import { MEMORY_BOOTSTRAP } from './core/bootstrap.js';
 import { parseMcpToolProfile, exposesMcpTool } from './core/mcp-tool-profile.js';
 import { authorizeOrganizationAccess } from './core/organization-access.js';
 import { normalizeDomain } from './core/domain.js';
@@ -85,7 +85,7 @@ const taskStore=options.enableTasks!==false&&baseTrusted.agentId&&baseTrusted.ru
 const server = new McpServer({
   name: 'agent-memory',
   version: RELEASE_VERSION,
-}, { maxToolInputElements:MAX_MCP_INPUT_ELEMENTS,instructions: options.trusted?.agentId?BUILDING_INSTRUCTIONS+(toolProfile==='office'?'':'\n'+OFFICE_MEMORY_BOOTSTRAP):MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
+}, { maxToolInputElements:MAX_MCP_INPUT_ELEMENTS,instructions: baseTrusted.agentId?BUILDING_INSTRUCTIONS:MEMORY_BOOTSTRAP,...(taskStore?{taskStore,capabilities:{tasks:{list:{},cancel:{},requests:{tools:{call:{}}}}}}:{}) });
 
 const exposedTools: string[] = [];
 if(taskStore){

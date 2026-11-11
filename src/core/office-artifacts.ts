@@ -107,6 +107,17 @@ export class OfficeArtifacts{
   for(const id of ids){uuid.parse(id);const {r}=await this.visible(id,a);this.ready(r);if(!await this.roleCanRead(r,recipient))throw err('scope_denied','Recipient is not authorized to read this artifact; forwarding never changes its scope','artifactIds');result.push(this.present(r));}
   return result;
  }
+ /** Human recovery copies only persisted references and never expands grants. */
+ async assertRetryRecipient(ids:string[],recipient:string){
+  for(const id of ids){
+   const artifact=await this.row(id);
+   if(!await this.roleCanRead(artifact,recipient))
+    throw new MindPondError('scope_denied','The replacement recipient cannot read an original attachment.',{
+     field:'recipient',nextAction:'Choose a role with existing attachment access or explicitly share a new artifact. The original message is still processing.'
+    });
+   this.ready(artifact);
+  }
+ }
  /** External streaming must never hold the shared SQLite transaction queue. */
  async upload(id:string,source:Readable,a:TrustedCallContext,signal:AbortSignal,recheck:()=>Promise<void>){
   const controller=new AbortController();const work=this.performUpload(id,source,a,AbortSignal.any([signal,controller.signal]),recheck);this.active.set(work,controller);try{return await work;}finally{this.active.delete(work);}

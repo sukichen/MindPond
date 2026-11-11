@@ -1,6 +1,7 @@
 import {RoleClones} from './role-clones.js';
 import {RoleMemoryPermissions} from './role-memory-permissions.js';
 import {OfficeDiscussions} from './office-discussions.js';
+import { initSeatArchive, retireSeatEngine } from './office-seat-archive.js';
 import {OfficeGuidanceTasks} from './office-guidance-tasks.js';
 import {OfficeRules} from './office-rules.js';
 import {RoleReorganization} from './role-reorganization.js';
@@ -1177,8 +1178,12 @@ export class GraphMemory {
     await this.roles.migrateModel();
     this.roleContinuity=this.coordinator.service(new RoleContinuityStore(this.db,this,work=>this.growthWrite(work),this.clock),['init','resume','checkpoint','updateTask','tasks','history','archive']);
     await this.roleContinuity.init();
-    this.guidedTasks=this.coordinator.service(new OfficeGuidanceTasks(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','settings','attention','usage']);
+    this.guidedTasks=this.coordinator.service(new OfficeGuidanceTasks(this.db,this,work=>this.growthWrite(work),this.clock,work=>this.coordinator.transaction(this.db!,work,'read')),['init','run','settings','attention','usage','console']);
     await this.guidedTasks.init();
+    await this.growthWrite(async()=>{
+      await initSeatArchive(this.db!);
+      await retireSeatEngine(this.db!,this.clock());
+    });
     this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','assertCommunication','sweep','setLock']);await this.discussions.init();
     this.scripts=this.coordinator.service(new OfficeScripts(this.db,this,work=>this.growthWrite(work),this.clock),['init','run']);await this.scripts.init();
     // Streaming intentionally stays outside the connection coordinator; only its short metadata phases transact.
@@ -1190,6 +1195,7 @@ export class GraphMemory {
     this.roles.assertCloneUsable=roleId=>this.roleClones.assertUsable(roleId);
     this.roles.assertCloneReorganizable=roleId=>this.roleClones.assertReorganizable(roleId);
     this.building.artifactAttachments=(ids,recipient,a)=>this.artifacts.attach(ids,recipient,a);
+    this.building.assertRetryAttachments=(ids,recipient)=>this.artifacts.assertRetryRecipient(ids,recipient);
     const expireArtifacts=async()=>{try{await this.artifacts.sweep();}catch(error){logger.debug('Artifact maintenance failed',getErrorMessage(error));}finally{this.later(expireArtifacts,60000);}};this.later(expireArtifacts,60000);
     const expireDiscussions=async()=>{try{await this.discussions.sweep();}finally{this.later(expireDiscussions,60000);}};this.later(expireDiscussions,60000);
     this.roles.discussionStatus=a=>this.discussions.attention(a);

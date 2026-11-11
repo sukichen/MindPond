@@ -19,6 +19,10 @@ const queue={id:'task',title:'离线验收',ownerId:'role',status:'review',revis
 const task={...queue,goal:'离线验收',acceptance:'校验依赖',guidance:{},rooms:[],outcomes:[],
   progress:{note:'已完成第一轮取证',reportedAt:queue.lastReportedAt,materialId:'evidence'},
   evidenceIndex:{arguments:{action:'evidence_index',taskId:'task'}}};
+const releaseAssessment={status:'pending',counts:{total:1,hold:0,pending:1,ready:0},
+  reasons:[{code:'evidence_unavailable',taskId:'task',title:'备份验证',criterion:'恢复校验'}],
+  taskAcceptance:{accepted:0,awaitingReview:1},
+  recordCall:{arguments:{action:'record_assessment',officeId:'office',snapshotId:'fixture-snapshot'}}};
 let riskReview=null;
 const calls=[];
 const api=async (path,args)=>{
@@ -34,6 +38,18 @@ const api=async (path,args)=>{
     targetVersion:'candidate-a',nextCheckOffset:null,checks:queue.risk.checks
   };
   if(args.action==='get')return {task};
+  if(path==='task-console')return {officeId:args.officeId,counts:{review:1,blocked:1},releaseAssessment,
+    supervisorId:'role',supervisorMode:'observe',policyRevision:1,reviewMode:'exceptions',priorities:[
+      {id:'other-page',status:'review',title:'下一页任务',total:1}
+    ],members:[{id:'role',name:'构建专家',taskId:'task',taskTitle:'离线验收',taskStatus:'review',pending:2,processing:1}],
+    tasks:[{...task,ownerName:'构建专家',updatedAt:1794000000000}],
+    activity:[
+      {kind:'message',id:'message-1',actor:'发布主管',recipient:'构建专家',preview:'新消息',status:'processing',at:1794000000000},
+      {kind:'progress',id:'shared-evidence',taskId:'task',actor:'构建专家',preview:'ABI 对照',at:1793999999900}
+    ]};
+  if(path==='message')return {message:{senderName:'发布主管',recipientName:'构建专家',state:'processing',
+    body:'**请核对目标 ABI**',sentAt:1794000000000}};
+  if(path==='records')return {records:[{payload:{title:'ABI 对照',summary:'候选与目标 ABI 不一致。',materialIds:[]}}]};
   if(args.action==='evidence_index')return {evidence:[{title:'另一专业的取证',version:'candidate-a',reportedBy:'role',materialId:'peer'}]};
   return {tasks:[queue],reviewMode:'exceptions',policyRevision:1,supervisorId:'role',nextAfterId:null,riskReview};
 };
@@ -80,9 +96,11 @@ const riskEnabled=findLabel('开启风险验收').children[0];
 assert.equal(riskEnabled.checked,false,'the feature is disabled until the operator enables it');
 riskEnabled.checked=true;riskEnabled.onchange();
 findLabel('常规项抽查百分比（全审为 100%）').children[0].value='20';
+findLabel('主管权限').children[0].value='observe';
 all(panel).find(el=>el.tag==='form').onsubmit({preventDefault(){}});
 await new Promise(resolve=>setImmediate(resolve));
 assert.equal(calls.find(c=>c.path==='guided-tasks/settings').args.riskReview.samplePercent,20);
+assert.equal(calls.find(c=>c.path==='guided-tasks/settings').args.supervisorMode,'observe');
 queue.risk={submissionId:'submission',requiredCount:1,pendingCount:1,missingCheckIds:[],checks:[
   {index:0,criterion:'ABI',evidenceStatus:'referenced',observed:'ABI 118',reasons:['sample']}
 ]};
@@ -93,3 +111,54 @@ assert(find('记录独立核验'));
 assert(find('报告观测 · ABI 118'));
 assert.equal(calls.at(-1).args.action,'review_packet');
 console.log('PASS risk review UI: opt-in settings and evidence packet');
+
+const dashboard=roots.officeView.children.find(el=>el.id==='officeTaskDashboard');
+panel.hidden=true;dashboard.hidden=false;
+await app.refresh();
+assert.equal(calls.at(-1).path,'task-console');
+assert(find('任务清单'));
+assert(find('协作动态'));
+assert(find('待处理 2 · 处理中 1'));
+assert(find('主管权限 · 仅观察'));
+assert(find('放行检查 · 待核验'));
+assert(find('材料或附件已失效'));
+assert(find('标记 1 项 · 正式验收 0 项 · 待验收 1 项'));
+assert(find('负责人报告未通过 · 下一页任务'));
+find('记录判断').onclick();
+await new Promise(resolve=>setImmediate(resolve));
+assert(calls.some(c=>c.args?.action==='record_assessment'&&c.args.snapshotId==='fixture-snapshot'));
+assert(find('已留档'));
+const buttonAround=content=>all(dashboard).find(el=>el.tag==='button'&&el.children.includes(find(content)));
+buttonAround('发布主管 → 构建专家').onclick();
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(calls.at(-1).path,'message');
+assert(find('**请核对目标 ABI**'));
+buttonAround('ABI 对照').onclick();
+await new Promise(resolve=>setImmediate(resolve));
+const opened=find('候选与目标 ABI 不一致。');
+assert(opened);
+await app.refresh();
+assert.equal(find('候选与目标 ABI 不一致。'),opened,'automatic refresh preserves opened evidence');
+find('查看关联任务').onclick();
+await new Promise(resolve=>setImmediate(resolve));
+const draft=all(dashboard).find(el=>el.tag==='form');
+draft.oninput();
+await app.refresh();
+assert.equal(all(dashboard).find(el=>el.tag==='form'),draft,'automatic refresh preserves a task rule draft');
+assert.equal(app.hasDraft(),true);
+find('证据').onclick();
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(calls.at(-1).args.activity,'evidence');
+dashboard.hidden=true;panel.hidden=false;
+await app.openTask('task');
+find('设置放行规则').onclick();
+await new Promise(resolve=>setImmediate(resolve));
+findLabel('放行规则').children[0].value='require_evidence';
+all(panel).find(el=>el.tag==='form').onsubmit({preventDefault(){}});
+await new Promise(resolve=>setImmediate(resolve));
+const releaseSave=calls.find(c=>c.args?.action==='set_release_rule');
+assert.equal(releaseSave.args.releaseRule,'require_evidence');
+assert.equal(releaseSave.args.expectedRevision,task.revision);
+app.reset();
+assert(!find('候选与目标 ABI 不一致。'));
+console.log('PASS office console UI: filtered activity, read-only message detail, evidence, drafts and release records');

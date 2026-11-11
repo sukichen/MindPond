@@ -54,6 +54,11 @@ try{
  const oldFinish=await office.callTool({name:'office_message',arguments:{action:'finish',messageId:sent.messageId,result:'Delayed result',key:'late-finish'}});assert(oldFinish.isError,'a delayed old host cannot finish the replacement attempt');
  assert.equal((await call(office,'office_message',{action:'get',messageId:sent.messageId})).message.metadata.recovery.action,'retry');
  assert((await call(office,'office_receive',{action:'list'})).messages.some((m:any)=>m.id===recovered.replacementMessageId&&m.state==='pending'));
+ const attempt=await call(secondOffice,'office_message',{action:'request_status',messageId:sent.messageId});
+ assert.equal(attempt.outcome,'cancelled_by_human');
+ assert.equal(attempt.replacementMessageId,recovered.replacementMessageId);
+ assert.equal((await call(secondOffice,'office_message',attempt.replacementStatusCall.arguments)).state,'pending');
+
  const direct=await call(secondOffice,'office_message',{action:'send',recipient:approved.roleId,body:'Synthetic direct work',key:'direct'});const directTake=await call(office,'office_message',{action:'take',messageId:direct.messageId,key:'take-direct'});
  const directCancelled=await graph.building.recoverMessage({messageId:direct.messageId,action:'cancel',expectedTakenAt:directTake.takenAt,reason:'User cancelled',key:'cancel-direct'},operator);assert.equal(directCancelled.replacementMessageId,null);assert.equal((await call(office,'office_message',{action:'get',messageId:direct.messageId})).message.state,'archived');
  const status=await graph.officeCollaboration.operations({action:'status'},operator);assert.equal(status.release.version,RELEASE_VERSION);assert(status.storage.databaseBytes>0);assert(status.mcpProcesses.length>0);

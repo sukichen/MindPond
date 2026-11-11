@@ -26,10 +26,10 @@ export class ConnectionCoordinator {
     finally { token.active = false; release(); }
   }
 
-  async transaction<T>(db: Database, work: () => Promise<T>): Promise<T> {
+  async transaction<T>(db: Database, work: () => Promise<T>, mode: 'write'|'read' = 'write'): Promise<T> {
     return this.exclusive(async () => {
       if (this.owner.getStore()?.transaction) return work();
-      await db.exec('BEGIN IMMEDIATE');
+      await db.exec(mode==='read'?'BEGIN':'BEGIN IMMEDIATE');
       try { const result = await work(); await db.exec('COMMIT'); return result; }
       catch (error) { await db.exec('ROLLBACK'); throw error; }
     });

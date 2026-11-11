@@ -263,6 +263,7 @@ export function officeWorkbench(
   route('/discussion-history',req=>graph.discussions.history(req.body,operator));
   route('/rules',req=>graph.officeRules.manage(req.body,operator));
   route('/guided-tasks',req=>graph.guidedTasks.run(req.body,operator));
+  route('/task-console',req=>graph.guidedTasks.console(req.body,operator));
   route('/guided-tasks/settings',req=>graph.guidedTasks.settings(req.body,operator));
   route('/guided-tasks/usage',req=>graph.guidedTasks.usage(req.body,operator));
   route('/scripts',req=>graph.scripts.run(managedScriptSchema.parse(req.body),operator));
@@ -302,14 +303,6 @@ export function officeWorkbench(
   }));
   const replaySchema=z.object({action:z.enum(['index','page']),officeId:officeConfigurationSchema.shape.id,threadId:officeConfigurationSchema.shape.id.optional(),roleId:officeConfigurationSchema.shape.id.optional(),topic:z.string().trim().min(1).max(200).optional(),keyOnly:z.boolean().optional(),fromSeq:z.number().int().min(1).optional(),toSeq:z.number().int().min(0).optional(),afterSeq:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}).strict();
   route('/replay',req=>graph.building.replay(replaySchema.parse(req.body),operator));
-  route('/item/cancel', (req) => {
-    const itemId = officeConfigurationSchema.shape.id.parse(req.body.itemId),
-      expectedRevision = agentConfigurationSchema.shape.expectedRevision.parse(
-        req.body.expectedRevision
-      ),
-      reason = officeConfigurationSchema.shape.goal.unwrap().min(1).parse(req.body.reason);
-    return graph.offices.cancelItem({ itemId, expectedRevision, reason }, operator);
-  });
   route('/material', (req) =>
     graph.offices.materialPreview(
       {

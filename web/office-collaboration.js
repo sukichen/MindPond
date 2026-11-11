@@ -28,7 +28,7 @@
         tab.tabIndex = -1;
         document.querySelector('.office-workspace-tabs').append(tab);
         document.getElementById('officeView').append(panel);
-        let mode = 'relations', version = 0, sourceMessage = null;
+        let mode = 'progress', version = 0, sourceMessage = null, sourceOffice = null;
         const room = () => getState().office?.office.id;
         async function openMemory(officeId, recordId) { const data = await api('learning-memory', { officeId, recordId }); const memory = data.memory, p = data.record.payload; showDetail('记忆与来源', { ...data, body: '## ' + p.title + '\n\n' + (memory?.content ?? '记忆已不可用') + '\n\n### 本次使用证据\n' + p.evidence + '\n\n### 来源与版本\n' + (memory?.sourceRefs ?? []).map(r => '- ' + r.uri + ' · ' + (r.revision ?? '未指定版本')).join('\n') + '\n\n归属：' + (memory?.domain?.kind ?? '未知') + ' / ' + (memory?.domain?.id ?? '未知') + '。办公室成员资格不授予私人记忆权限。' }); }
         async function renderRecords(officeId, kind) {
@@ -56,6 +56,18 @@
                     const p = r.payload, card = node('article');
                     card.className = 'office-item';
                     card.append(node('h4', p.title), node('small', new Date(r.created_at).toLocaleString()));
+                    if (kind === 'marker')
+                        card.append(node('small', '判断纪要 · 正式验收以任务记录为准'));
+                    if (kind === 'marker' && p.assessment) {
+                        const {status,counts,taskAcceptance,reasons}=p.assessment;
+                        card.append(node('p',({hold:'暂缓',pending:'待核验',ready:'已满足放行检查'})[status]+
+                            ' · 已标记 '+counts.total+' 项 · 记录时已正式验收 '+taskAcceptance.accepted+' 项'));
+                        const list=node('ul');
+                        for(const reason of reasons)
+                            list.append(node('li',[reason.title,reason.criterion,reason.observation,reason.code].filter(Boolean).join(' · ')));
+                        if(reasons.length)card.append(list);
+                        if(p.note)card.append(node('p','补充备注 · '+p.note));
+                    }
                     if (p.summary)
                         card.append(window.MindPondOfficeMarkdown.render(p.summary));
                     if (kind === 'learning') {
@@ -75,6 +87,8 @@
                                 list.append(node('li', item));
                             card.append(list);
                         }
+                    }
+                    if (kind === 'handoff' || kind === 'progress') {
                         for (const materialId of p.materialIds ?? [])
                             card.append(button('查看材料 ' + materialId.slice(0, 8), () => showMaterial(materialId, 0)));
                     }
@@ -85,8 +99,13 @@
                 }
             };
             draw(data.records);
-            if (!data.records.length)
-                body.append(node('p', kind === 'learning' ? '还没有经验记录。角色保存或复用记忆后，可用 office_record 关联证据；加入办公室不会共享私人记忆。' : '还没有交接记录。角色可用 office_record 保存版本、验证结果、待解决项与下一步。'));
+            if (!data.records.length) {
+                const empty={learning:sourceMessage?'这条消息还没有关联的经验记录。':'还没有经验记录。保存或复用经验后，可用 office_record 关联来源。',
+                    progress:'还没有共享进展。角色可用 office_record 发布进展并附材料。',
+                    handoff:'还没有成果交接。角色可用 office_record 保存版本、验证结果、待解决项与下一步。',
+                    marker:'还没有判断纪要。',presence:'还没有角色状态报告。'};
+                body.append(node('p', empty[kind]));
+            }
             let cursor = data.nextAfterId;
             const more = button('加载更多', async () => { const next = await api('records', { officeId, kind, afterId: cursor, ...(sourceMessage ? { messageId: sourceMessage } : {}) }); if (room() !== officeId || ticket !== version || !getState().logged)
                 return; draw(next.records); cursor = next.nextAfterId; more.hidden = !next.hasMore; });
@@ -97,20 +116,21 @@
             if (!room() || (!force && panel.hidden))
                 return;
             const officeId = room(), ticket = ++version;
+            if (sourceOffice !== officeId) sourceMessage = null;
             status.textContent = '正在读取…';
             if (mode === 'relations') {
                 const data = await api('relations', { officeId });
                 if (ticket !== version || officeId !== room())
                     return;
-                body.replaceChildren();
+                body.replaceChildren(node('p','按发送时间查看最多 100 条未归档消息，包含通知和反馈。'));
                 for (const w of data.waiting) {
                     const card = node('article');
                     card.className = 'office-item';
-                    card.append(node('strong', `${w.sender_name} → ${w.recipient_name}`), node('p', (w.state === 'processing' ? '处理中' : '尚待领取') + ` · 已经过 ${Math.floor(w.elapsedMs / 60000)} 分钟`), button('打开相关消息', async () => showDetail('待反馈消息', (await api('message', { officeId, messageId: w.id })).message)));
+                    card.append(node('strong', `${w.sender_name} → ${w.recipient_name}`), node('p', (w.state === 'processing' ? '处理中' : '尚待领取') + ` · 已经过 ${Math.floor(w.elapsedMs / 60000)} 分钟`), button('打开相关消息', async () => showDetail('未归档消息', (await api('message', { officeId, messageId: w.id })).message)));
                     body.append(card);
                 }
                 if (!data.waiting.length)
-                    body.append(node('p', '当前没有尚待完成反馈的办公室消息。'));
+                    body.append(node('p', '当前没有未归档的办公室消息。'));
             }
             else if (mode === 'context') {
                 const data = await api('handoff-context', { officeId });
@@ -123,18 +143,23 @@
             if (ticket === version)
                 status.textContent = '读取于 ' + new Date().toLocaleTimeString() + ' · 手动刷新保留阅读位置';
         }
-        for (const [key, label] of [['relations', '待反馈关系'], ['handoff', '成果交接'], ['learning', '经验与复用'], ['marker', '关键决定'], ['presence', '位置与状态报告'], ['context', '交接上下文']]) {
-            const item = button(label, async () => { mode = key; sourceMessage = null; for (const n of toolbar.querySelectorAll('[aria-pressed]'))
-                n.setAttribute('aria-pressed', String(n === item)); await refresh(true); });
+        function selectMode(next) {
+            mode = next;
+            for(const item of toolbar.querySelectorAll('[data-record-mode]'))
+                item.setAttribute('aria-pressed',String(item.dataset.recordMode===mode));
+        }
+        for (const [key, label] of [['progress', '共享进展'], ['relations', '未归档消息'], ['handoff', '成果交接'], ['learning', '经验与复用'], ['marker', '判断纪要'], ['presence', '位置与状态报告'], ['context', '交接上下文']]) {
+            const item = button(label, async () => { selectMode(key); sourceMessage = null; await refresh(true); });
+            item.dataset.recordMode = key;
             item.setAttribute('aria-pressed', String(key === mode));
             toolbar.append(item);
         }
-        toolbar.append(button('刷新', () => refresh(true)), button('导出办公室', async () => {
+        toolbar.append(button('刷新', () => refresh(true)), button('导出协作记录', async () => {
             const officeId = room(), sections = {};
             let snapshotId, snapshotAt, sha256;
-            if (!await confirmAction('导出当前办公室的消息、材料、事件、容器及交接记录到本机？不包含私人记忆或凭据。'))
+            if (!await confirmAction('导出消息、文本材料、事件、容器、交接、布局和工位档案到本机？完整恢复请使用数据库与附件备份集合；运行状态页的备份只包含数据库。'))
                 return;
-            for (const section of ['office', 'seats', 'messages', 'materials', 'events', 'containers', 'handoffs', 'layouts']) {
+            for (const section of ['office', 'seats', 'messages', 'materials', 'events', 'containers', 'handoffs', 'layouts', 'seatArchive']) {
                 const rows = [];
                 let offset = 0;
                 for (let page = 0; page < 1000; page++) {
@@ -305,7 +330,22 @@
             }
         } if (clear)
             replayBase = null; }
-        const apiObject = { refresh, inspectRole, openLearning: async (messageId) => { sourceMessage = messageId; mode = 'learning'; setRoomTab(panel.id); await refresh(true); }, deleteImpact: async (kind, id) => showDetail('永久删除影响预览', await api('delete-impact', { kind, id })), applyReplayLayout, renderParallel, restoreLayout, replayFilters() { return { ...(person.value ? { roleId: person.value } : {}), ...(topic.value.trim() ? { topic: topic.value.trim() } : {}), ...(keys.checked ? { keyOnly: true } : {}) }; }, reset() { version++; sourceMessage = null; body.replaceChildren(); } };
+        async function deleteImpact(kind, id) {
+            const {authEpoch,generation}=getState();
+            const data=await api('delete-impact',{kind,id});
+            if(!getState().logged||authEpoch!==getState().authEpoch||generation!==getState().generation)return;
+            const labels={messages:'消息',materials:'文本材料',containers:'容器',events:'事件',seats:'工位',records:'协作记录',
+                discussions:'临时讨论',scripts:'脚本',guidedTasks:'办公室任务',seatItems:'工位档案',seatMessages:'工位历史消息',cancelledSeatItems:'将取消的工位工作项',
+                attachments:'待撤销访问的附件',bindings:'聊天绑定',workingCheckpoints:'接续摘要',workingTasks:'角色待办',
+                workingHistory:'角色接续历史',roles:'关联角色'};
+            const lines=Object.entries(data.counts).filter(([,count])=>count>0).map(([key,count])=>'- '+labels[key]+' '+count);
+            if(!lines.length)lines.push('当前没有计数范围内的关联记录。');
+            if(kind==='office')lines.push('', '保留 '+data.retainedOfficeMemories+' 条办公室记忆及 '+data.retainedRoleDrafts+' 份待发退会草稿。共享附件访问会立即失效，文件由维护任务回收。');
+            if(kind==='role')lines.push('', '角色记忆保留。角色私有附件访问会立即失效，文件由维护任务回收。');
+            if(kind==='agent')lines.push('', '删除前会再次检查是否还有关联角色或启用的工位。');
+            showDetail('永久删除影响预览',{...data,body:lines.join('\n')});
+        }
+        const apiObject = { refresh, inspectRole, openLearning: async (messageId) => { sourceMessage = messageId; sourceOffice = room(); selectMode('learning'); setRoomTab(panel.id); await refresh(true); }, deleteImpact, applyReplayLayout, renderParallel, restoreLayout, replayFilters() { return { ...(person.value ? { roleId: person.value } : {}), ...(topic.value.trim() ? { topic: topic.value.trim() } : {}), ...(keys.checked ? { keyOnly: true } : {}) }; }, reset() { version++; sourceMessage = null; body.replaceChildren(); } };
         return apiObject;
     }
     window.MindPondOfficeCollaboration = { mount };

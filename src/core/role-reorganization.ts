@@ -75,11 +75,17 @@ export class RoleReorganization{
   const jobs=await this.db.all<Row[]>(`SELECT id,status,updated_at,lease_expires_at,cancelled_at FROM organization_jobs WHERE domain_kind='personal' AND domain_id IN (${inList}) AND status='leased' AND cancelled_at IS NULL AND lease_expires_at>? ORDER BY id`,[domains,this.clock()]);
   const ownedSeats=JSON.stringify(seats.map(s=>s.id));
   const claimed=await this.db.all<Row[]>(`SELECT id,revision FROM office_items WHERE status NOT IN ('completed','cancelled') AND (owner IN (${inList}) OR reviewer IN (${inList}) OR transfer_to IN (${inList})) ORDER BY id`,[ownedSeats,ownedSeats,ownedSeats]);
+  const guided=i.mode==='merge'?await this.db.all<Row[]>(`SELECT id,revision FROM office_guided_tasks
+    WHERE owner_id=? AND status NOT IN ('done','cancelled') ORDER BY id`,[source.id]):[];
+  const supervision=i.mode==='merge'?await this.db.all<Row[]>(`SELECT g.office_id,g.revision FROM office_guided_settings g
+    JOIN offices o ON o.id=g.office_id WHERE g.supervisor_id=? AND o.state IN ('active','paused') ORDER BY g.office_id`,[source.id]):[];
   const blockers:string[]=[];
   if(meetings.some(m=>m.state==='joined'))blockers.push('请先总结并退出会议室，再调整角色。');
   if(departures.length)blockers.push('请先发送或丢弃会议结束后的待发消息。');
   if(mail.length)blockers.push(`相关角色还有 ${mail.length} 条未完成消息，请先处理归档，再预览。`);
   if(jobs.length||claimed.length)blockers.push('请先结束记忆整理，并完成或取消当前负责、审核的工作项，再预览。');
+  if(guided.length)blockers.push(`来源角色还有 ${guided.length} 项未结束的办公室任务，请先完成或取消。`);
+  if(supervision.length)blockers.push('请先在控制台为来源角色担任主管的开放或暂停办公室调整主管。');
   if(artifacts.some(r=>r.state==='pending'&&r.expires_at>this.clock()&&r.upload_expires_at>this.clock()))blockers.push('请先完成或删除待上传附件。');
   const selected=new Set<string>(moved.nodes.map(n=>n.id)),cross=(a:string,b:string)=>selected.has(a)!==selected.has(b);
   if(i.mode==='split'){
@@ -107,7 +113,7 @@ export class RoleReorganization{
   if((target?artifacts.filter(r=>r.owner_role===target.id&&['ready','pending'].includes(r.state)).length:0)+moved.artifacts.filter(r=>['ready','pending'].includes(r.state)).length>1024)blockers.push('目标角色附件将超过 1024 份，请先清理。');
   const cutAssociations=i.mode==='split'?associations.filter(r=>cross(r.a_node,r.b_node)):[],cutEdges=i.mode==='split'?edges.filter(r=>cross(r.from_id,r.to_id)):[];
   const impact={mode:i.mode,source:{id:source.id,name:source.name},target:target?{id:target.id,name:target.name}:null,name:i.name,counts:{memories:moved.nodes.length,scripts:moved.scripts.length,tasks:moved.tasks.length,checkpoints:moved.checkpoints.length,artifacts:moved.artifacts.length,offices:i.mode==='split'?i.officeIds.length:new Set(seats.filter(s=>s.enabled).map(s=>s.office_id)).size,cutAssociations:cutAssociations.length,cutEdges:cutEdges.length,checkpointConflicts:target?moved.checkpoints.filter(c=>checkpoints.some(t=>t.role_id===target.id&&t.scope===c.scope)).length:0},blockers:[...new Set(blockers)],notice:i.mode==='merge'?'来源角色退出角色目录；历史消息保留当时姓名并交给主角色。跨角色记忆授权重置为关闭；两个角色均断开聊天连接，断开后聊天按人类身份访问记忆；请重新绑定后继续角色工作。办公室共享记忆保持原位。同名脚本保留各自编号，记忆不自动去重。':'选中内容迁到新角色，未选内容留在原角色；办公室为新角色增加成员资格。跨角色的关联边会断开，内部关联和权重保留。跨角色记忆授权重置为关闭；原角色断开连接后聊天按人类身份访问记忆；请为两个角色重新绑定聊天后继续角色工作。'};
-  const fingerprint=digest({i,source,target,memoryPermissions,namespaces,nodes,scripts,tasks,checkpoints,artifacts,seats,associations,edges,supports,membership,signals,bindings,meetings,mail,departures,jobs,claimed,
+  const fingerprint=digest({i,source,target,memoryPermissions,namespaces,nodes,scripts,tasks,checkpoints,artifacts,seats,associations,edges,supports,membership,signals,bindings,meetings,mail,departures,jobs,claimed,guided,supervision,
    // Permission and receipt changes in another process also invalidate a preview.
    index:await this.db.get("SELECT value FROM memory_meta WHERE key='index_generation'"),
    grants:await this.db.all(`SELECT * FROM role_links WHERE sender IN (${inList}) OR recipient IN (${inList}) ORDER BY sender,recipient`,[rs,rs]),

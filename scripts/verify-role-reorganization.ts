@@ -43,6 +43,15 @@ try{
  assert.equal((await post('role/reorganization/preview',merge)).status,401);
  const login=await post('login',{operatorKey:'fixture-operator'}),cookie=login.headers.get('set-cookie')!.split(';')[0];assert.equal((await post('role/reorganization/preview',merge,cookie,'https://untrusted.example')).status,403);
  assert.equal((await post('role/reorganization/choices',{roleId:a.roleId,kind:'memories'},cookie)).status,200);
+ const guided=(await graph.guidedTasks.run({action:'create',officeId:'one',ownerId:a.roleId,title:'Assigned work',
+  goal:'Check evidence',acceptance:'Report evidence',key:'merge-task'},admin)).task;
+ await graph.guidedTasks.settings({officeId:'one',supervisorId:a.roleId,expectedRevision:0},admin);
+ const guidedPlan=await graph.roleReorganization.preview(merge,admin);
+ assert(guidedPlan.blockers.some(blocker=>blocker.includes('未结束的办公室任务')));
+ assert(guidedPlan.blockers.some(blocker=>blocker.includes('调整主管')));
+ await assert.rejects(graph.roleReorganization.apply(guidedPlan.previewId,admin),(e:any)=>e.code==='invalid_input');
+ await graph.guidedTasks.run({action:'cancel',officeId:'one',taskId:guided.id,expectedRevision:guided.revision,note:'Stop before merge',key:'cancel-merge-task'},admin);
+ await graph.guidedTasks.settings({officeId:'one',supervisorId:null,expectedRevision:1},admin);
  const mail=await graph.building.message({action:'send',recipient:a.roleId,body:'Handle before merge',key:'mail'},actor('c'));
  let plan=await graph.roleReorganization.preview(merge,admin);assert(plan.blockers.some(b=>b.includes('消息')));await assert.rejects(graph.roleReorganization.apply(plan.previewId,admin),(e:any)=>e.code==='invalid_input');
  await graph.building.message({action:'take',messageId:mail.messageId,key:'take'},actor('a'));const done=await graph.building.message({action:'finish',messageId:mail.messageId,result:'Verified result',key:'finish'},actor('a'));

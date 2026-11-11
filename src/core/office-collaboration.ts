@@ -35,6 +35,8 @@ export class OfficeCollaboration {
     async init() {
         await this.db.exec(`
     CREATE TABLE IF NOT EXISTS office_collaboration_records(id TEXT PRIMARY KEY,office_id TEXT NOT NULL REFERENCES offices(id) ON DELETE CASCADE,role_id TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS office_progress_by_task ON office_collaboration_records(office_id,json_extract(payload,'$.taskId'),created_at,id) WHERE kind='progress';
+    CREATE INDEX IF NOT EXISTS office_progress_by_author ON office_collaboration_records(office_id,role_id,created_at,id) WHERE kind='progress';
     CREATE INDEX IF NOT EXISTS office_collaboration_page ON office_collaboration_records(office_id,kind,created_at,id);
     CREATE TABLE IF NOT EXISTS office_collaboration_receipts(actor TEXT NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,result TEXT NOT NULL,office_id TEXT,PRIMARY KEY(actor,key));
     CREATE TABLE IF NOT EXISTS office_host_reports(role_id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,payload TEXT NOT NULL,observed_at INTEGER NOT NULL);
@@ -96,11 +98,21 @@ export class OfficeCollaboration {
     async event(officeId: string, roleId: string | null, kind: string, body: Row) {
         await this.db.run('INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,?,?,?,?)', [officeId, JSON.stringify({ roleId }), kind, JSON.stringify(body), this.clock()]);
     }
+    // Internal record writer. The caller authorizes the operation and owns the transaction.
+    async storeRecord(payload: Row) {
+        const {id,officeId,author,kind,title,phase}=payload;
+        payload.digest=hash(payload);
+        await this.db.run('INSERT INTO office_collaboration_records VALUES(?,?,?,?,?,?)', [id,officeId,author,kind,JSON.stringify(payload),this.clock()]);
+        await this.event(officeId,author,kind==='learning'?'experience_'+payload.outcome:kind,
+            {recordId:id,title:kind==='learning'?'经验整理 / 复用':title,phase:phase??null});
+        return {id,officeId,digest:payload.digest};
+    }
     async publish(i: Row, a?: TrustedCallContext) {
         return this.write(async () => {
             await this.room(i.officeId, a, true);
             const b = await this.identity(a);
-            if(i.kind==='handoff')await this.graph.discussions.assertCommunication(a);
+            if(i.kind==='handoff'||i.kind==='progress')await this.graph.discussions.assertCommunication(a);
+            if(i.taskId&&i.kind!=='progress')fail('taskId is only supported on progress records','invalid_input');
             return this.once(i, a!, async () => {
                 if (i.kind === 'broadcast') {
                     const recipients = [...new Set<string>(i.recipients)];
@@ -118,9 +130,14 @@ export class OfficeCollaboration {
                 }
                 const id = randomUUID(), payload: Row = { ...i, id, author: b.role_id };
                 delete payload.key;
-                if (i.kind === 'handoff')
+                if(i.kind==='progress'&&i.taskId)await this.graph.guidedTasks.assertActiveTaskLink(i.officeId,i.taskId,a);
+                if(i.kind==='progress'&&i.messageId){
+                    const {message}=await this.graph.building.message({action:'get',messageId:i.messageId,officeId:i.officeId},a);
+                    if(message.recipient!==b.role_id)fail('Link progress to a request you received in this office','invalid_input');
+                }
+                if (i.kind === 'handoff'||i.kind==='progress')
                     for (const materialId of i.materialIds ?? [])
-                        if (!await this.db.get('SELECT 1 FROM office_materials WHERE id=? AND office_id=?', [materialId, i.officeId]))
+                        if (!await this.db.get("SELECT 1 FROM office_materials WHERE id=? AND office_id=? AND (? OR state='published')", [materialId, i.officeId, i.kind==='handoff']))
                             fail('Material is outside this office', 'scope_denied');
                 if (i.kind === 'learning') {
                     const memory = await this.memory(i.memoryId, a!);
@@ -151,18 +168,23 @@ export class OfficeCollaboration {
                             fail('Learning source must be in this office','invalid_input');
                     }
                 }
-                payload.digest = hash(payload);
-                await this.db.run('INSERT INTO office_collaboration_records VALUES(?,?,?,?,?,?)', [id, i.officeId, b.role_id, i.kind, JSON.stringify(payload), this.clock()]);
-                await this.event(i.officeId, b.role_id, i.kind === 'learning' ? 'experience_' + i.outcome : i.kind, { recordId: id, title: i.kind === 'learning' ? '经验整理 / 复用' : i.title, phase: i.phase ?? null });
-                return { id, officeId: i.officeId, digest: payload.digest };
+                const record=await this.storeRecord(payload);
+                return { ...record, ...(i.kind==='progress'?{
+                    readCall:{tool:'office_context',arguments:{action:'records',officeId:i.officeId,kind:'progress',id}},
+                    requestCall:{tool:'office_message',arguments:{action:'send',officeId:i.officeId,progressId:id}},
+                    notice:'Shared in the office without an inbox delivery. Send a separate request only if a specific role needs to act.'
+                }:{}) };
             });
         });
     }
     async records(i: Row, a?: TrustedCallContext) {
         await this.room(i.officeId, a);
-        const cursor=i.afterId?await this.db.get<Row>("SELECT created_at,id FROM office_collaboration_records WHERE id=? AND office_id=? AND (? IS NULL OR kind=?) AND (? IS NULL OR json_extract(payload,'$.messageId')=?)",[i.afterId,i.officeId,i.kind??null,i.kind??null,i.messageId??null,i.messageId??null]):null;
+        const scope = "office_id=? AND (? IS NULL OR kind=?) AND (? IS NULL OR id=?) AND (? IS NULL OR json_extract(payload,'$.messageId')=?) AND (? IS NULL OR (kind='progress' AND json_extract(payload,'$.taskId')=?))";
+        const filters = [i.officeId,i.kind??null,i.kind??null,i.id??null,i.id??null,i.messageId??null,i.messageId??null,i.taskId??null,i.taskId??null];
+        const cursor=i.afterId?await this.db.get<Row>(`SELECT created_at,id FROM office_collaboration_records WHERE id=? AND ${scope}`,[i.afterId,...filters]):null;
         if(i.afterId&&!cursor)throw new MindPondError('invalid_input','Record cursor scope changed or expired');
-        const rows = await this.db.all<Row[]>("SELECT * FROM office_collaboration_records WHERE office_id=? AND (? IS NULL OR kind=?) AND (? IS NULL OR id=?) AND (? IS NULL OR json_extract(payload,'$.messageId')=?) AND (created_at>? OR (created_at=? AND id>?)) ORDER BY created_at,id LIMIT ?", [i.officeId, i.kind ?? null, i.kind ?? null, i.id ?? null, i.id ?? null, i.messageId ?? null, i.messageId ?? null, cursor?.created_at??-1,cursor?.created_at??-1,cursor?.id??'',(i.limit ?? 20) + 1]);
+        const rows = await this.db.all<Row[]>(`SELECT * FROM office_collaboration_records WHERE ${scope} AND (created_at>? OR (created_at=? AND id>?)) ORDER BY created_at,id LIMIT ?`,
+            [...filters,cursor?.created_at??-1,cursor?.created_at??-1,cursor?.id??'',(i.limit ?? 20) + 1]);
         const result = [];
         for (const r of rows.slice(0, i.limit ?? 20)) {
             const payload = JSON.parse(r.payload);
@@ -336,11 +358,46 @@ export class OfficeCollaboration {
     }
     async impact(i: Row, a?: TrustedCallContext) {
         this.admin(a);
-        const params = [i.id], counts: Row = {};
-        const queries = i.kind === 'office' ? { messages: 'SELECT COUNT(*) n FROM role_messages WHERE office_id=?', materials: 'SELECT COUNT(*) n FROM office_materials WHERE office_id=?', containers: 'SELECT COUNT(*) n FROM office_containers WHERE office_id=?', events: 'SELECT COUNT(*) n FROM office_events WHERE office_id=?', seats: 'SELECT COUNT(*) n FROM office_seats WHERE office_id=?', records: 'SELECT COUNT(*) n FROM office_collaboration_records WHERE office_id=?',discussions:'SELECT COUNT(*) n FROM office_discussions WHERE office_id=?',scripts:'SELECT COUNT(*) n FROM office_scripts WHERE office_id=?' } : i.kind === 'role' ? { messages: 'SELECT COUNT(*) n FROM role_messages WHERE sender=? OR recipient=?', seats: 'SELECT COUNT(*) n FROM role_seats WHERE role_id=?', bindings: 'SELECT COUNT(*) n FROM role_bindings WHERE role_id=?', workingCheckpoints:'SELECT COUNT(*) n FROM role_continuity_checkpoints WHERE role_id=?', workingTasks:'SELECT COUNT(*) n FROM role_continuity_tasks WHERE role_id=?', workingHistory:'SELECT COUNT(*) n FROM role_continuity_history WHERE role_id=?',scripts:'SELECT COUNT(*) n FROM office_scripts WHERE role_id=?',discussions:'SELECT COUNT(*) n FROM office_discussion_members WHERE role_id=?' } : { roles: "SELECT COUNT(*) n FROM role_bindings WHERE connector_id=? AND state='active'", seats: 'SELECT COUNT(*) n FROM office_seats WHERE agent_id=? AND enabled=1' };
-        for (const [key, sql] of Object.entries(queries))
-            counts[key] = (await this.db.get<Row>(sql, sql.includes('OR recipient=') ? [i.id, i.id] : params))!.n;
-        return { kind: i.kind, id: i.id, counts, retainedRoleDrafts:i.kind==='office'?(await this.db.get('SELECT COUNT(*) n FROM office_discussion_departures WHERE office_id=? AND pending_count>0',[i.id])).n:0, retainedOfficeMemories:i.kind==='office'?(await this.db.get("SELECT COUNT(*) n FROM nodes WHERE domain_kind='personal' AND domain_id=?",['office:'+i.id])).n:0, independentMemoriesDeleted: 0, notice: i.kind==='office'?'Snapshot only. Role-owned scripts, private knowledge and unsent departure drafts survive office deletion. Shared office scripts are deleted; retained drafts keep their source office ID but do not gain permission to send. Deletion rechecks revision and dependencies in its own transaction.':'Snapshot only. Deletion rechecks revision and dependencies in its own transaction.' };
+        const id=i.id, counts:Row={};
+        const queries:Record<string,[string,...string[]]>=i.kind==='office'?{
+            messages:['SELECT COUNT(*) n FROM role_messages WHERE office_id=?',id],
+            materials:['SELECT COUNT(*) n FROM office_materials WHERE office_id=?',id],
+            containers:['SELECT COUNT(*) n FROM office_containers WHERE office_id=?',id],
+            events:['SELECT COUNT(*) n FROM office_events WHERE office_id=?',id],
+            seats:['SELECT COUNT(*) n FROM office_seats WHERE office_id=?',id],
+            records:['SELECT COUNT(*) n FROM office_collaboration_records WHERE office_id=?',id],
+            discussions:['SELECT COUNT(*) n FROM office_discussions WHERE office_id=?',id],
+            scripts:['SELECT COUNT(*) n FROM office_scripts WHERE office_id=?',id],
+            guidedTasks:['SELECT COUNT(*) n FROM office_guided_tasks WHERE office_id=?',id],
+            seatItems:['SELECT COUNT(*) n FROM office_seat_items_observed WHERE office_id=?',id],
+            seatMessages:['SELECT COUNT(*) n FROM office_messages WHERE office_id=?',id],
+            attachments:["SELECT COUNT(*) n FROM office_artifacts WHERE scope='office' AND office_id=? AND state IN ('pending','ready')",id]
+        }:i.kind==='role'?{
+            messages:['SELECT COUNT(*) n FROM role_messages WHERE sender=? OR recipient=?',id,id],
+            seats:['SELECT COUNT(*) n FROM role_seats WHERE role_id=?',id],
+            bindings:['SELECT COUNT(*) n FROM role_bindings WHERE role_id=?',id],
+            workingCheckpoints:['SELECT COUNT(*) n FROM role_continuity_checkpoints WHERE role_id=?',id],
+            workingTasks:['SELECT COUNT(*) n FROM role_continuity_tasks WHERE role_id=?',id],
+            workingHistory:['SELECT COUNT(*) n FROM role_continuity_history WHERE role_id=?',id],
+            scripts:['SELECT COUNT(*) n FROM office_scripts WHERE role_id=?',id],
+            discussions:['SELECT COUNT(*) n FROM office_discussions d WHERE creator=? OR EXISTS (SELECT 1 FROM office_discussion_members m WHERE m.room_id=d.id AND m.role_id=?)',id,id],
+            guidedTasks:['SELECT COUNT(*) n FROM office_guided_tasks WHERE owner_id=?',id],
+            cancelledSeatItems:[`SELECT COUNT(*) n FROM office_items WHERE status NOT IN ('completed','cancelled')
+                AND (owner IN (SELECT seat_id FROM role_seats WHERE role_id=?) OR reviewer IN (SELECT seat_id FROM role_seats WHERE role_id=?))`,id,id],
+            attachments:["SELECT COUNT(*) n FROM office_artifacts WHERE scope='role' AND owner_role=? AND state IN ('pending','ready')",id]
+        }:{
+            roles:["SELECT COUNT(*) n FROM role_bindings WHERE connector_id=? AND state='active'",id],
+            seats:['SELECT COUNT(*) n FROM office_seats WHERE agent_id=? AND enabled=1',id]
+        };
+        for(const [key,[sql,...args]] of Object.entries(queries))
+            counts[key]=(await this.db.get<Row>(sql,args))!.n;
+        return {kind:i.kind,id,counts,
+            retainedRoleDrafts:i.kind==='office'?(await this.db.get('SELECT COUNT(*) n FROM office_discussion_departures WHERE office_id=? AND pending_count>0',[id])).n:0,
+            retainedOfficeMemories:i.kind==='office'?(await this.db.get("SELECT COUNT(*) n FROM nodes WHERE domain_kind='personal' AND domain_id=?",['office:'+id])).n:0,
+            independentMemoriesDeleted:0,
+            notice:i.kind==='office'?'Snapshot only. Office tasks, seat work items and shared office scripts are deleted. Office attachments become inaccessible and their bytes are reclaimed by maintenance. Role-owned scripts, knowledge and unsent departure drafts are retained. Deletion rechecks revision and dependencies.':
+                i.kind==='role'?'Snapshot only. Tasks owned by this role are deleted. Active seat work items that depend on it are cancelled. Private attachments become inaccessible and their bytes are reclaimed by maintenance. Knowledge is retained. Deletion rechecks revision and dependencies.':
+                    'Snapshot only. Deletion rechecks revision and dependencies.'};
     }
     async exportPage(i: Row, a?: TrustedCallContext) {
         this.admin(a);
@@ -353,6 +410,14 @@ export class OfficeCollaboration {
             events: 'SELECT * FROM office_events WHERE office_id=? ORDER BY seq',
             containers: 'SELECT * FROM office_containers WHERE office_id=? ORDER BY id',
             handoffs: "SELECT * FROM office_collaboration_records WHERE office_id=? AND kind IN ('handoff','marker','presence') ORDER BY created_at,id",
+            seatArchive: `SELECT 'item' kind,id,snapshot payload,continuation_id continuationId FROM office_seat_item_archive WHERE office_id=?1
+                UNION ALL SELECT 'round',r.id,json_object('itemId',r.item_id,'number',r.number,'codeVersion',r.code_version,
+                  'materialId',r.material_id,'state',r.state,'result',r.result),NULL
+                  FROM office_seat_round_archive r JOIN office_seat_item_archive i ON i.id=r.item_id WHERE i.office_id=?1
+                UNION ALL SELECT 'message',m.id,json_object('sender',m.sender,'recipient',m.recipient,'kind',m.kind,
+                  'body',m.body,'requestId',m.request_id,'final',m.final,'seq',m.seq,'acknowledgements',
+                  (SELECT json_group_array(json_object('seatId',a.seat_id,'kind',a.kind)) FROM office_acks a WHERE a.message_id=m.id)),NULL
+                  FROM office_messages m WHERE m.office_id=?1 ORDER BY kind,id`,
             layouts: "SELECT 'logical_seats' kind,CAST(id AS TEXT) id,payload,created_at FROM office_layout_snapshots WHERE office_id=? UNION ALL SELECT 'geometry' kind,id,payload,created_at FROM office_collaboration_records WHERE office_id=? AND kind='layout' ORDER BY created_at,id"
         };
         if (!sections[i.section])
@@ -392,7 +457,7 @@ export class OfficeCollaboration {
             if (!snapshot)
                 fail('Export snapshot expired or unavailable','not_found');
             const rows = await this.db.all<Row[]>('SELECT payload FROM office_export_rows WHERE snapshot_id=? AND section=? AND position>=? ORDER BY position LIMIT 101', [snapshotId, i.section, i.offset ?? 0]);
-            return { version: 'mindpond.office-export.v2', officeId: i.officeId, snapshotId, snapshotAt: snapshot!.created_at, sha256: snapshot!.sha256, section: i.section, rows: rows.slice(0, 100).map(r => JSON.parse(r.payload)), nextOffset: rows.length > 100 ? (i.offset ?? 0) + 100 : null, scope: 'Consistent one-hour snapshot. Export every section/page; private memories and credentials are excluded.' };
+            return { version: 'mindpond.office-export.v2', officeId: i.officeId, snapshotId, snapshotAt: snapshot!.created_at, sha256: snapshot!.sha256, section: i.section, rows: rows.slice(0, 100).map(r => JSON.parse(r.payload)), nextOffset: rows.length > 100 ? (i.offset ?? 0) + 100 : null, scope: 'Consistent one-hour collaboration-record snapshot. Export every listed section and page. Use a verified backup set for database state and attachment bytes.' };
         });
     }
     async runtimeReport(id:string,payload:unknown){

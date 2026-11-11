@@ -82,6 +82,15 @@ try{
  const received=await call('office_receive',{action:'list'},'b');assert.deepEqual(received.messages.find((m:any)=>m.id===mail.messageId).artifactIds,[sharedId]);
  const expanded=await call('office_message',{action:'get',messageId:mail.messageId},'b');assert.equal(expanded.message.attachments[0].sha256,sha(bytes));assert.equal(expanded.message.attachments[0].artifactId,sharedId);assert(!JSON.stringify(expanded).includes('storage_key'));
  await denied({action:'send',recipient:roles[2].roleId,body:'Unauthorized forwarding',artifactIds:[sharedId],key:'forward-c'},'scope_denied','b','office_message');
+ const direct=await call('office_message',{action:'send',recipient:roles[1].roleId,body:'Recheck this file',artifactIds:[sharedId],key:'retry-file'});
+ const taken=await call('office_message',{action:'take',messageId:direct.messageId,key:'take-retry-file'},'b');
+ const retry={action:'retry',messageId:direct.messageId,expectedTakenAt:taken.takenAt,reason:'Resume interrupted work',key:'retry-with-artifact'};
+ await assert.rejects(graph.building.recoverMessage({...retry,recipient:roles[2].roleId},admin),/replacement recipient cannot read/);
+ assert.equal((await call('office_message',{action:'get',messageId:direct.messageId},'b')).message.state,'processing');
+ const recovered=await graph.building.recoverMessage(retry,admin);
+ const retriedMail=await call('office_message',{action:'get',messageId:recovered.replacementMessageId},'b');
+ assert.deepEqual(retriedMail.message.attachments,expanded.message.attachments,'retry preserves exact immutable attachment references');
+
  await denied({action:'delete',artifactId:sharedId},'scope_denied','b');
  const toBoth=await prepare(Buffer.from('small'),{scope:'recipients',recipients:[roles[1].roleId,roles[2].roleId]});await put(toBoth.artifact.artifactId,Buffer.from('small'));assert((await call('office_message',{action:'send',recipient:roles[2].roleId,body:'Both roles have grants',artifactIds:[toBoth.artifact.artifactId],key:'forward-authorized'},'b')).messageId);
  const office=await prepare(Buffer.from('office file'),{scope:'office',officeId:'room'}),officeId=office.artifact.artifactId;await put(officeId,Buffer.from('office file'));

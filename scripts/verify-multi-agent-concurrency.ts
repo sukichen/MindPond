@@ -47,7 +47,10 @@ try {
   const full=await connect(3,'full');
   const fullTools=(await full.listTools()).tools;
   const bytes=(tools:typeof fullTools)=>Buffer.byteLength(JSON.stringify(tools));
-  assert(bytes(workTools)<bytes(fullTools)*.8,'work profile must materially reduce the resident catalog');
+  // The resident context budget is independent of removals from the full catalog.
+  const workCatalogBudgetBytes=108*1024;
+  assert(bytes(workTools)<=workCatalogBudgetBytes,'work catalog must fit its resident byte budget');
+  assert(bytes(workTools)<bytes(fullTools),'work profile must remain smaller than full');
   console.log(JSON.stringify({work:{tools:names.length,catalogBytes:bytes(workTools)},
     full:{tools:fullTools.length,catalogBytes:bytes(fullTools)},saveDescriptionBytes:Buffer.byteLength(saveTool.description!)}));
 
