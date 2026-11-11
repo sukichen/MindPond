@@ -28,7 +28,7 @@ try{
  await test('schema/semantic errors send nothing; ordinary sends still return immediately',async()=>{
   const tools=(await client!.listTools()).tools.find(t=>t.name==='office_message')!;assert(tools.inputSchema.properties?.waitForReply);assert(tools.inputSchema.properties?.waitSeconds);
   const count=(await db.get('SELECT count(*) n FROM role_messages')).n;
-  for(const i of [send('bad-duration',{waitForReply:true,waitSeconds:0}),send('needs-opt-in',{waitSeconds:1}),send('too-long',{waitForReply:true,waitSeconds:301}),{action:'get',messageId:'absent',waitForReply:true}]){const r:any=await raw(i);assert(r.isError);assert.equal((await db.get('SELECT count(*) n FROM role_messages')).n,count);}
+  for(const i of [send('bad-duration',{waitForReply:true,waitSeconds:0}),send('needs-opt-in',{waitSeconds:1}),send('too-long',{waitForReply:true,waitSeconds:1801}),{action:'get',messageId:'absent',waitForReply:true}]){const r:any=await raw(i);assert(r.isError);assert.equal((await db.get('SELECT count(*) n FROM role_messages')).n,count);}
   const start=performance.now(),sent=await call(send('ordinary',{waitForReply:false}));assert(performance.now()-start<1000);assert(sent.messageId);assert.equal(sent.replyWait,undefined);
   await rejects(()=>graph.building.messageWithReplyWait({...send('bad-recipient'),recipient:'missing',waitForReply:true,waitSeconds:1},actor('a')),'invalid_input');assert.equal((await db.get('SELECT count(*) n FROM role_message_waits')).n,0);
  });
@@ -53,36 +53,72 @@ try{
   await graph.building.message({action:'take',messageId:original.id,key:'take'},actor('b'));await sleep(100);assert(!settled);await peer.building.message({action:'finish',messageId:original.id,result:'Verified fixture result',key:'finish'},actor('b'));
   const result=await waiting;assert.equal(result.state,'archived');assert.equal(result.replyWait.message.kind,'completion');assert.equal(result.replyWait.message.body,'Verified fixture result');
  });
- await test('any new inbox message returns complete content without get/page and does not pretend to complete the original request',async()=>{
-  const text='🦆'.repeat(9990)+' important end';const pending=raw(send('full-inbox',{waitForReply:true,waitSeconds:1}));await until(()=>originalFor('full-inbox'));
-  const incoming=await graph.building.message({action:'send',recipient:roles[0],body:text,metadata:{context:'Fictional complete message'},key:'full-inbox-message'},actor('c'));
-  const result:any=await pending;assert(!result.isError);const value=JSON.parse(result.content[0].text);assert(!value.paged);assert.equal(value.receivedMessageId,incoming.messageId);assert.equal(value.replyWait.message.body,text);assert.equal(value.replyWait.message.metadata.context,'Fictional complete message');assert.deepEqual(value.replyWait.message.sourceRef,(await graph.building.message({action:'get',messageId:incoming.messageId},actor('a'))).sourceRef);assert.equal(value.replyWait.message.state,'processing');assert.equal(value.replyWait.message.complete,true);assert.equal(value.replyWait.isReplyToSentMessage,false);assert.equal(value.replyWait.wakeReason,'incoming_message');assert.equal(value.state,'pending');
+ await test('only a linked reply returns complete content; unrelated inbox mail remains pending',async()=>{
+  const text='🦆'.repeat(9990)+' important end';let settled=false;
+  const pending=raw(send('full-inbox',{waitForReply:true,waitSeconds:1})).finally(()=>{settled=true;});
+  const original=await until(()=>originalFor('full-inbox'));
+  const unrelated=await graph.building.message({action:'send',recipient:roles[0],body:'Unrelated from the same recipient',key:'unrelated-from-recipient'},actor('b'));
+  await sleep(300);assert(!settled);
+  const incoming=await graph.building.message({action:'send',replyTo:original.id,body:text,metadata:{context:'Fictional complete message'},key:'full-inbox-message'},actor('b'));
+  const result:any=await pending;assert(!result.isError);const value=JSON.parse(result.content[0].text);assert(!value.paged);assert.equal(value.receivedMessageId,incoming.messageId);assert.equal(value.replyWait.message.body,text);assert.equal(value.replyWait.message.metadata.context,'Fictional complete message');assert.deepEqual(value.replyWait.message.sourceRef,(await graph.building.message({action:'get',messageId:incoming.messageId},actor('a'))).sourceRef);assert.equal(value.replyWait.message.state,'processing');assert.equal(value.replyWait.message.complete,true);assert.equal(value.replyWait.isReplyToSentMessage,true);assert.equal(value.replyWait.wakeReason,'reply_available');assert.equal(value.state,'pending');
+  assert.equal((await graph.building.message({action:'get',messageId:unrelated.messageId},actor('a'))).message.state,'pending');
  });
  await test('lost-response retry recovers processing delivery; archived work is not redelivered and send never duplicates',async()=>{
   const original=await originalFor('floor'),reply=await graph.building.message({action:'send',replyTo:original.id,body:'Late feedback',key:'late'},actor('b'));
   const first=await call(send('floor',{waitForReply:true,waitSeconds:2}));assert.equal(first.receivedMessageId,reply.messageId);assert.equal(first.replyWait.message.state,'processing');
   const retried=await call(send('floor',{waitForReply:true,waitSeconds:1}));assert.equal(retried.receivedMessageId,reply.messageId);assert.equal(retried.replyWait.message.body,'Late feedback');
   await graph.building.message({action:'finish',messageId:reply.messageId,result:'Reviewed',key:'finish-late'},actor('a'));
-  const next=await graph.building.message({action:'send',recipient:roles[0],body:'Next new work',key:'next-new'},actor('c'));const again=await call(send('floor',{waitForReply:true,waitSeconds:1}));assert.equal(again.receivedMessageId,next.messageId);assert.equal(again.replyWait.isReplyToSentMessage,false);assert.equal((await call(send('floor'))).messageId,original.id);
+  const next=await graph.building.message({action:'send',replyTo:original.id,body:'Updated feedback',key:'next-linked'},actor('b'));const again=await call(send('floor',{waitForReply:true,waitSeconds:1}));assert.equal(again.receivedMessageId,next.messageId);assert.equal(again.replyWait.isReplyToSentMessage,true);assert.equal((await call(send('floor'))).messageId,original.id);
   assert.equal((await db.get('SELECT count(*) n FROM role_messages WHERE sender=? AND body=?',[roles[0],'Synthetic floor'])).n,1);
  });
  await test('concurrent distinct sends atomically claim distinct new work; duplicate send retries recover one delivery',async()=>{
   const one=call(send('parallel-one',{waitForReply:true,waitSeconds:1})),two=call(send('parallel-two',{waitForReply:true,waitSeconds:1}));await until(async()=>await originalFor('parallel-one')&&await originalFor('parallel-two'));
-  const sources=await Promise.all([graph.building.message({action:'send',recipient:roles[0],body:'First parallel work',key:'parallel-in-1'},actor('b')),peer.building.message({action:'send',recipient:roles[0],body:'Second parallel work',key:'parallel-in-2'},actor('c'))]);
-  const results=await Promise.all([one,two]);assert.equal(new Set(results.map(r=>r.receivedMessageId)).size,2);assert(results.every(r=>sources.some(s=>s.messageId===r.receivedMessageId)));assert(results.every(r=>r.replyWait.message.state==='processing'));
+  const [first,second]=await Promise.all([originalFor('parallel-one'),originalFor('parallel-two')]);
+  const sources=await Promise.all([graph.building.message({action:'send',replyTo:first.id,body:'First parallel reply',key:'parallel-in-1'},actor('b')),peer.building.message({action:'send',replyTo:second.id,body:'Second parallel reply',key:'parallel-in-2'},actor('b'))]);
+  const results=await Promise.all([one,two]);assert.equal(new Set(results.map(r=>r.receivedMessageId)).size,2);assert.deepEqual(results.map(r=>r.receivedMessageId),sources.map(source=>source.messageId));assert(results.every(r=>r.replyWait.message.state==='processing'));
   for(const result of results)await graph.building.message({action:'finish',messageId:result.receivedMessageId,result:'Parallel fixture done',key:'parallel-done-'+result.receivedMessageId},actor('a'));
-  const same1=call(send('parallel-same',{waitForReply:true,waitSeconds:1})),same2=call(send('parallel-same',{waitForReply:true,waitSeconds:1}));await until(()=>originalFor('parallel-same'));
-  const single=await graph.building.message({action:'send',recipient:roles[0],body:'One recoverable delivery',key:'parallel-single'},actor('b'));const same=await Promise.all([same1,same2]);assert(same.every(r=>r.receivedMessageId===single.messageId));assert.equal((await db.get('SELECT count(*) n FROM role_messages WHERE sender=? AND body=?',[roles[0],'Synthetic parallel-same'])).n,1);
+  const same1=call(send('parallel-same',{waitForReply:true,waitSeconds:1})),same2=call(send('parallel-same',{waitForReply:true,waitSeconds:1}));const sameRequest=await until(()=>originalFor('parallel-same'));
+  const single=await graph.building.message({action:'send',replyTo:sameRequest.id,body:'One recoverable delivery',key:'parallel-single'},actor('b'));const same=await Promise.all([same1,same2]);assert(same.every(r=>r.receivedMessageId===single.messageId));assert.equal((await db.get('SELECT count(*) n FROM role_messages WHERE sender=? AND body=?',[roles[0],'Synthetic parallel-same'])).n,1);
  });
  await test('cancellation after inbox discovery leaves new work pending and unclaimed',async()=>{
   const abort=new AbortController(),original=graph.building.wait.bind(graph.building);
   (graph.building as any).wait=async(...args:any[])=>{const result=await (original as any)(...args);if(result.status==='matched')abort.abort();return result;};
-  try{const pending=graph.building.messageWithReplyWait(send('cancel-before-take',{waitForReply:true,waitSeconds:1}),actor('a'),{signal:abort.signal});await until(()=>originalFor('cancel-before-take'));const incoming=await graph.building.message({action:'send',recipient:roles[0],body:'Do not claim after cancellation',key:'cancel-inbox'},actor('b'));const result=await pending;assert.equal(result.replyWait.status,'cancelled');assert.equal(result.receivedMessageId,undefined);assert.equal((await graph.building.message({action:'get',messageId:incoming.messageId},actor('a'))).message.state,'pending');}finally{(graph.building as any).wait=original;}
+  try{const pending=graph.building.messageWithReplyWait(send('cancel-before-take',{waitForReply:true,waitSeconds:1}),actor('a'),{signal:abort.signal});const request=await until(()=>originalFor('cancel-before-take'));const incoming=await graph.building.message({action:'send',replyTo:request.id,body:'Do not claim after cancellation',key:'cancel-inbox'},actor('b'));const result=await pending;assert.equal(result.replyWait.status,'cancelled');assert.equal(result.receivedMessageId,undefined);assert.equal((await graph.building.message({action:'get',messageId:incoming.messageId},actor('a'))).message.state,'pending');}finally{(graph.building as any).wait=original;}
  });
  await test('five-minute policy is used even for 10 seconds; cancellation preserves the committed send',async()=>{
   await setMin(300);const abort=new AbortController(),waiting=graph.building.messageWithReplyWait(send('five-minute',{waitForReply:true,waitSeconds:10}),actor('a'),{signal:abort.signal});
-  const original=await until(()=>originalFor('five-minute')),record=await until(()=>db.get("SELECT * FROM role_message_waits WHERE role_id=? AND state='waiting' ORDER BY started_at DESC LIMIT 1",[roles[0]]));assert(record.expires_at-record.started_at>=299000);assert.equal(JSON.parse(record.conditions).purpose,'sent_message_inbox');const recovery=(await graph.roles.sync(actor('a'))).waitRecovery.find((w:any)=>w.id===record.id);assert.equal(recovery.sentMessageId,original.id);assert.equal(recovery.sendKey,'five-minute');assert.equal(recovery.resume.replyTo,undefined,'inbox recovery must not silently narrow to linked replies');
+  const original=await until(()=>originalFor('five-minute')),record=await until(()=>db.get("SELECT * FROM role_message_waits WHERE role_id=? AND state='waiting' ORDER BY started_at DESC LIMIT 1",[roles[0]]));assert(record.expires_at-record.started_at>=299000);assert.equal(JSON.parse(record.conditions).purpose,'sent_message_reply');const recovery=(await graph.roles.sync(actor('a'))).waitRecovery.find((w:any)=>w.id===record.id);assert.equal(recovery.sentMessageId,original.id);assert.equal(recovery.sendKey,'five-minute');assert.equal(recovery.resume,undefined,'recovery uses the original send key');
   abort.abort();const result=await waiting;assert.equal(result.messageId,original.id);assert.equal(result.sent,true);assert.equal(result.replyWait.status,'cancelled');assert.equal(result.replyWait.effectiveSeconds,300);
+ });
+ await test('30-minute policy is persisted and an MCP send returns its linked reply early',async()=>{
+  const saved=await setMin(1800);
+  assert.equal(saved.maximumSeconds,1800);
+  assert.equal((await peer.building.replyWaitPolicy.get()).minimumSeconds,1800);
+  try{
+   const waiting=call(send('thirty-minute',{officeId:'room',waitForReply:true,waitSeconds:1800}));
+   const original=await until(()=>originalFor('thirty-minute'));
+   const record=await until(()=>db.get("SELECT * FROM role_message_waits WHERE role_id=? AND state='waiting' ORDER BY started_at DESC LIMIT 1",[roles[0]]));
+   assert(record.expires_at-record.started_at>=1799000);
+   const queue=await db.get("SELECT * FROM office_wait_queue WHERE binding_id=? AND state='running'",[record.binding_id]);
+   assert(queue.expires_at-queue.created_at>=1809000);
+   const reply=await peer.building.message({action:'send',replyTo:original.id,body:'Linked result at the new limit',key:'thirty-minute-reply'},actor('b'));
+   const result=await waiting;
+   assert.equal(result.replyWait.effectiveSeconds,1800);
+   assert.equal(result.replyWait.requestedWaitMs,1800000);
+   assert.equal(result.replyWait.status,'matched');
+   assert.equal(result.receivedMessageId,reply.messageId);
+   assert.equal(result.replyWait.message.state,'processing');
+  }finally{await setMin(0);}
+ });
+ await test('omitted send timeout remains five minutes and independent wait retains its own limit',async()=>{
+  const abort=new AbortController();
+  const waiting=graph.building.messageWithReplyWait(send('default-wait',{waitForReply:true}),actor('a'),{signal:abort.signal});
+  try{
+   const record=await until(()=>db.get("SELECT * FROM role_message_waits WHERE role_id=? AND state='waiting' ORDER BY started_at DESC LIMIT 1",[roles[0]]));
+   assert(record.expires_at-record.started_at>=299000&&record.expires_at-record.started_at<=300000);
+  }finally{abort.abort();await waiting;}
+  assert.equal((await waiting).replyWait.requestedSeconds,300);
+  await rejects(()=>graph.building.wait({waitMs:300001},actor('a')),'invalid_input');
  });
  await test('user stop and active discussion interrupt without treating work as a reply; joined roles cannot send',async()=>{
   const waiting=call(send('stop',{waitForReply:true,waitSeconds:1}));await until(()=>originalFor('stop'));const control=await peer.officeCollaboration.requestControl({roleId:roles[0],action:'stop',reason:'Synthetic stop'},admin);const result=await waiting;assert.equal(result.replyWait.status,'control');assert.equal(result.replyWait.controlRequests[0].id,control.id);await graph.officeCollaboration.host({action:'ack',requestId:control.id,outcome:'acknowledged',evidence:'Fixture stopped'},actor('a'));
@@ -104,7 +140,7 @@ try{
   const legacy=await graph.building.replyWaitPolicy.get();
   await db.run("UPDATE office_meta SET value=? WHERE key='sendReplyWaitPolicy'",[JSON.stringify({minimumSeconds:legacy.minimumSeconds,revision:legacy.revision})]);
   assert.equal((await peer.building.replyWaitPolicy.get()).enabled,true);
-  const old=await peer.building.replyWaitPolicy.get(),input={action:'set',minimumSeconds:4,expectedRevision:old.revision};const changed=await peer.building.replyWaitPolicy.manage(input,admin);assert.equal((await graph.building.replyWaitPolicy.get()).minimumSeconds,4);assert.equal((await peer.building.replyWaitPolicy.manage(input,admin)).replayed,true);await rejects(()=>graph.building.replyWaitPolicy.manage({...input,minimumSeconds:5},admin),'stale_version');assert.equal(changed.maximumSeconds,300);assert.equal(changed.toolTimeoutSeconds,360);
+  const old=await peer.building.replyWaitPolicy.get(),input={action:'set',minimumSeconds:4,expectedRevision:old.revision};const changed=await peer.building.replyWaitPolicy.manage(input,admin);assert.equal((await graph.building.replyWaitPolicy.get()).minimumSeconds,4);assert.equal((await peer.building.replyWaitPolicy.manage(input,admin)).replayed,true);await rejects(()=>graph.building.replyWaitPolicy.manage({...input,minimumSeconds:5},admin),'stale_version');assert.equal(changed.maximumSeconds,1800);assert.equal(changed.toolTimeoutSeconds,1860);
  });
  await test('human can disable automatic waiting without preventing send, explicit waits or pending mail',async()=>{
   const old=await peer.building.replyWaitPolicy.get();
@@ -160,12 +196,36 @@ try{
    return result;
   };
   try{
-   const incoming=await peer.building.message({action:'send',recipient:roles[0],body:'Pending across the shutdown',key:'switch-race-inbox'},actor('b'));
-   const result=await call(send('switch-race',{waitForReply:true,waitSeconds:300}));
+   const waiting=call(send('switch-race',{waitForReply:true,waitSeconds:300}));
+   const request=await until(()=>originalFor('switch-race'));
+   const incoming=await peer.building.message({action:'send',replyTo:request.id,body:'Pending across the shutdown',key:'switch-race-inbox'},actor('b'));
+   const result=await waiting;
    assert.equal(result.replyWait.status,'disabled');
    assert.equal(result.receivedMessageId,undefined);
    assert.equal((await graph.building.message({action:'get',messageId:incoming.messageId},actor('a'))).message.state,'pending');
   }finally{(graph.building as any).wait=original;}
+ });
+ await test('office sender policy requires a choice, leaves other scopes alone, and stops an active wait',async()=>{
+  const setRole=async(mode:string)=>{
+   const {revision}=await peer.building.replyWaitPolicy.get();
+   return peer.building.replyWaitPolicy.manage({action:'set_role',officeId:'room',roleId:roles[0],mode,expectedRevision:revision},admin);
+  };
+  await setRole('require_choice');
+  const args=send('office-choice',{officeId:'room'});
+  const missing:any=await raw(args);
+  assert(missing.isError);assert.equal(JSON.parse(missing.content[0].text).error.field,'waitForReply');
+  assert(!await originalFor('office-choice'));
+  const immediate=await call({...args,waitForReply:false});
+  assert(immediate.messageId);assert(!immediate.replyWait);
+  assert((await call(send('direct-unchanged'))).messageId);
+  const other=await graph.building.messageWithReplyWait({action:'send',officeId:'room',recipient:roles[0],body:'Other role still chooses',key:'role-b-choice'},actor('b'));
+  const replyWithoutOffice:any=await raw({action:'send',replyTo:other.messageId,body:'Implicit office',key:'implicit-office'});
+  assert(replyWithoutOffice.isError);
+  const waiting=call(send('role-disable',{officeId:'room',waitForReply:true,waitSeconds:300}));
+  await until(()=>originalFor('role-disable'));
+  await setRole('off');await setRole('inherit');
+  assert.equal((await waiting).replyWait.status,'disabled');
+  assert.equal((await graph.building.replyWaitPolicy.get()).enabled,true);
  });
  await test('HTTP management requires login and returns policy in the normal state snapshot',async()=>{
   const app=express();app.use('/api/office-admin',express.json(),officeWorkbench(graph,{apiKey:'',operatorKey:'fixture-user',contextSecret:''}));http=app.listen(0,'127.0.0.1');await new Promise<void>(r=>http.once('listening',r));const base='http://127.0.0.1:'+http.address().port+'/api/office-admin/';let cookie='';const post=(route:string,body:any)=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify(body)});
@@ -177,8 +237,8 @@ try{
   const previousVersionRow=await db.get("SELECT value FROM office_meta WHERE key='sendReplyWaitPolicy'");
   assert.deepEqual(Object.keys(JSON.parse(previousVersionRow.value)).sort(),['minimumSeconds','revision']);
   assert.equal((await (await post('state',{})).json() as any).replyWaitPolicy.enabled,false);
-  assert.equal((await post('reply-wait-policy',{action:'set',minimumSeconds:301,expectedRevision:0})).status,400);assert.equal((await post('reply-wait-policy',{action:'get',minimumSeconds:0})).status,400);
+  assert.equal((await post('reply-wait-policy',{action:'set',minimumSeconds:1801,expectedRevision:0})).status,400);assert.equal((await post('reply-wait-policy',{action:'get',minimumSeconds:0})).status,400);
  });
  assert.equal((await db.all('PRAGMA foreign_key_check')).length,0);assert.equal((await db.get('SELECT count(*) n FROM office_wait_queue')).n,0);
- console.log('PASS '+passed+' send-and-wait scenarios; three-second floor measured in real time, five-minute window recorded and interrupted deliberately');
+ console.log('PASS '+passed+' send-and-wait scenarios; three-second floor measured in real time, five- and thirty-minute windows recorded; cancellation and early linked reply verified');
 }finally{authorized=true;await client?.close();await service?.close();if(http)await new Promise<void>(r=>http.close(()=>r()));await peer.close();await graph.close();await fs.rm(dir,{recursive:true,force:true});}

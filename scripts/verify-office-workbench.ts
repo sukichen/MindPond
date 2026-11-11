@@ -110,9 +110,9 @@ try {
   assert.equal(state.agents[0].state, 'active');
   assert.equal(state.agents[0].revision, 3);
   assert.equal(state.settings.mcpUrl, 'https://memory.example/mcp');
-  assert.match(state.connectionTemplates.agent.text,/tool_timeout_sec = 360/,'actual browser API uses shared six-minute timeout');
+  assert.match(state.connectionTemplates.agent.text,/tool_timeout_sec = 1860/,'actual browser API uses shared 31-minute timeout');
   assert.equal(state.capabilities.wait.maxMs,300000);
-  assert.equal(state.capabilities.wait.toolTimeoutMs,360000);
+  assert.equal(state.capabilities.wait.toolTimeoutMs,1860000);
   assert(!JSON.stringify(state.connectionTemplates).includes(secret));
   const grants = await readNetworkConfiguration(config);
   assert.equal(grants.version, 2);

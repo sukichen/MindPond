@@ -158,7 +158,7 @@ try {
     const launch = await roleClientLaunch(directory, [], { FIXTURE_MINDPOND_AUTH: tokens.codex });
     assert(!JSON.stringify({ args: launch.args }).includes(tokens.codex));
     if (client === 'codex') {
-      assert(launch.args.includes('--no-daemon'));assert(launch.args.some(s=>s.includes('tool_timeout_sec = 360')),'Codex deadline must exceed the five-minute message wait');
+      assert(launch.args.includes('--no-daemon'));assert(launch.args.some(s=>s.includes('tool_timeout_sec = 1860')),'Codex deadline must exceed the 30-minute send-and-wait limit');
       const skill = await fs.readFile(path.join(directory, '.agents/skills/mindpond-inbox/SKILL.md'), 'utf8');assert(skill.includes('office_receive'));assert(skill.includes(COLLABORATION_LEARNING));
       if(process.env.MINDPOND_TEST_CODEX_BIN) {
         const cli=await promisify(execFile)(process.env.MINDPOND_TEST_CODEX_BIN,[...launch.args,'mcp','get','mindpond_office','--json'],{cwd:launch.cwd,timeout:15000,maxBuffer:1000000,env:{...process.env,...launch.env}});

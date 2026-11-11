@@ -28,7 +28,7 @@ mindpond-mcp-remote --url https://pond.example/memory/mcp \
   --identity connection --token-env MINDPOND_TOKEN
 ```
 
-上面是两条 MCP `command/args` 的写法，不是要求手动启动两个终端。由宿主把同一专用连接凭据注入两个进程的指定秘密环境变量；也可用 `--token-file /absolute/private/connection.token`，不能同时提供两种来源。凭据不放命令行参数。未全局安装时使用 `node /absolute/mindpond/dist/mcp-remote.js`。桥接转发取消，工具调用统一采用六分钟期限；宿主本身的期限仍需足够长。`--identity native` 保留逐聊天增强，需要宿主确实提供聊天标识。
+上面是两条 MCP `command/args` 的写法，不是要求手动启动两个终端。由宿主把同一专用连接凭据注入两个进程的指定秘密环境变量；也可用 `--token-file /absolute/private/connection.token`，不能同时提供两种来源。凭据不放命令行参数。未全局安装时使用 `node /absolute/mindpond/dist/mcp-remote.js`。桥接转发取消，工具调用统一采用31分钟期限；宿主本身的期限仍需足够长。`--identity native` 保留逐聊天增强，需要宿主确实提供聊天标识。
 
 ## 处理中断与人工恢复
 

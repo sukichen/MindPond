@@ -12,7 +12,7 @@ import type { OfficeStore } from './office.js';
 import { previewText, jsonBytes } from './office-context.js';
 import { messageState } from './office-message-state.js';
 import { BUILDING_INSTRUCTIONS } from './office-building.js';
-import { readReplyWaitPolicy } from './office-reply-wait-policy.js';
+import { readRoleReplyWaitPolicy } from './office-reply-wait-policy.js';
 import { deleteRoleData, deleteOfficeData } from './office-deletion.js';
 
 type Row = Record<string, any>;
@@ -261,21 +261,23 @@ export class RoleStore {
     const processing=await this.db.all("SELECT m.id messageId,m.office_id officeId,s.taken_at takenAt FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.recipient=? AND s.state='processing' ORDER BY m.seq LIMIT 21",[b.role_id]);
     const controlRequests=await this.db.all("SELECT id,action,reason,requested_at FROM office_control_requests WHERE role_id=? AND state='requested' ORDER BY requested_at LIMIT 20",[b.role_id]);
     const waits=await this.db.all<Row[]>("SELECT id,state,conditions,expires_at FROM role_message_waits WHERE role_id=? AND binding_id=? ORDER BY started_at DESC LIMIT 10",[b.role_id,b.id]);
-    const policy=await readReplyWaitPolicy(this.db);
-    const waitRecovery=waits.map(wait=>{
+    const waitRecovery=await Promise.all(waits.map(async wait=>{
       const conditions=JSON.parse(wait.conditions);
-      const inbox=conditions.purpose==='sent_message_inbox';
-      if(inbox&&(wait.state==='disabled'||!policy.enabled||policy.disabledRevision>(conditions.policyRevision??0))){
-        return {
-          id:wait.id,state:'disabled',expires_at:wait.expires_at,sentMessageId:conditions.replyTo,
-          nextAction:'The send is committed. Automatic waiting was stopped. Use the processing inbox to recover unfinished work; do not replay the send to wait.'
-        };
+      const sentWait=['sent_message_inbox','sent_message_reply'].includes(conditions.purpose);
+      if(sentWait){
+        const original=await this.db.get<Row>('SELECT office_id FROM role_messages WHERE id=? AND sender=?',[conditions.replyTo,b.role_id]);
+        const policy=await readRoleReplyWaitPolicy(this.db,original?.office_id??null,b.role_id);
+        if(!original||wait.state==='disabled'||!policy.enabled||policy.disabledRevision>(conditions.policyRevision??0)){
+          return {id:wait.id,state:'disabled',expires_at:wait.expires_at,sentMessageId:conditions.replyTo,
+            nextAction:'Automatic waiting has stopped. Check processing mail and do not replay the send to wait.'};
+        }
+        return {...wait,conditions,sentMessageId:conditions.replyTo,sendKey:conditions.sendKey,
+          nextAction:'The send is committed. Retry its original office_message payload/key with waitForReply=true only within the authorized waiting budget to recover the linked reply.'};
       }
-      const resume={afterSeq:conditions.afterSeq??0,...(!inbox&&conditions.replyTo?{replyTo:conditions.replyTo}:{}),...(Number.isSafeInteger(conditions.afterTaskChange)?{afterTaskChange:conditions.afterTaskChange}:{}),waitMs:conditions.waitMs??300000};
-      if(!inbox)return {...wait,conditions,resume};
-      return {...wait,conditions,resume,sentMessageId:conditions.replyTo,sendKey:conditions.sendKey,
-        nextAction:'This send was already committed. Retry its original office_message send payload/key with waitForReply=true only within the user-authorized waiting budget. The ordinary office_wait resume below observes inbox arrivals only; do not resend with a new key.'};
-    });
+      const resume={afterSeq:conditions.afterSeq??0,...(conditions.replyTo?{replyTo:conditions.replyTo}:{}),
+        ...(Number.isSafeInteger(conditions.afterTaskChange)?{afterTaskChange:conditions.afterTaskChange}:{}),waitMs:conditions.waitMs??300000};
+      return {...wait,conditions,resume};
+    }));
     const clone=await this.cloneStatus?.(b.role_id);
     return { state: 'active', clone:clone?.lineage||clone?.returns.packages?clone:undefined, discussions:await this.discussionStatus?.(actor), identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
       processing:processing.slice(0,20),processingHasMore:processing.length>20,resume:{mcp:'memory',tool:'memory_resume',next:'Read current role working state on the separate Memory MCP before continuing. Follow its pages, check new messages and verify linked versions; do not infer unrecorded progress.'},instructions: ROLE_INSTRUCTIONS };

@@ -56,6 +56,21 @@ try{
  assert.equal((await call(restrictedOffice.client,'office_wait',{waitMs:100})).status,'discussion');
  const blockedTake:any=await restrictedOffice.client.callTool({name:'office_receive',arguments:{action:'take',key:'narrow-focus'},_meta:{threadId:'worker'}});assert(blockedTake.isError);assert.equal(JSON.parse(blockedTake.content[0].text).error.code,'invalid_input');
  await call(office.client,'office_discussion',{action:'leave',summary:'Regression summary: checked the current state; no additional notification.',key:randomUUID(),id:protectedMeeting.room.id});
+ // Exercise the extended send window on the real Streamable HTTP transport.
+ const send=call(office.client,'office_message',{action:'send',officeId:'allowed',recipient:roles[1].roleId,body:'Synthetic extended wait',key:'extended-wait',waitForReply:true,waitSeconds:1800});
+ void send.catch(()=>{});
+ const db=(graph as any).db,deadline=Date.now()+3000;
+ let waiting;
+ while(!waiting&&Date.now()<deadline){
+  waiting=await db.get("SELECT conditions,expires_at-started_at duration FROM role_message_waits WHERE role_id=? AND state='waiting'",[roles[0].roleId]);
+  if(!waiting)await pause(15);
+ }
+ assert(waiting&&waiting.duration>=1799000,'HTTP send must register a 30-minute wait');
+ const reply=await call(office.client,'office_message',{action:'send',replyTo:JSON.parse(waiting.conditions).replyTo,body:'Synthetic linked feedback',key:'extended-reply'},'peer');
+ const result=await send;
+ assert.equal(result.replyWait.requestedWaitMs,1800000);assert.equal(result.receivedMessageId,reply.messageId);
+ assert.equal(result.replyWait.message.state,'processing');
+ console.log('PASS real HTTP send-and-wait: 30-minute deadline, early linked reply and atomic inbox claim');
  const authority={assignmentIds:['seat-a']},requestAccess=memoryAccess(graph,{kind:'agent',id:roles[0].roleId},authority);authority.assignmentIds.push('seat-b');assert.deepEqual((await requestAccess.offices()).map(o=>o.id),['allowed'],'request authority must be copied, not widened by later mutation');
  const meeting=await call(office.client,'office_discussion',{action:'create',officeId:'allowed',title:'Synthetic discussion',question:'Check cancellation',doneWhen:'Disconnect frees the wait',participants:[roles[1].roleId],key:'meeting'});
  await denied(restrictedOffice.client,'office_discussion',{action:'export',id:meeting.room.id,memoryId:hidden.id});

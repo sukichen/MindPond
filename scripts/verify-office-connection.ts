@@ -14,12 +14,12 @@ try{
     const fallback=credentialConnectionDownload({host,id:'example',url:'https://memory.example/mcp',token:'synthetic-no-secret'});assert(fallback.text.includes('X-MindPond-Identity'),'implicit download mode must agree with the public template');
     const native=officeConnection({host,id:'example',url:'https://memory.example/mcp',identityMode:'native'});assert.equal(native.identityMode,'native');assert(!native.text.includes('X-MindPond-Identity'));assert.equal(Object.keys(native.files??{}).length,host==='opencode'?1:0);
     assert(!c.text.includes('65000')&&!c.text.includes('= 65\n'));
-    if(host==='codex')assert.match(c.text,/tool_timeout_sec = 360\n/);
+    if(host==='codex')assert.match(c.text,/tool_timeout_sec = 1860\n/);
     else if(host!=='generic-http-mcp'){
       const parsed=JSON.parse(c.text),server=host==='opencode'?parsed.mcp.mindpond_example:parsed.mcpServers.mindpond_example;
-      assert.equal(server.timeout,360000);assert.equal(server.url,'https://memory.example/mcp');
+      assert.equal(server.timeout,1860000);assert.equal(server.url,'https://memory.example/mcp');
       assert(!server.headers.Authorization.includes('actual-secret'));
-    }else assert(c.text.includes('at least 360 seconds'));
+    }else assert(c.text.includes('at least 1860 seconds'));
   }
   for(const host of ['codex','opencode','claude','generic-http-mcp']){const sampleToken=randomBytes(32).toString('base64url'),download=credentialConnectionDownload({host,id:'example',url:'https://memory.example/mcp',token:sampleToken,identityMode:'connection'});assert(download.text.includes(sampleToken));assert(download.text.includes('X-MindPond-Identity'));if(host==='codex'){assert.equal((download.text.match(/^http_headers = /gm)??[]).length,2);assert(!download.text.includes('bearer_token_env_var'));}else if(host!=='generic-http-mcp'){const config=JSON.parse(download.text);for(const server of Object.values(config.mcp??config.mcpServers) as any[])assert.equal(server.headers.Authorization,'Bearer '+sampleToken);}}
   const longId=officeConnection({host:'codex',id:'a'.repeat(128),url:'https://memory.example/mcp'});assert(longId.env.length<=128&&longId.name.length<=128);
@@ -38,5 +38,5 @@ try{
   const browser=await fs.readFile(new URL('../web/office.js',import.meta.url),'utf8');
   assert(!browser.includes('function template('),'no second browser-only configuration generator');
   assert(browser.includes('state.data.connectionTemplates?.[agent.id]'));
-  console.log('PASS shared public browser/CLI connection contract, no credentials, five-minute wait/six-minute deadline, host-specific syntax and configurable bounded capacity');
+  console.log('PASS shared public browser/CLI connection contract, no credentials, five-minute inbox wait/31-minute client deadline, host-specific syntax and configurable bounded capacity');
 }finally{await fs.rm(dir,{recursive:true,force:true});}

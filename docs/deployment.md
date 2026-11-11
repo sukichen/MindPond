@@ -79,7 +79,7 @@ node /opt/mindpond/dist/mcp-http.js serve \
 
 ### 2. HTTPS 反向代理示例
 
-以下片段放进已有证书配置的 Nginx HTTPS `server` 中，示例公共前缀为 `/mindpond/`。所有中间代理都要保留超过6分钟的调用期限。
+以下片段放进已有证书配置的 Nginx HTTPS `server` 中，示例公共前缀为 `/mindpond/`。所有中间代理都要保留超过31分钟的调用期限。
 
 ```nginx
 proxy_set_header Host $http_host;
@@ -88,8 +88,8 @@ proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Forwarded-Host $host;
 proxy_http_version 1.1;
 proxy_buffering off;
-proxy_read_timeout 370s;
-proxy_send_timeout 370s;
+proxy_read_timeout 1870s;
+proxy_send_timeout 1870s;
 client_max_body_size 2m;
 
 location = /mindpond { return 301 /mindpond/; }
@@ -118,7 +118,7 @@ location /mindpond/ {
 4. 新宿主配置包含 Office 和 Memory 两个入口。OpenCode 的两个聊天能绑定不同角色；同一聊天重连恢复。
 5. 角色可读取自己的知识及所属办公室知识；人类锁定的办公室条目不可修改或删除。人类搜索并分配副本后，角色修改副本不改变原文。角色停用或宿主停用后，旧凭据及仍在准备的写入被拒绝。
 6. 生成角色专用配置前核对地址与角色；替换旧配置必须明确确认。新聊天的激活编号与前端一致，激活后旧聊天失去角色访问权。
-7. 实际等待超过60秒、消息到达提前返回、5分钟超时可恢复；代理不中途断开。审批不会唤醒已停止的模型。
+7. 验证独立收件等待及发信等待。关联回复到达时提前返回，超时后可用原发送键恢复。若启用 30 分钟窗口，用实际宿主和代理验证完整时长。审批不会唤醒已停止的模型。
 8. 使用一份升级前一致备份，实际执行恢复到新文件并读取；确认磁盘容量、WAL和备份权限，以及程序/配置/备份的对应版本。
 
 仓库的 `npm run check`、`npm run verify:standalone-package`、`npm run verify:production-role-memory` 和页面回归覆盖工程契约；生产域名证书、网络、容量和恢复演练仍须在目标环境确认。不要把隔离测试通过写成目标机器已经部署验收。

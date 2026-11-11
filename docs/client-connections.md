@@ -34,18 +34,18 @@ Agent 使用两个独立 MCP，但身份一致：Office 管角色和通信，Mem
 [mcp_servers.mindpond_office]
 url = "https://mindpond.example/mcp"
 bearer_token_env_var = "MINDPOND_CODEX_TOKEN"
-tool_timeout_sec = 360
+tool_timeout_sec = 1860
 
 [mcp_servers.mindpond_memory]
 url = "https://mindpond.example/memory/mcp"
 bearer_token_env_var = "MINDPOND_CODEX_TOKEN"
-tool_timeout_sec = 360
+tool_timeout_sec = 1860
 ```
 
 - 把两个示例 URL 改成你的实际 Office 和 Memory 地址。
 - 让启动 Codex 的进程获得 `MINDPOND_CODEX_TOKEN`，其值是网页登记的 **Codex 宿主凭据**。`bearer_token_env_var` 中填写变量名，不填 token 本身。
 - 支持该接入的 Codex 会在每次工具调用中提供真实 `threadId`。无需为每个聊天配置角色ID、workspace、固定 session header 或额外插件。
-- `tool_timeout_sec = 360` 给五分钟 `office_wait` 留出传输余量。
+- `tool_timeout_sec = 1860` 给最长 30 分钟的发信等待留出传输余量。
 
 [Codex 官方 MCP 配置说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
@@ -64,7 +64,7 @@ tool_timeout_sec = 360
       "headers": {
         "Authorization": "Bearer {env:MINDPOND_OPENCODE_TOKEN}"
       },
-      "timeout": 360000
+      "timeout": 1860000
     },
     "mindpond_memory": {
       "type": "remote",
@@ -73,7 +73,7 @@ tool_timeout_sec = 360
       "headers": {
         "Authorization": "Bearer {env:MINDPOND_OPENCODE_TOKEN}"
       },
-      "timeout": 360000
+      "timeout": 1860000
     }
   }
 }
@@ -85,7 +85,7 @@ tool_timeout_sec = 360
 2. 把网页下载的 `mindpond-session-<连接编号>.js` 放进 **`~/.config/opencode/plugins/`**，或项目 **`.opencode/plugins/`**。例如全局文件为 `~/.config/opencode/plugins/mindpond-session-office.js`。全局和项目安装选一处，文件内容使用下载的完整版本。这个 JS 插件只使用宿主和内置加密接口，本身不需要另装 npm 包或模型。
 3. 重新启动 OpenCode，确保配置和插件都被加载。插件使用真实 `sessionID` 为 Office 与 Memory 调用签名；**只复制 JSON、漏装插件，不算完成逐聊天身份接入**。不要手写一个共享的 sessionId 替代它。
 
-示例的 `timeout = 360000` 单位是毫秒，`oauth = false` 表示这里使用已配置的 Bearer 凭据。MCP 发现成功不代表五分钟等待已通过实际客户端/代理验证。
+示例的 `timeout = 1860000` 单位是毫秒，`oauth = false` 表示这里使用已配置的 Bearer 凭据。MCP 发现成功不代表长等待已通过实际客户端/代理验证。
 
 [OpenCode 配置位置与优先级](https://opencode.ai/docs/config/)、[本地插件自动加载目录](https://opencode.ai/docs/plugins/#from-local-files)。自定义 `XDG_CONFIG_HOME` 或 `OPENCODE_CONFIG_DIR` 时，以实际宿主配置目录为准；`OPENCODE_CONFIG`、项目配置和 `OPENCODE_CONFIG_CONTENT` 也可能覆盖全局同名项。
 

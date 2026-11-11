@@ -22,7 +22,6 @@
 
   input.type='number';
   input.min='0';
-  input.max='300';
   input.step='1';
   input.required=true;
   input.value='0';
@@ -37,7 +36,7 @@
    el('h3','发信后等待反馈'),
    el('p','关闭并保存后，角色发完消息就返回，正在等待的发信也会结束等待。'),
    fields,
-   el('p','开启后，角色可以随发信请求等待。收到新收件即返回完整消息。最短等待窗口设为 0 表示不设下限，最高可设 300 秒。'),
+   el('p','开启后，角色可以随发信请求等待。收到收件角色对该消息的关联回复即返回。最短等待窗口设为 0 表示不设下限，上限见输入框。'),
    status
   );
   container.replaceChildren(form);
@@ -50,7 +49,7 @@
    pending=null;
    draftPolicy=null;
    status.textContent=toggle.checked
-    ? '发信后自动等待已开启。最短等待窗口为 '+policy.minimumSeconds+' 秒。'
+    ? '发信后自动等待已开启。最短等待窗口为 '+policy.minimumSeconds+' 秒，单次最长 '+policy.maximumSeconds+' 秒。'
     : '发信后自动等待已关闭。';
   }
 
@@ -131,5 +130,63 @@
   });
   return {update,hasDraft:()=>dirty||busy};
  }
- window.MindPondOfficeReplyWait={mount};
+ async function mountRoles({container,api,current,officeId}){
+  const controls=el('fieldset'),rows=el('div'),status=el('p');
+  controls.className='office-wait-role-settings';
+  status.setAttribute('role','status');
+  const master=el('input'),masterLabel=el('label');
+  master.type='checkbox';
+  masterLabel.className='office-reply-wait-toggle';
+  masterLabel.append(master,el('span','全局允许发信后等待'));
+  controls.append(masterLabel,rows);
+  const duration=el('p');
+  container.replaceChildren(el('h3','等待回复'),
+   el('p','规则按发信角色生效。选择「每次必选」后，该角色发信时须明确选择等或不等。'),
+   controls,duration,status);
+  controls.disabled=true;
+  let policy;
+  const read=()=>api('reply-wait-policy',{action:'roles',officeId});
+  function draw(){
+   master.checked=policy.enabled;
+   duration.textContent='收到关联回复即返回，单次最长 '+policy.maximumSeconds/60+' 分钟。';
+   rows.replaceChildren(...policy.roles.map(role=>{
+    const label=el('label'),select=el('select');
+    label.append(el('span',role.name),select);
+    for(const [value,title] of [['inherit','由角色选择'],['require_choice','每次必选'],['off','关闭等待']]){
+     const option=el('option',title);option.value=value;select.append(option);
+    }
+    select.value=role.mode;
+    select.onchange=()=>save({action:'set_role',officeId,roleId:role.roleId,mode:select.value},role.roleId);
+    select.dataset.roleId=role.roleId;
+    return label;
+   }));
+   if(!policy.roles.length)rows.append(el('p','办公室还没有已启用的角色。'));
+  }
+  async function save(change,focusRole){
+   if(!current()||controls.disabled)return;
+   controls.disabled=true;
+   try{
+    policy={...policy,...await api('reply-wait-policy',{...change,expectedRevision:policy.revision})};
+    if(!current())return;
+    status.textContent='已保存。';
+   }catch(error){
+    if(!current())return;
+    status.textContent=error.message;
+    if(error.code==='stale_version'){
+     try{policy=await read();}catch(refreshError){if(current())status.textContent=refreshError.message;}
+    }
+   }finally{
+    if(current()){
+     draw();controls.disabled=false;
+     (focusRole?[...rows.querySelectorAll('select')].find(input=>input.dataset.roleId===focusRole):master)?.focus();
+    }
+   }
+  }
+  master.onchange=()=>save({action:'set',enabled:master.checked,minimumSeconds:policy.minimumSeconds});
+  try{
+   policy=await read();if(!current())return;
+   draw();controls.disabled=false;
+  }catch(error){if(current())status.textContent=error.message;}
+ }
+ window.MindPondOfficeReplyWait={mount,mountRoles};
 })();

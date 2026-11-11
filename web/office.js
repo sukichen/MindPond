@@ -1236,6 +1236,15 @@
     if (!dialog.open) dialog.showModal();
     return el('officeDetail');
   }
+  el('officeReplyWaitRoles').onclick=()=>run(async()=>{
+    const officeId=state.office?.office.id,generation=state.generation,epoch=state.authEpoch;
+    if(!officeId||!await closeOfficeDetail())return;
+    if(generation!==state.generation||epoch!==state.authEpoch||!state.logged)return;
+    const container=document.createElement('section');
+    openOfficeDetail().replaceChildren(container);
+    await window.MindPondOfficeReplyWait.mountRoles({container,api,officeId,
+      current:()=>state.logged&&epoch===state.authEpoch&&generation===state.generation&&container.isConnected&&el('officeDetailDialog').open});
+  });
   async function closeOfficeDetail(force = false) {
     if (!force && state.detailSaving) return false;
     if (!force && state.containerDirty && !(await confirmAction('放弃尚未保存的容器修改？'))) return false;

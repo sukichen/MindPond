@@ -1,7 +1,9 @@
 /** Message waits stay open until arrival, cancellation, or this five-minute deadline. */
 export const OFFICE_WAIT_MS = 300_000;
-/** Allow transport and response overhead beyond the server deadline. */
-export const OFFICE_TOOL_TIMEOUT_MS = 360_000;
+/** The opt-in send-and-wait path has a longer maximum than inbox polling. */
+export const OFFICE_REPLY_WAIT_MAX_MS = 30 * 60_000;
+/** Allow transport and response overhead beyond the longest server deadline. */
+export const OFFICE_TOOL_TIMEOUT_MS = OFFICE_REPLY_WAIT_MAX_MS + 60_000;
 /** Codex configuration uses seconds; derive it from the shared transport deadline. */
 export const OFFICE_TOOL_TIMEOUT_SECONDS = OFFICE_TOOL_TIMEOUT_MS / 1000;
 /** Initial database-wide admission defaults. A saved administrator policy takes precedence across processes. */
