@@ -318,11 +318,10 @@ app.post('/api/memory/retrieval/activate',async(req,res)=>{
   try{const args=z.object({profileId:z.string().min(1).max(64)}).parse(req.body);ok(res,await graphMemory.activateRetrievalProfile(args.profileId));}
   catch(error){failErr(res,error);}
 });
-let readinessCache:{at:number;result:Awaited<ReturnType<GraphMemory['databaseReadiness']>>}|undefined;
 app.get('/ready',async(_req,res)=>{
   try {
-    if(!readinessCache || Date.now()-readinessCache.at>30000)readinessCache={at:Date.now(),result:await graphMemory.databaseReadiness()};
-    res.status(readinessCache.result.ready?200:503).json(readinessCache.result);
+    const result=await graphMemory.databaseReadiness();
+    res.status(result.ready?200:503).json(result);
   }catch{res.status(503).json({ready:false,reason:'database_unavailable'});}
 });
 
@@ -668,14 +667,26 @@ app.get('/api/memory/list', async (req, res) => {
   }
 });
 
+async function graphOwnerScope(req: express.Request) {
+  const { ownerRoleId, ownerOfficeId, ownerUser } = req.query;
+  if (ownerUser !== undefined && (ownerUser !== 'true' || ownerRoleId || ownerOfficeId))
+    throw new MindPondError('invalid_input', 'Select one memory owner');
+  return { context: await humanOwnerFilter(req, req.query), humanOnly: ownerUser === 'true' };
+}
+
 app.get('/api/memory/graph', async (req, res) => {
   if (!requireOperator(req, res)) return;
   try {
     const limit = Math.min(2000, Math.max(1, Number(req.query.limit) || 200));
     const layerQ = typeof req.query.layer === 'string' ? req.query.layer : '';
     const layer = ['L0', 'L1', 'L2', 'L3'].includes(layerQ) ? layerQ as 'L0' | 'L1' | 'L2' | 'L3' : undefined;
-    const graph = await graphMemory.getFullGraph(limit, layer,{spaceId:typeof req.query.spaceId==='string'?req.query.spaceId:undefined,memoryType:typeof req.query.memoryType==='string'?req.query.memoryType:undefined,includeEvents:req.query.includeEvents==='true'});
-    ok(res, graph);
+    const graph = await graphMemory.getFullGraph(limit, layer, {
+      ...await graphOwnerScope(req), associationsOnly: true,
+      spaceId: typeof req.query.spaceId === 'string' ? req.query.spaceId : undefined,
+      memoryType: typeof req.query.memoryType === 'string' ? req.query.memoryType : undefined,
+      includeEvents: req.query.includeEvents === 'true',
+    });
+    ok(res, { ...graph, nodes: await graphMemory.memoryOwners.labelGraphNodes(graph.nodes) });
   } catch (err) {
     failErr(res, err);
   }
@@ -895,7 +906,15 @@ app.get('/api/memory/save-policy', async (_req, res) => {try{ok(res,{policy:memo
 app.get('/api/organization/policy', async (_req, res) => {try{ok(res, { policy: organizationPolicyPayload(), dimensionPolicy:await graphMemory.getDimensionPolicy(), savePolicy: memorySavePolicyPayload(await graphMemory.getDimensionPolicy()) });}catch(e){failErr(res,e);}});
 
 app.get('/api/memory/spaces', async (req, res) => {
-  try { ok(res, { spaces: await graphMemory.listSpaces(await humanOwnerFilter(req,req.query)??callerContext(req, req.query)) }); }
+  try {
+    if (req.query.ownerRoleId || req.query.ownerOfficeId || req.query.ownerUser !== undefined) {
+      if (!requireOperator(req, res)) return;
+      const { context, humanOnly } = await graphOwnerScope(req);
+      ok(res, { spaces: await graphMemory.listSpaces(context, humanOnly) });
+    } else {
+      ok(res, { spaces: await graphMemory.listSpaces(callerContext(req, req.query)) });
+    }
+  }
   catch (err) { failErr(res, err); }
 });
 

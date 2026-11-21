@@ -10,7 +10,7 @@ import { digest } from './growth.js';
 import type { TrustedCallContext } from './trust.js';
 import type { OfficeStore } from './office.js';
 import { previewText, jsonBytes } from './office-context.js';
-import { messageState } from './office-message-state.js';
+import { messageState, messageStateSql } from './office-message-state.js';
 import { BUILDING_INSTRUCTIONS } from './office-building.js';
 import { readRoleReplyWaitPolicy } from './office-reply-wait-policy.js';
 import { deleteRoleData, deleteOfficeData } from './office-deletion.js';
@@ -249,6 +249,65 @@ export class RoleStore {
       });
     });
   }
+  private async recoverWaits(binding: Row) {
+    const now = this.clock();
+    const waits = await this.db.all<Row[]>(
+      `SELECT id,state,conditions,expires_at FROM role_message_waits WHERE role_id=? AND binding_id=?
+       ORDER BY (state='waiting' AND expires_at>?) DESC,started_at DESC,rowid DESC LIMIT 10`,
+      [binding.role_id, binding.id, now]);
+    const results: Row[] = [];
+    const seenSends = new Set<string>();
+    for (const wait of waits) {
+      const conditions = JSON.parse(wait.conditions);
+      const state = wait.state === 'waiting' && wait.expires_at <= now ? 'timeout' : wait.state;
+      if (!['sent_message_inbox','sent_message_reply'].includes(conditions.purpose)) {
+        if (state !== 'waiting' && state !== 'timeout') continue;
+        const resume = {
+          afterSeq: conditions.afterSeq ?? 0,
+          ...(conditions.replyTo ? { replyTo: conditions.replyTo } : {}),
+          ...(Number.isSafeInteger(conditions.afterTaskChange) ? { afterTaskChange: conditions.afterTaskChange } : {}),
+          waitMs: conditions.waitMs ?? 300000,
+        };
+        results.push({ ...wait, state, conditions, resume });
+        continue;
+      }
+      const sentMessageId = conditions.replyTo;
+      if (seenSends.has(sentMessageId)) continue;
+      seenSends.add(sentMessageId);
+      const original = await this.db.get<Row>('SELECT office_id,recipient FROM role_messages WHERE id=? AND sender=?', [sentMessageId, binding.role_id]);
+      if (!original) continue;
+      const receipt = await this.db.get<Row>(
+        `SELECT json_extract(result,'$.messageId') messageId FROM building_receipts
+         WHERE actor=? AND binding_id=? AND operation='message_wait_delivery' AND key=?`,
+        [binding.role_id, binding.id, sentMessageId]);
+      const reply = await this.db.get<Row>(
+        `SELECT m.id,m.seq,m.office_id officeId,m.body,s.taken_at takenAt,${messageStateSql()} state
+         FROM role_messages m JOIN role_message_states s ON s.message_id=m.id
+         WHERE m.recipient=? AND m.sender=? AND COALESCE(m.reply_to,m.request_id)=?
+           ${receipt ? 'AND m.id=?' : ''}
+         ORDER BY CASE ${messageStateSql()} WHEN 'pending' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,m.seq LIMIT 1`,
+        [binding.role_id, original.recipient, sentMessageId, ...(receipt ? [receipt.messageId] : [])]);
+      if (reply?.state === 'archived' || (receipt && !reply)) continue;
+      const info = { id: wait.id, expires_at: wait.expires_at, sentMessageId };
+      if (reply) {
+        const { body, ...message } = reply;
+        results.push({ ...info, state: reply.state, message: { ...message, preview: previewText(body, 400) },
+          nextCall: { tool: 'office_message', arguments: { action: 'get', messageId: reply.id } },
+          nextAction: reply.state === 'processing'
+            ? 'Read and finish this linked reply after handling it. It is already taken.'
+            : 'Read this linked reply, then take it with a stable key before handling it.' });
+        continue;
+      }
+      const policy = await readRoleReplyWaitPolicy(this.db, original.office_id, binding.role_id);
+      if (state === 'disabled' || !policy.enabled || policy.disabledRevision > (conditions.policyRevision ?? 0)) {
+        results.push({ ...info, state: 'disabled', nextAction: 'Automatic waiting stopped. Check mail and honor the current policy.' });
+      } else if (state === 'waiting' || state === 'timeout') {
+        results.push({ ...info, state, sendKey: conditions.sendKey,
+          nextAction: 'The send is committed. If the original call has ended and the user still authorizes waiting, reuse its unchanged payload/key with waitForReply=true.' });
+      }
+    }
+    return results;
+  }
   async sync(a?: TrustedCallContext) {
     const actor = this.actor(a);
     const b = await this.binding(actor, false);
@@ -260,26 +319,10 @@ export class RoleStore {
     const contactPage = await this.contacts({}, actor);
     const processing=await this.db.all("SELECT m.id messageId,m.office_id officeId,s.taken_at takenAt FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.recipient=? AND s.state='processing' ORDER BY m.seq LIMIT 21",[b.role_id]);
     const controlRequests=await this.db.all("SELECT id,action,reason,requested_at FROM office_control_requests WHERE role_id=? AND state='requested' ORDER BY requested_at LIMIT 20",[b.role_id]);
-    const waits=await this.db.all<Row[]>("SELECT id,state,conditions,expires_at FROM role_message_waits WHERE role_id=? AND binding_id=? ORDER BY started_at DESC LIMIT 10",[b.role_id,b.id]);
-    const waitRecovery=await Promise.all(waits.map(async wait=>{
-      const conditions=JSON.parse(wait.conditions);
-      const sentWait=['sent_message_inbox','sent_message_reply'].includes(conditions.purpose);
-      if(sentWait){
-        const original=await this.db.get<Row>('SELECT office_id FROM role_messages WHERE id=? AND sender=?',[conditions.replyTo,b.role_id]);
-        const policy=await readRoleReplyWaitPolicy(this.db,original?.office_id??null,b.role_id);
-        if(!original||wait.state==='disabled'||!policy.enabled||policy.disabledRevision>(conditions.policyRevision??0)){
-          return {id:wait.id,state:'disabled',expires_at:wait.expires_at,sentMessageId:conditions.replyTo,
-            nextAction:'Automatic waiting has stopped. Check processing mail and do not replay the send to wait.'};
-        }
-        return {...wait,conditions,sentMessageId:conditions.replyTo,sendKey:conditions.sendKey,
-          nextAction:'The send is committed. Retry its original office_message payload/key with waitForReply=true only within the authorized waiting budget to recover the linked reply.'};
-      }
-      const resume={afterSeq:conditions.afterSeq??0,...(conditions.replyTo?{replyTo:conditions.replyTo}:{}),
-        ...(Number.isSafeInteger(conditions.afterTaskChange)?{afterTaskChange:conditions.afterTaskChange}:{}),waitMs:conditions.waitMs??300000};
-      return {...wait,conditions,resume};
-    }));
+    const discussions = await this.discussionStatus?.(actor);
+    const waitRecovery = discussions?.active || discussions?.activeUnavailable || controlRequests.length ? [] : await this.recoverWaits(b);
     const clone=await this.cloneStatus?.(b.role_id);
-    return { state: 'active', clone:clone?.lineage||clone?.returns.packages?clone:undefined, discussions:await this.discussionStatus?.(actor), identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
+    return { state: 'active', clone:clone?.lineage||clone?.returns.packages?clone:undefined, discussions, identity: await this.badge(actor, b), controlRequests,waitRecovery, assignments:officePage.rooms, officesHasMore:officePage.hasMore, officesNextAfterId:officePage.nextAfterId, contacts:contactPage.contacts, contactsHasMore:contactPage.hasMore, contactsNextAfterId:contactPage.nextAfterId,
       processing:processing.slice(0,20),processingHasMore:processing.length>20,resume:{mcp:'memory',tool:'memory_resume',next:'Read current role working state on the separate Memory MCP before continuing. Follow its pages, check new messages and verify linked versions; do not infer unrecorded progress.'},instructions: ROLE_INSTRUCTIONS };
   }
   async contacts(i:Row,a?:TrustedCallContext){

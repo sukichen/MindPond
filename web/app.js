@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const state = { spaces: [], dimensions:null, view: 'search', page: 0, selected: new Map(), memory: null,
-  task: null, request: null, plan: null, logCursor: null, search: null, network: null, workContext: null, taskLeases: new Map() };
+  task: null, request: null, plan: null, logCursor: null, search: null, workContext: null, taskLeases: new Map() };
 const busy = new WeakSet();
 const assignmentSelection=new Map();let memoryRoles=[],memoryOffices=[],memoryMcpUrl=null,memoryConnected=false,searchRevision=0,libraryRevision=0;
 const text = (tag, value, cls) => { const n = document.createElement(tag); n.textContent = value ?? ''; if (cls) n.className = cls; return n; };
@@ -110,28 +110,24 @@ async function refreshMeta() {
   const [stats, scopes, config] = await Promise.all([api('./api/memory/stats'), api('./api/memory/spaces'),api('./api/memory/dimensions'),refreshMemoryOwners()]);
   try{await refreshRetrieval();}catch{$('retrievalStatus').textContent='模型状态暂不可用，仍可执行搜索；实际检索状态以搜索结果说明为准。';}
   state.dimensions=config.configuration;
-  for(const d of state.dimensions.definitions)DIM_COLORS[d.id]=d.color;
-  renderDimensionLegend();renderDimensionFilters();
+  renderDimensionFilters();
   state.spaces = scopes.spaces;
   $('stats').textContent = '共 '+stats.stats.total + ' 条记忆';
   memoryConnectionStatus(true,'已连接 · 人类管理');$('memoryConnectionSettings').open=false;
-  for (const prefix of ['library', 'graph']) {
-    options(prefix + 'Space', [...new Set(state.spaces.map(s => s.spaceId))], prefix === 'org' ? '选择空间' : '全部空间');
-    types(prefix);
-  }
+  options('librarySpace', [...new Set(state.spaces.map(s => s.spaceId))], '全部空间');
+  types('library');
   await refreshOrganizationScopes();
   }catch(error){memoryMcpUrl=null;memoryConnectionStatus(false,'未连接：'+error.message);throw error;}
 }
 async function show(view) {
   state.view = view;
-  $('currentPage').textContent = {search:'搜索记忆',library:'记忆库',organize:'整理记忆',work:'协作任务',graph:'空间图谱',dimensions:'维度与提示词',log:'操作日志'}[view];
+  $('currentPage').textContent = {search:'搜索记忆',library:'记忆库',organize:'整理记忆',work:'协作任务',dimensions:'维度与提示词',log:'操作日志'}[view];
   document.querySelectorAll('.view').forEach(n => { n.hidden = n.id !== 'view-' + view; });
   document.querySelectorAll('[data-view]').forEach(n => n.classList.toggle('active', n.dataset.view === view));
   if (view === 'dimensions') await loadDimensions();
   if (view === 'library') {await refreshMemoryOwners();await loadLibrary();}
   if (view === 'work') await loadWorkContexts();
   if (view === 'log') await loadLog();
-  if (view === 'graph') await loadGraph();
   if (view === 'organize') {await refreshMemoryOwners();await refreshOrganizationScopes();await loadOrganizationRequests();}
 }
 function evidenceView(a) {
@@ -565,366 +561,6 @@ async function loadLog(more = false) {
 }
 // ── 图谱：知识层优先 + 神经元放电 ─────────────────────────────
 // 结构真相（2026-09-17 实测）：全库 9678 节点中 event 4388（L0 原始 3390），
-// 边几乎全部是 L0→L1 的 derived_from（原始事件 → 提炼知识）。
-// 因此：默认只画知识节点；event/L0 进 latent 索引，放电时动态加入点亮。
-const DIM_COLORS = Object.assign(Object.create(null), { fact: '#4c7ef3', decision: '#9d5bd2', lesson: '#3fa376', skill: '#d28b22', event: '#a8b0ab' });
-const SPARK = '#f5b942';
-const nodeSize = m => 6 + m.importance * 0.8 + (m.layer === 'L2' ? 4 : 0) + (m.layer === 'L3' ? 8 : 0);
-const isRawEvent = m => m.layer === 'L0' || m.dimension === 'event';
-function memoryNode(m, latent) {
-  const dims=m.dimensions?.length?m.dimensions:[m.dimension];
-  const colors=dims.map(d=>DIM_COLORS[d]||'#8a9a8e');
-  const color=isRawEvent(m)?DIM_COLORS.event:'#'+[1,3,5].map(i=>Math.max(72,Math.round(colors.reduce((s,c)=>s+parseInt(c.slice(i,i+2),16),0)/colors.length)).toString(16).padStart(2,'0')).join('');
-  return { id: m.id, label: (latent ? '· ' : '') + (dims.length>1?'['+dims.map(dimensionLabel).join('+')+']\n':'') + m.content.slice(0, 22), title: text('div', dims.map(dimensionLabel).join(' + ')+'\n'+m.content),
-    physics:true,shape: 'dot', size: latent ? 5 : nodeSize(m), color, font: { size: 10, color: '#4b5549' }, _dim: m.dimension,_dims:dims, _layer: m.layer, _base: { color, size: latent ? 5 : nodeSize(m) } };
-}
-const edgeObject = e => ({ id: e.id, from: e.fromId, to: e.toId, arrows:e.directed?{to:{enabled:true}}:undefined, physics:e.kind==='semantic',dashes:e.kind==='provenance',title: e.kind+' · '+e.label + ' · ' + (e.weight ?? ''), length:160-90*(e.weight??.5),width: 1 + (e.weight ?? 0.5) * 2, color: { color: '#6b7a66',opacity:.35 }, font: { size: 9 }, _baseWidth: 1 + (e.weight ?? 0.5) * 2, _baseColor: '#6b7a66' });
-/** 放电经过的边确保在画布上（默认模式下边不预加载，跟随 latent 节点一起浮现） */
-function ensureEdgeOnCanvas(edgeId) {
-  if (state.graphModel.edges.get(edgeId)) return;
-  const raw = state.graphEdgeData && state.graphEdgeData.get(edgeId);
-  if (raw) state.graphModel.edges.add(edgeObject(raw));
-}
-// ── 神经元放电 v2：辉光呼吸 + 粒子沿边传导（叠加 canvas 层，参考神经网络 demo）──
-// 设计：不动 vis.js 的节点/边数据（先前瞬变与重置的原因），动画全部画在独立叠加层。
-const IGNITE = { canvas: null, ctx: null, particles: [], pulses: new Map(), edgesLit: new Map(), rings: [], timers: [], raf: 0, lastT: 0, running: false, kickTimer: 0, ambientT: 0, AMBIENT: false, MAX_PARTICLES: 900, REFRACTORY: 4000 };
-function igniteReset() { // 图谱重建时调用：清空放电状态（叠加层保留复用）
-  for (const t of IGNITE.timers) clearTimeout(t);
-  cancelAnimationFrame(IGNITE.raf);
-  IGNITE.timers = []; IGNITE.particles = []; IGNITE.rings = []; IGNITE.raf = 0; IGNITE.running = false; IGNITE.AMBIENT = false; IGNITE.demo = false;
-  IGNITE.pulses.clear(); IGNITE.edgesLit.clear();
-}
-function igniteClear() { // 立即熄灭当前放电
-  for (const t of IGNITE.timers) clearTimeout(t);
-  IGNITE.timers = []; IGNITE.particles = []; IGNITE.rings = [];
-  IGNITE.pulses.clear(); IGNITE.edgesLit.clear();
-}
-/** 引力扰动按需计算：节点/边变动时短暂重启物理引擎让它重新找位，稳定后自动关闭（不持续迭代耗 CPU） */
-function physicsKick(ms) {
-  const network = state.network; if (!network) return;
-  try {
-    network.setOptions({ physics: { enabled: true } });
-    clearTimeout(IGNITE.kickTimer);
-    IGNITE.kickTimer = setTimeout(() => { try { network.setOptions({ physics: { enabled: false } }); } catch (e) {} }, ms || 2500);
-  } catch (e) {}
-}
-function hexToRgb(hex) { // '#rrggbb' → 'r,g,b'（非法输入回退琥珀色）
-  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
-  if (!m) return '245,185,66';
-  const v = parseInt(m[1], 16);
-  return ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255);
-}
-function igniteLayer() { // 惰性创建叠加画布（盖在 vis.js 画布之上，不拦截鼠标）
-  if (IGNITE.canvas) return IGNITE.ctx;
-  const host = $('graphCanvas');
-  if (!host) return null;
-  const c = document.createElement('canvas');
-  c.className = 'ignite-layer';
-  Object.assign(c.style, { position: 'absolute', left: '0', top: '0', width: '100%', height: '100%', pointerEvents: 'none', zIndex: '2' });
-  if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
-  host.appendChild(c);
-  IGNITE.canvas = c; IGNITE.ctx = c.getContext('2d');
-  return IGNITE.ctx;
-}
-function igniteSync() { // 跟随容器尺寸与 devicePixelRatio
-  if (!IGNITE.canvas) return;
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round(IGNITE.canvas.clientWidth * dpr), h = Math.round(IGNITE.canvas.clientHeight * dpr);
-  if (IGNITE.canvas.width !== w || IGNITE.canvas.height !== h) { IGNITE.canvas.width = w; IGNITE.canvas.height = h; }
-}
-function ignitePos(id) { // 节点世界坐标 → 容器像素坐标
-  try {
-    const p = state.network.getPositions([id])[id];
-    return p ? state.network.canvasToDOM(p) : null;
-  } catch { return null; }
-}
-function igniteStartLoop() {
-  if (IGNITE.running || !IGNITE.ctx) return;
-  IGNITE.running = true; IGNITE.lastT = 0;
-  IGNITE.raf = requestAnimationFrame(igniteLoop);
-}
-function igniteLoop(t) {
-  if (!IGNITE.running) return;
-  const ctx = IGNITE.ctx, dpr = window.devicePixelRatio || 1;
-  const dt = Math.min(50, IGNITE.lastT ? t - IGNITE.lastT : 16); IGNITE.lastT = t;
-  igniteSync();
-  const W = IGNITE.canvas.width, H = IGNITE.canvas.height;
-  // 浅色主题下 additive('lighter') 会把辉光削顶成背景白（实测核心像素归零），用 source-over 保色彩；炫酷感靠光环/环境流/拖尾/维度色
-  ctx.clearRect(0, 0, W, H);
-  const now = performance.now();
-  // ⓪ 常驻环境粒子流：沿随机边缓慢漂移的微光（不点击也有"活着"的神经网络感，量小不耗资源）
-  if (IGNITE.AMBIENT && state.graphModel) {
-    IGNITE.ambientT += dt;
-    if (IGNITE.ambientT > 420 && IGNITE.particles.length < 120) {
-      IGNITE.ambientT = 0;
-      const all = state.graphModel.edges.get();
-      if (all.length) {
-        const e = all[(Math.random() * all.length) | 0];
-        if (e && !IGNITE.pulses.has(e.from) && !IGNITE.pulses.has(e.to)) {
-          IGNITE.particles.push({ edge: e.id, p: Math.random(), rev: Math.random() < 0.5, speed: 0.00016 + Math.random() * 0.00022, depth: 2, ambient: true });
-        }
-      }
-    }
-  }
-  // ① 节点辉光：快攻 + 指数衰减呼吸，维度色 bloom + 白热核心
-  for (const [id, pu] of IGNITE.pulses) {
-    const n = state.graphModel.nodes.get(id);
-    if (!n) { IGNITE.pulses.delete(id); continue; }
-    const age = now - pu.start;
-    if (age > pu.life) { IGNITE.pulses.delete(id); continue; }
-    const pos = ignitePos(id); if (!pos) continue;
-    const env = age < 180 ? age / 180 : Math.exp(-(age - 180) / 900);
-    const rgb = pu.rgb;
-    const r = (n._base ? n._base.size : n.size || 8) * (1.6 + 0.9 * env) * dpr;
-    const g = ctx.createRadialGradient(pos.x * dpr, pos.y * dpr, 0, pos.x * dpr, pos.y * dpr, r * 2.4);
-    g.addColorStop(0, 'rgba(' + rgb + ',' + (0.55 * env).toFixed(3) + ')');
-    g.addColorStop(0.4, 'rgba(' + rgb + ',' + (0.20 * env).toFixed(3) + ')');
-    g.addColorStop(1, 'rgba(' + rgb + ',0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(pos.x * dpr, pos.y * dpr, r * 2.4, 0, 6.2832); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,240,' + (0.9 * env).toFixed(3) + ')';
-    ctx.beginPath(); ctx.arc(pos.x * dpr, pos.y * dpr, Math.max(1.5, r * 0.26) * dpr, 0, 6.2832); ctx.fill();
-  }
-  // ② 冲击波光环：激发瞬间从节点扩散的亮环（参考站同款"能量波"）
-  for (let i = IGNITE.rings.length - 1; i >= 0; i--) {
-    const rg = IGNITE.rings[i];
-    const age = now - rg.start;
-    if (age > rg.life) { IGNITE.rings.splice(i, 1); continue; }
-    const pos = ignitePos(rg.id); if (!pos) continue;
-    const k = age / rg.life;
-    const rad = rg.r0 + (rg.r1 - rg.r0) * (1 - Math.pow(1 - k, 2.2));
-    ctx.strokeStyle = 'rgba(' + rg.rgb + ',' + (0.5 * (1 - k)).toFixed(3) + ')';
-    ctx.lineWidth = (2.2 * (1 - k) + 0.4) * dpr;
-    ctx.beginPath(); ctx.arc(pos.x * dpr, pos.y * dpr, rad * dpr, 0, 6.2832); ctx.stroke();
-  }
-  // ③ 边发光：与粒子经过同步，指数渐弱
-  for (const [eid, li] of IGNITE.edgesLit) {
-    const e = state.graphModel.edges.get(eid);
-    if (!e) { IGNITE.edgesLit.delete(eid); continue; }
-    const age = now - li.start;
-    if (age > 2400) { IGNITE.edgesLit.delete(eid); continue; }
-    const a = ignitePos(e.from), b = ignitePos(e.to); if (!a || !b) continue;
-    const env = Math.exp(-age / 800) * 0.5;
-    ctx.strokeStyle = 'rgba(' + li.rgb + ',' + env.toFixed(3) + ')';
-    ctx.lineWidth = 2.4 * dpr; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(a.x * dpr, a.y * dpr); ctx.lineTo(b.x * dpr, b.y * dpr); ctx.stroke();
-  }
-  // ④ 粒子：沿边流动，到达即激发下一节点（信号传导感）+ 渐变拖尾
-  for (let i = IGNITE.particles.length - 1; i >= 0; i--) {
-    const pt = IGNITE.particles[i];
-    const e = state.graphModel.edges.get(pt.edge);
-    if (!e) { IGNITE.particles.splice(i, 1); continue; }
-    const a = ignitePos(e.from), b = ignitePos(e.to);
-    if (!a || !b) { IGNITE.particles.splice(i, 1); continue; }
-    const s = pt.rev ? b : a, d = pt.rev ? a : b; // 流动起点取激发节点一侧
-    pt.p += dt * pt.speed;
-    if (pt.p >= 1) {
-      IGNITE.particles.splice(i, 1);
-      if (!pt.ambient) { igniteNode(pt.rev ? e.from : e.to, pt.depth); }
-      continue;
-    }
-    const x = s.x + (d.x - s.x) * pt.p, y = s.y + (d.y - s.y) * pt.p;
-    const fade = pt.ambient ? 0.16 : Math.exp(-pt.depth * 0.35);
-    const rgb = pt.rgb || '255,208,102';
-    const tx = s.x + (d.x - s.x) * Math.max(0, pt.p - 0.08), ty = s.y + (d.y - s.y) * Math.max(0, pt.p - 0.08);
-    const grad = ctx.createLinearGradient(tx * dpr, ty * dpr, x * dpr, y * dpr); // 拖尾头亮尾淡
-    grad.addColorStop(0, 'rgba(' + rgb + ',0)');
-    grad.addColorStop(1, 'rgba(' + rgb + ',' + (0.5 * fade).toFixed(3) + ')');
-    ctx.strokeStyle = grad; ctx.lineWidth = 1.6 * dpr; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(tx * dpr, ty * dpr); ctx.lineTo(x * dpr, y * dpr); ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,235,' + (0.95 * fade).toFixed(3) + ')';
-    ctx.beginPath(); ctx.arc(x * dpr, y * dpr, Math.max(1, (pt.ambient ? 1.6 : 2.8 - pt.depth * 0.4)) * dpr, 0, 6.2832); ctx.fill();
-  }
-  if (IGNITE.particles.length > IGNITE.MAX_PARTICLES) IGNITE.particles.splice(0, IGNITE.particles.length - IGNITE.MAX_PARTICLES);
-  // ⑤ 空闲即停：无粒子/辉光/亮边/光环且无待发定时器 → 停 rAF，不空转耗 CPU
-  if (!IGNITE.particles.length && !IGNITE.pulses.size && !IGNITE.edgesLit.size && !IGNITE.rings.length && !IGNITE.timers.length) {
-    IGNITE.running = false; ctx.clearRect(0, 0, W, H); return;
-  }
-  IGNITE.raf = requestAnimationFrame(igniteLoop);
-}
-/** 激发单个神经元：本体辉光 + 冲击波环 + 沿邻接边发射粒子（随机延迟/速度/衰减 = 有机感；4s 不应期防震荡） */
-function igniteNode(id, depth) {
-  if (depth > 4 || !state.network || !state.graphModel) return;
-  const n = state.graphModel.nodes.get(id);
-  if (!n || String(id).startsWith('__anchor_')) return;
-  const now = performance.now();
-  const last = IGNITE.pulses.get(id);
-  if (last && now - last.start < IGNITE.REFRACTORY) return;
-  const rgb = hexToRgb((n._base && n._base.color) || n.color); // 辉光/粒子/光环跟随节点维度色
-  IGNITE.pulses.set(id, { start: now, life: 2200 + Math.random() * 600, rgb });
-  const baseR = (n._base ? n._base.size : n.size || 8);
-  IGNITE.rings.push({ id, start: now, life: 900, r0: baseR * 1.2, r1: baseR * 4.5 + 26, rgb }); // 激发瞬间扩散的能量环
-  if (!IGNITE.ctx) igniteLayer();
-  IGNITE.AMBIENT = true; // 首次放电后启用常驻环境粒子流（网络"活着"的底噪）
-  igniteStartLoop();
-  if (depth >= (IGNITE.demo ? 6 : 4)) return;
-  if (!IGNITE.demo && isRawEvent(state.graphMemories.get(id) || {})) return; // event 是终点（V1 设计）；仅演示模式放行以展示级联效果
-  let launched = 0;
-  for (const [nb, edgeId] of state.graphAdjacency.get(id) || []) { launched++;
-    if (depth > 0 && Math.random() < 0.25) continue; // 25% 随机衰减，传播不均匀
-    const t = setTimeout(() => {
-      const idx = IGNITE.timers.indexOf(t); if (idx >= 0) IGNITE.timers.splice(idx, 1);
-      const e0 = state.graphModel.edges.get(edgeId);
-      if (!e0) return;
-      IGNITE.edgesLit.set(edgeId, { start: performance.now(), rgb });
-      // 粒子方向修正：激发节点可能是边的 to 端（无向边），此时粒子从 to → from 反向流动
-      IGNITE.particles.push({ edge: edgeId, p: 0, rev: String(e0.from) !== String(id), speed: 0.0011 + Math.random() * 0.0009, depth: depth + 1, rgb });
-    }, Math.random() * 140);
-    IGNITE.timers.push(t);
-  }
-}
-/** 放电入口：先把两跳内的 latent 邻域拉上画布（粒子要有线才跑得起来），再从本体激发 */
-function igniteFrom(startId) {
-  if (!state.network || !state.graphModel) return;
-  igniteClear();
-  const seen = new Set([startId]);
-  let frontier = [startId];
-  for (let d = 0; d < 2 && frontier.length; d++) {
-    const next = [];
-    for (const id of frontier) {
-      if (isRawEvent(state.graphMemories.get(id) || {})) continue;
-      for (const [nb, edgeId] of state.graphAdjacency.get(id) || []) {
-        if (seen.has(nb)) continue;
-        seen.add(nb); next.push(nb);
-        if (!state.graphModel.nodes.get(nb)) {
-          const m = state.graphMemories.get(nb);
-          if (m) state.graphModel.nodes.add(memoryNode(m, true));
-        }
-        ensureEdgeOnCanvas(edgeId);
-      }
-    }
-    frontier = next;
-  }
-  physicsKick(2200); // 新邻居上画布后让引力短暂重算一次找位（算完自动关，不持续耗 CPU）
-  igniteNode(startId, 0);
-}
-async function loadGraph() {
-  const limit = +$('graphLimit').value || 1000;
-  const showEvents = $('graphShowEvents').checked;
-  const graphQuery=new URLSearchParams({limit:String(limit),includeEvents:String(showEvents),spaceId:$('graphSpace').value,memoryType:$('graphType').value});
-  const [data, stats] = await Promise.all([api('./api/memory/graph?' + graphQuery), api('./api/memory/stats')]);
-  const byDim = stats.stats.byDimension, byLayer = stats.stats.byLayer;
-  const space = $('graphSpace').value, type = $('graphType').value;
-  // 作用域过滤（space/type 走 memberships——graph API 不带 scope，用 list 对照拿到成员资格）
-  const scoped = (space || type) ? new Set((await api('./api/memory/list?' + new URLSearchParams({ limit: String(limit), activeOnly: 'true', scope: 'operator', ...(space ? { spaceId: space } : {}), ...(type ? { memoryType: type } : {}) }))).nodes.map(n => n.id)) : null;
-  const nodes = [], latent = new Map(), memories = new Map(), adjacency = new Map();
-  for (const m of data.nodes) {
-    memories.set(m.id, m);
-    if (!adjacency.has(m.id)) adjacency.set(m.id, []);
-    if (!showEvents && isRawEvent(m)) { latent.set(m.id, m); continue; } // 默认隐藏：进 latent 索引
-    if (scoped && !scoped.has(m.id)) continue;
-    nodes.push(memoryNode(m, false));
-  }
-  const edges = [], edgeData = new Map();
-  for (const e of data.edges) {
-    const a = memories.get(e.fromId), b = memories.get(e.toId);
-    if (!a || !b) continue;
-    edgeData.set(e.id, e); // 原始边数据：放电浮现 latent 边时取样式/权重
-    if (!showEvents && (latent.has(e.fromId) || latent.has(e.toId))) {
-      // 至少一端是隐藏 event：不进画布，但登记进邻接表（放电时动态加入）
-      if (!scoped || scoped.has(e.fromId) || scoped.has(e.toId)) {
-        adjacency.get(e.fromId).push([e.toId, e.id]); if(!e.directed)adjacency.get(e.toId).push([e.fromId, e.id]);
-      }
-      continue;
-    }
-    if (scoped && (!scoped.has(e.fromId) || !scoped.has(e.toId))) continue;
-    adjacency.get(e.fromId).push([e.toId, e.id]); if(!e.directed)adjacency.get(e.toId).push([e.fromId, e.id]);
-    edges.push(edgeObject(e));
-  }
-  // 背景事件层（用户设计：event 是背景板，默认半透明呈现；点击知识节点放电时被点亮）。
-  // 与画布知识节点直连的 latent event 按边权重排序取前 200 个，小点+淡边，不参与象限引力。
-  const bgNodes = [], bgEdges = [];
-  if (!showEvents) {
-    const bgCap = 200, bgIds = new Set(), cand = [];
-    for (const e of data.edges) {
-      const a = memories.get(e.fromId), b = memories.get(e.toId);
-      if (!a || !b) continue;
-      const ev = isRawEvent(a) ? a : isRawEvent(b) ? b : null;
-      const kn = ev === a ? b : a;
-      if (!ev || latent.get(ev.id) !== ev) continue;
-      if (scoped && !scoped.has(kn.id)) continue;
-      cand.push([ev, e]);
-    }
-    cand.sort((x, y) => (y[1].weight ?? 0) - (x[1].weight ?? 0));
-    for (const [ev, e] of cand) {
-      const admitted = bgIds.has(ev.id);
-      if (!admitted && bgNodes.length >= bgCap) continue;
-      if (!admitted) {
-        bgIds.add(ev.id);
-        const base = memoryNode(ev, true);
-        bgNodes.push({ ...base, label: '', size: 4, color: 'rgba(168,176,171,0.55)', _base: { color: 'rgba(168,176,171,0.55)', size: 4 } });
-      }
-      bgEdges.push({ ...edgeObject(e), physics:false, color: { color: 'rgba(107,122,102,0.45)' }, width: 0.8, _baseColor: 'rgba(107,122,102,0.45)', _baseWidth: 0.8 });
-    }
-    // event 自组织网络（用户设计 2026-09-21）：event 不对知识层传导引力（上面 bgEdges 物理
-    // 已强制关闭），但 event 之间的边保留弹簧——事件层自己维持一张独立网络，不再堆在原点。
-    for (const e of data.edges) {
-      const a = memories.get(e.fromId), b = memories.get(e.toId);
-      if (!a || !b || !isRawEvent(a) || !isRawEvent(b)) continue;
-      if (!bgIds.has(a.id) || !bgIds.has(b.id)) continue;
-      bgEdges.push({ ...edgeObject(e), physics:true, color: { color: 'rgba(140,150,143,0.5)' }, width: 0.7, _baseColor: 'rgba(140,150,143,0.5)', _baseWidth: 0.7 });
-    }
-  }
-  const knowledge = data.nodes.filter(m => !isRawEvent(m)).length;
-  const nodeLabel = showEvents ? `${nodes.length} 个节点（${knowledge} 知识 + ${nodes.length - knowledge} 原始事件）` : `${nodes.length} 个知识节点`;
-  $('graphSummary').textContent = `画布 ${nodeLabel} · ${edges.length} 条知识连线 + ${bgEdges.length} 条背景事件连线 · ${bgNodes.length} 个背景事件点（范围：最近 ${data.nodes.length} 条中 ${knowledge} 条知识）｜全库 ${stats.stats.total}：${(state.dimensions?.definitions||[]).map(d=>d.label+' '+(byDim[d.id]||0)).join(' / ')} · event ${byDim.event || 0}（L0 原始 ${byLayer.L0 || 0}，${showEvents ? '已显示' : '默认隐藏，点击知识节点放电点亮'}）`;
-  if (state.network) state.network.destroy();
-  if (!window.vis) throw new Error('图谱组件未加载，请刷新页面');
-  // 四象限锚点引力（9/16 已验证配方）：每维一个隐形固定锚 + 该维节点连隐形弹簧边。
-  // 必须在 barnesHut 求解器下工作——a718b36 换成 forceAtlas2Based 后 fixed 锚点
-  // 拉力失效（2026-09-18 两轮实测），故求解器一并回退 barnesHut。
-  const DIM_QUADRANTS = Object.fromEntries([...new Set(nodes.flatMap(n=>n._dims||[]))].map((d,i)=>[d,i]));
-  const anchorId = dim => '__anchor_' + dim;
-  const anchorNodes = [], dimEdges = [];
-  const anchorRadius=Math.min(950,Math.max(180,Math.sqrt(nodes.length)*28));
-  for (const [dim, qi] of Object.entries(DIM_QUADRANTS)) {
-    anchorNodes.push({ id: anchorId(dim), shape: 'dot', size: 0, color: 'transparent', borderWidth: 0, fixed: true, x: Math.cos(qi*2*Math.PI/Math.max(1,Object.keys(DIM_QUADRANTS).length))*anchorRadius, y: Math.sin(qi*2*Math.PI/Math.max(1,Object.keys(DIM_QUADRANTS).length))*anchorRadius*.65, label: '' });
-  }
-  for (const n of nodes) for(const dim of n._dims||[]) {
-    if (DIM_QUADRANTS[dim] === undefined) continue;
-    dimEdges.push({ id: '__dimedge_' + n.id+'_'+dim, from: n.id, to: anchorId(dim), color: { color: 'transparent', opacity: 0 }, hoverWidth: 0, selectionWidth: 0, width: 0.1, label: '' });
-  }
-  state.graphModel = { nodes: new vis.DataSet([...anchorNodes, ...nodes, ...bgNodes]), edges: new vis.DataSet([...dimEdges, ...edges, ...bgEdges]) };
-  state.graphAdjacency = adjacency; state.graphMemories = memories; state.graphEdgeData = edgeData;
-  igniteReset(); // 重建图谱：清空上一轮放电状态（叠加层画布保留复用）
-  state.network = new vis.Network($('graphCanvas'), state.graphModel, {
-    // improvedLayout 在节点数百级即抛错（2026-09-17 实测 1000 节点失败）；
-    // 大图禁用，交给 forceAtlas2Based 物理布局。
-    layout: { improvedLayout: false },
-    physics: { enabled: true, solver: 'barnesHut', barnesHut: { gravitationalConstant: -2600, centralGravity: 0.15, springLength: 95, springConstant: 0.04, damping: 0.35, avoidOverlap: 0.1 }, stabilization: { iterations: 150, fit: false } },
-    interaction: { hover: true, selectConnectedEdges: false }, edges: { arrows: { to: false } },
-  });
-  const currentNetwork=state.network;
-  currentNetwork.once('stabilizationIterationsDone',()=>{
-    if(state.network!==currentNetwork || !nodes.length)return;
-    currentNetwork.fit({nodes:nodes.map(n=>n.id),animation:false});
-    if(currentNetwork.getScale()>1.25)currentNetwork.moveTo({scale:1.25});
-    // 引力布局只算一次：稳定后 3s 关闭物理引擎，不再持续迭代耗 CPU（节点变动时由 physicsKick 短暂重启）
-    setTimeout(()=>{ if(state.network===currentNetwork){ try{ currentNetwork.setOptions({physics:{enabled:false}}); }catch(e){} } },3000);
-  });
-  state.network.on('click', p => {run(async()=>{
-    if (p.nodes.length) {
-      const id=p.nodes[0];if(String(id).startsWith('__anchor_'))return;
-      const network=state.network;
-      const neighborhood=await api('./api/memory/neighborhood',{nodeId:id,scope:'operator',limit:60,spaceId:space||undefined,memoryType:type||undefined});
-      if(state.network!==network)return;
-      for(const m of neighborhood.nodes) {
-        state.graphMemories.set(m.id,m);
-        if(!state.graphAdjacency.has(m.id))state.graphAdjacency.set(m.id,[]);
-        if(!state.graphModel.nodes.get(m.id))state.graphModel.nodes.add(memoryNode(m,isRawEvent(m)));
-      }
-      for(const e of neighborhood.edges) {
-        if(state.graphEdgeData.has(e.id))continue;
-        state.graphEdgeData.set(e.id,e);state.graphModel.edges.add(edgeObject(e));
-        state.graphAdjacency.get(e.fromId)?.push([e.toId,e.id]);if(!e.directed)state.graphAdjacency.get(e.toId)?.push([e.fromId,e.id]);
-      }
-      notice(neighborhood.truncated?'邻居较多，当前展示前 60 条；此动画用于探索邻接。':'已加载真实邻接与来源；实际召回路径请在搜索结果查看。');
-      physicsKick(2500); // 新节点/边加入后引力重算一次（按需，不常驻）
-      igniteFrom(id);
-    }
-  });});
-  state.network.on('doubleClick', p => { if (p.nodes.length) run(() => openMemory(p.nodes[0])); });
-}
 function workDomain() {
   const id = $('workDomainId').value.trim();
   if (!id) throw new Error('请填写协作 domain ID');
@@ -963,9 +599,17 @@ async function copy(value) {
   catch { const blob = new Blob([value], { type: 'text/plain;charset=utf-8' }), url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = 'mindpond-task.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notice('剪贴板不可用，已导出文本文件'); }
 }
 for (const n of document.querySelectorAll('[data-view]')) n.onclick = () => run(() => show(n.dataset.view));
-$('openGraphPage').onclick = () => { sessionStorage.setItem('mindpond:graph-api-key',$('apiKey').value); sessionStorage.setItem('mindpond:graph-operator-key',$('operatorKey').value); location.href='./graph'; };
+function openMemoryGraph(owner) {
+  sessionStorage.setItem('mindpond:graph-api-key',$('apiKey').value);
+  sessionStorage.setItem('mindpond:graph-operator-key',$('operatorKey').value);
+  const q=new URLSearchParams();
+  if(owner)q.set('owner',owner.startsWith('office:')?owner:'agent:'+owner);
+  location.href='./graph'+(q.size?'?'+q:'');
+}
+$('openGraphPage').onclick=()=>openMemoryGraph(state.view==='library'?$('libraryOwner').value:state.view==='search'?$('searchOwner').value:'');
+$('openLibraryGraph').onclick=()=>openMemoryGraph($('libraryOwner').value);
 for (const n of document.querySelectorAll('[data-close]')) n.onclick=()=>{if($(n.dataset.close).dataset.saving!=='true')$(n.dataset.close).close();};
-for (const prefix of ['library', 'org', 'graph']) $(prefix + 'Space').onchange = () => {
+for (const prefix of ['library', 'org']) $(prefix + 'Space').onchange = () => {
   types(prefix);
   if (prefix === 'library') { state.page = 0; state.selected.clear(); selectionChanged(); run(loadLibrary); }
 };
@@ -1023,7 +667,7 @@ $('onlyReview').onchange=()=>{for(const card of $('searchResults').querySelector
 for (const id of ['orgContent', 'orgReason', 'orgContext', 'orgWeight', 'agentPlan','profileTitle','profileCoverage','profileUnknowns']) $(id).oninput = invalidatePreview;
 on('showPolicy', async () => { const p = await api('./api/organization/policy'); $('policyText').textContent = JSON.stringify({ memory: await api('./api/memory/capabilities'), organization: p.policy }, null, 2); $('policyDialog').showModal(); });
 on('copyPolicy', () => copy($('policyText').textContent));
-on('refreshLog', () => loadLog()); on('filterLog', () => loadLog()); on('moreLog', () => loadLog(true)); on('loadGraph', loadGraph);
+on('refreshLog', () => loadLog()); on('filterLog', () => loadLog()); on('moreLog', () => loadLog(true));
 on('nodeLog', async () => { $('logNode').value = state.memory.node.id; $('memoryDialog').close(); await show('log'); });
 on('nodeHistory',async()=>{
   const memory=state.memory;if(!memory)return;
@@ -1051,10 +695,6 @@ run(async()=>{await refreshMeta();const officeId=new URLSearchParams(location.se
 setInterval(()=>{if(state.view==='organize'&&!document.hidden&&state.request)run(()=>inspectOrganizationRequest(state.request.requestId));},5000);
 
 
-function renderDimensionLegend(){
-  const legend=$('dimensionGraphLegend');if(!legend)return;legend.replaceChildren();
-  for(const d of state.dimensions?.definitions||[]){const item=text('span',d.label+(d.enabled?'':' · 停用'),'legend-item');const dot=document.createElement('i');dot.style.background=d.color;item.prepend(dot);legend.append(item);}
-}
 function renderDimensionFilters(){for(const id of ['searchDimension','libraryDimension'])options(id,(state.dimensions?.definitions||[]).map(d=>d.id),'全部维度',dimensionLabel);}
 function dimensionRows(){return [...$('dimensionDefinitions').children].map(row=>{const values={};for(const input of row.querySelectorAll('[data-field]'))values[input.dataset.field]=input.type==='checkbox'?input.checked:input.value;return values;});}
 function refreshDimensionDefault(){const selected=$('dimensionDefault').value;const defs=dimensionRows().filter(d=>d.enabled&&d.id);$('dimensionDefault').replaceChildren(...defs.map(d=>new Option(d.label||d.id,d.id)));if(defs.some(d=>d.id===selected))$('dimensionDefault').value=selected;}
@@ -1082,7 +722,7 @@ $('dimensionForm').onsubmit=e=>{e.preventDefault();run(async()=>{
 let dimensionRefreshPending=false;
 async function refreshDimensionMetadata(){
   if(document.hidden||dimensionRefreshPending)return;dimensionRefreshPending=true;
-  try{const {configuration}=await api('./api/memory/dimensions');if(configuration.revision===state.dimensions?.revision)return;state.dimensions=configuration;for(const d of configuration.definitions)DIM_COLORS[d.id]=d.color;renderDimensionLegend();renderDimensionFilters();for(const b of document.querySelectorAll('[data-dimension-id]')){const d=dimensionDefinition(b.dataset.dimensionId);b.textContent=d?.label||b.dataset.dimensionId;b.style.setProperty('--dimension-color',d?.color||'#8a9a8e');b.title=b.dataset.dimensionId+' · '+(d?.description||'');}if($('memoryDialog').open)renderDimensionChoices();if(state.view==='library')await loadLibrary();if(state.view==='graph')await loadGraph();if(state.view==='dimensions')notice('维度配置已在其他窗口更新；当前未保存内容保留，请重新加载后再编辑',true);}
+  try{const {configuration}=await api('./api/memory/dimensions');if(configuration.revision===state.dimensions?.revision)return;state.dimensions=configuration;renderDimensionFilters();for(const b of document.querySelectorAll('[data-dimension-id]')){const d=dimensionDefinition(b.dataset.dimensionId);b.textContent=d?.label||b.dataset.dimensionId;b.style.setProperty('--dimension-color',d?.color||'#8a9a8e');b.title=b.dataset.dimensionId+' · '+(d?.description||'');}if($('memoryDialog').open)renderDimensionChoices();if(state.view==='library')await loadLibrary();if(state.view==='dimensions')notice('维度配置已在其他窗口更新；当前未保存内容保留，请重新加载后再编辑',true);}
   catch(e){notice('维度配置同步失败：'+e.message,true);}finally{dimensionRefreshPending=false;}
 }
 window.addEventListener('focus',refreshDimensionMetadata);

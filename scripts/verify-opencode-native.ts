@@ -43,6 +43,12 @@ try{
  const history=await call('memory_action',{tool:'memory_edit_history',arguments:{nodeId:saved.id}});assert(Array.isArray(history));
  const connections=await call('memory_action',{tool:'memory_connections',arguments:{nodeId:saved.id}});
  assert.equal(connections.connections[0].weight,0.8);assert.equal(connections.connections[0].neighbor.id,companion.id);
+ const linkArgs={memberAId:(await call('memory_get',{nodeId:saved.id})).id,memberBId:(await call('memory_get',{nodeId:companion.id})).id,
+   weight:0.9,reason:'Verified complementary procedure',context:'Use together in the tested native runtime'};
+ const linked=await call('memory_action',{tool:'memory_association_upsert',arguments:linkArgs});
+ assert.equal(linked.association.id,connections.connections[0].id);
+ assert.equal((await call('memory_action',{tool:'memory_connections',arguments:{nodeId:companion.id}})).connections[0].weight,0.9);
+ await assert.rejects(call('memory_action',{tool:'memory_association_upsert',arguments:{...linkArgs,memberBId:'missing'}}),/full id/);
  await assert.rejects(call('memory_action',{tool:'memory_association_get',arguments:{id:connections.connections[0].id}},'b'),/not_found|scope_denied/);
  await assert.rejects(call('memory_get',{nodeId:saved.id},'b'),/not_found|scope_denied/);
  await assert.rejects(call('memory_action',{tool:'memory_save',arguments:{content:'Must deny',domain:{kind:'personal',id:'default'},idempotencyKey:'override'}}),/unrecognized|Unrecognized|invalid_input|invalid/i);

@@ -152,7 +152,7 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
     tool('memory_brief', 'Recall relevant knowledge across your memory; no workspace filter. Check provenance and applicability.', { ...officeScope,...recallOptions, task: z.string().min(1).max(10000) }, search);
     tool('memory_search', 'Search current authorized knowledge: all as human, own/current office as role, or the explicit target inside memory_role_action. Retrieval filters never select identity.', { ...officeScope,...recallOptions, query: z.string().min(1).max(10000) }, search);
     tool('memory_get', 'Read one complete authorized memory, provenance, anchors and active memberships for graph operations.', { nodeId: id }, async (a, o) => ({...await graph.memoryOwners.present(await get(a.nodeId, o)),memberships:await graph.getMemberships(a.nodeId,{activeOnly:true})}));
-    tool('memory_save_policy', 'Read concise saving and graph guidance with configured knowledge dimensions.', {}, async () => ({ instructions, dimensionPolicy: await graph.getDimensionPolicy(), rules: 'One useful self-contained lesson. Preserve sources, versions, failures and uncertainty. No credentials or routine chatter. Find duplicates before saving; never select another identity.',graph:'Search score ranks this query; related[].score and association weight (0–1) record evidenced co-recall strength, not confidence. Read targets first; related requires reason and applicability context. Get memberships via memory_get, then maintain links with memory_association_upsert/review/delete; memory_connections lists the actual ripple graph. Links stay within one owner, space and type; default cap is six distinct neighbours. Roles cannot change locked office topology, including by eviction.' }));
+    tool('memory_save_policy', 'Read concise saving and graph guidance with configured knowledge dimensions.', {}, async () => ({ instructions, dimensionPolicy: await graph.getDimensionPolicy(), rules: 'One useful self-contained lesson. Preserve sources, versions, failures and uncertainty. No credentials or routine chatter. Find duplicates before saving; never select another identity.',graph:'Search score ranks this query; related[].score and association weight (0–1) record evidenced co-recall strength, not confidence. Read targets first; related requires reason and applicability context. Read endpoints with memory_get, then maintain links with memory_association_upsert/review/delete; memory_connections lists the actual ripple graph. Links stay within one owner, space and type; default cap is six distinct neighbours. Roles cannot change locked office topology, including by eviction.' }));
     tool('memory_use_report', 'Record completed/partial/failed/unknown outcomes and actual use, correction clues or contextual co-use. This creates review suggestions; never automatically edits knowledge.', { reportId: key,...memoryUseShape }, async (a, o,guard) => {
         const authorize=async()=>{await guard();for(const row of a.observations)await get(row.memoryId,o);};
         const hostId=o.kind+':'+o.id,scope=delegation.stageHost(o);
@@ -165,9 +165,9 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
         const authorize=async()=>{await guard();await assertWritable(o,target);};
         await authorize();const domain=await graph.memoryOwners.domain(target),dimensions=a.dimensions??[(await graph.getDimensionPolicy()).defaultDimension];
         const {officeId,...input}=a;
-        return {...await graph.saveMemory(a.content,{...input,dimensions,domain,memberships:dimensions.map((memoryType:string)=>({spaceId:'memory',memoryType}))},{...associationHooks(o,guard),authorize}),owner:target};
+        return {...await graph.saveMemory(a.content,{...input,dimensions,domain,layeredAssociations:true,memberships:dimensions.map((memoryType:string)=>({spaceId:'memory',memoryType}))},{...associationHooks(o,guard),authorize}),owner:target};
     });
-    tool('memory_connections','List actual bidirectional ripple associations, weights and authorized neighbour previews. Read full evidence via memory_association_get.',{nodeId:id,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(30).optional()},async(a,o)=>{
+    tool('memory_connections','List one memory’s bidirectional ripple associations, weights and authorized neighbour previews. total counts associations for this node. Read full evidence via memory_association_get.',{nodeId:id,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(30).optional()},async(a,o)=>{
         await get(a.nodeId,o);
         const all=(await graph.listAssociations(a.nodeId,{context:await context(o)})).sort((a,b)=>b.weight-a.weight||a.id.localeCompare(b.id));
         const offset=a.offset??0,rows=all.slice(offset,offset+(a.limit??10));
@@ -177,11 +177,10 @@ export function createOwnerMemoryServer(graph: GraphMemory, options: {
         }))};
     });
     tool('memory_association_get','Read one authorized association with its full original evidence and review history. Read both endpoint memories before changing it.',{id},async(a,o)=>association(a.id,o));
-    tool('memory_association_upsert','Create or reweight one bidirectional ripple link. Read both memories; use active membership IDs from memory_get. Same owner/space/type only; preserve reason and applicability context.',{memberAId:id,memberBId:id,weight:z.number().min(0).max(1),...basis},async(a,o,guard)=>{
-        const ctx=await context(o),x=await graph.getMembershipById(a.memberAId,ctx),y=await graph.getMembershipById(a.memberBId,ctx);
-        if(x.spaceId!==y.spaceId||x.memoryType!==y.memoryType)throw new MindPondError('invalid_input','Choose memberships with the same space and memory type');
-        return {association:await graph.upsertAssociation(x.id,y.id,x.spaceId,x.memoryType,a.weight,{reason:a.reason,context:a.context},undefined,ctx,associationHooks(o,guard))};
-    });
+    const endpoint=id.describe('Full memory_get id, or memberships[].id to select one active placement.');
+    tool('memory_association_upsert','Link two memories you have read. Use their full memory IDs; if multiple placements match, select memberships[].id from the same space/type. Both memories must have the same owner.',{memberAId:endpoint,memberBId:endpoint,weight:z.number().min(0).max(1),...basis},async(a,o,guard)=>({
+        association:await graph.upsertAssociation(a.memberAId,a.memberBId,undefined,undefined,a.weight,{reason:a.reason,context:a.context},undefined,await context(o),associationHooks(o,guard))
+    }));
     tool('memory_association_review','Confirm or retire one evidence basis after reading full endpoints and original conditions. Uncertainty is not retirement; all retired bases stop ripple propagation.',{id,evidenceId:id,decision:z.enum(['confirm','retire']),reason:basis.reason,expectedUpdatedAt:z.number().int()},async(a,o,guard)=>{
         await associationWrite(a.id,o,guard);
         return graph.reviewAssociationEvidence(a.id,a.evidenceId,a.decision,a.reason,a.expectedUpdatedAt,undefined,await context(o),{authorize:()=>associationWrite(a.id,o,guard)});

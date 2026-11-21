@@ -188,7 +188,7 @@ npm run check 覆盖规范化写入、上下文依据、复核停用/恢复、�
 
 最新机制与实际基线：[任务记忆循环](docs/task-memory-loop.md)。OpenCode 原生 session 接入见 [工作环境接入](docs/opencode-work-integration.md)。
 
-生产部署及升级见 [部署与恢复流程](docs/deployment.md)。严格 HTTP 域认证默认拒绝匿名调用；使用 `/ready` 检查数据库完整性，`/health` 仅检查进程存活。数据库审计可运行 `mindpond-maintenance --db /absolute/graph.db --check`；修复前停止宿主写入并保留一致备份。
+生产部署及升级见 [部署与恢复流程](docs/deployment.md)。严格 HTTP 域认证默认拒绝匿名调用；使用 `/ready` 检查服务能否读取数据库，`/health` 仅检查进程存活。数据库审计可运行 `mindpond-maintenance --db /absolute/graph.db --check`；修复前停止宿主写入并保留一致备份。
 
 ## 开源与许可
 

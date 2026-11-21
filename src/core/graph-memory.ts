@@ -10,7 +10,6 @@ import {OfficeScripts} from './office-scripts.js';
 import { ConnectionCoordinator } from './connection-coordinator.js';
 import {preparePrivateDatabase,reservePrivateBackup} from './sqlite-files.js';
 import { admitDegreeNeighbour, degreeNeighbours, degreeRepairPlan, evictDegreeNeighbour, DEFAULT_MAX_ASSOCIATION_DEGREE } from './association-degree.js';
-import { auditDatabase } from './database-maintenance.js';
 import { databaseFilesystem } from './runtime-status.js';
 import { ProfileRetrieval, type ProfileRetrievalDependencies } from './profile-retrieval.js';
 import type { RetrievalConfigInput } from './embedding-profiles.js';
@@ -421,6 +420,7 @@ export class GraphMemory {
    * on that connection while SQLite's own write lock coordinates processes. */
   private coordinator = new ConnectionCoordinator();
   private closing = false;
+  private readinessPending?: Promise<{ ready: boolean }>;
   private closePromise?: Promise<void>;
   private backgroundTimers = new Set<ReturnType<typeof setTimeout>>();
   private backgroundWork = new Set<Promise<unknown>>();
@@ -1684,7 +1684,7 @@ export class GraphMemory {
     return placements;
   }
 
-  private async resolveSaveRelated(rel: RelatedMemory, placements: Array<{spaceId:string;memoryType:string}>, domain: MemoryDomainRef): Promise<MemoryMembership> {
+  private async resolveSaveRelated(rel: RelatedMemory, placements: Array<{spaceId:string;memoryType:string}>, domain: MemoryDomainRef, layeredAssociations = false) {
     this.validateAssociationBasis(rel);
     if (!Number.isFinite(rel.score) || rel.score < 0 || rel.score > 1) throw new Error('score must be 0–1');
     const candidates = await this.db!.all<any>(
@@ -1694,8 +1694,22 @@ export class GraphMemory {
     const matched = candidates.filter((m: any) => (!rel.memoryId || m.memory_id === rel.memoryId) &&
       (!rel.spaceId || m.space_id === rel.spaceId) && (!rel.memoryType || m.memory_type === rel.memoryType) &&
       placements.some(p => p.spaceId === m.space_id && p.memoryType === m.memory_type));
-    if (matched.length !== 1) throw new Error('related target must resolve to one active shared domain/space/type; specify membershipId');
-    return this.rowToMembership(matched[0]);
+    if (matched.length === 1) {
+      const target = this.rowToMembership(matched[0]);
+      return { target, spaceId: target.spaceId };
+    }
+    if (!matched.length && layeredAssociations && rel.memoryId && !rel.membershipId && !rel.spaceId) {
+      const sameType = candidates.filter((row: any) => (!rel.memoryType || rel.memoryType === row.memory_type)
+        && placements.some(p => p.spaceId === 'memory' && p.memoryType === row.memory_type));
+      if (new Set(sameType.map((row: any) => row.memory_type)).size === 1) {
+        const target = this.rowToMembership(sameType[0]);
+        const current = (await this.getMemberships(target.memoryId)).find(m => m.spaceId === 'memory' && m.memoryType === target.memoryType);
+        if (!current || current.active) return { target, spaceId: 'memory' };
+      }
+    }
+    throw new MindPondError('invalid_input', 'related target must resolve to one active shared owner, space and type', {
+      nextAction: 'Read the target with memory_get. Choose a shared memoryType or pass an active membershipId in the matching space.'
+    });
   }
 
   /** Shared agent save contract. Invalid links reject the whole write. */
@@ -1703,7 +1717,7 @@ export class GraphMemory {
     dimensions?: KnowledgeDimension[]; anchors?: MemoryAnchor[];
     dimension?: Dimension; source?: string; tags?: string[]; importance?: number; sessionId?: string;
     domain?: MemoryDomainRef; teamAuthorization?: string;
-    memberships?: Array<{ spaceId: string; memoryType?: string }>; related?: RelatedMemory[];
+    memberships?: Array<{ spaceId: string; memoryType?: string }>; related?: RelatedMemory[]; layeredAssociations?: boolean;
     sourceRefs?: SourceReference[]; idempotencyKey?: string;
   } = {}, hooks:MemoryWriteHooks = {}) {
     if (typeof content !== 'string' || !content.trim() || content.length > MEMORY_SAVE_LIMITS.content)
@@ -1742,7 +1756,8 @@ export class GraphMemory {
       sourceRefs, memberships: placements, tags,
       ...(options.dimensions!==undefined?{dimensions}:{}),...(options.anchors!==undefined?{anchors:anchorInputs}:{})});
     // Accept an exact retry of receipts written before defaults were canonicalized.
-    const legacyRequestHash = digest({content, ...options, idempotencyKey: undefined, sourceRefs, memberships: placements, tags});
+    const { layeredAssociations, ...receiptOptions } = options;
+    const legacyRequestHash = digest({content, ...receiptOptions, idempotencyKey: undefined, sourceRefs, memberships: placements, tags});
     // Model work stays outside the SQLite transaction.
     const embedding = await getEmbeddingService().generateEmbedding(content).catch(() => []);
     const zhEmbedding = this.zhVectorIndex && isChineseText(content)
@@ -1790,9 +1805,9 @@ export class GraphMemory {
             }
           }
         }
-        const resolved: Array<{ target: MemoryMembership; rel: RelatedMemory }> = [];
+        const resolved: Array<{ target: MemoryMembership; spaceId: string; rel: RelatedMemory }> = [];
         for (const rel of options.related ?? []) {
-          resolved.push({ target: await this.resolveSaveRelated(rel, placements, domain), rel });
+          resolved.push({ ...await this.resolveSaveRelated(rel, placements, domain, layeredAssociations), rel });
         }
         if (new Set(resolved.map(item => item.target.memoryId)).size > this.maxAssociationDegree)
           throw new MindPondError('invalid_input', `related exceeds the ${this.maxAssociationDegree} distinct neighbour limit`);
@@ -1809,9 +1824,14 @@ export class GraphMemory {
         const memberships = await this.getMemberships(id, { activeOnly: true });
         const evictionStart = (await this.db!.get<{id:number}>('SELECT COALESCE(MAX(rowid),0) id FROM memory_action_log'))!.id;
         const createdAssociations = new Set<string>();
-        for (const { target, rel } of resolved) {
-          const own = memberships.find(m => m.spaceId === target.spaceId && m.memoryType === target.memoryType)!;
-          const association = await this.upsertAssociationLocked(own.id, target.id, target.spaceId, target.memoryType, rel.score, rel, hooks.authorizeAssociation);
+        for (const { target, spaceId, rel } of resolved) {
+          const own = memberships.find(m => m.spaceId === spaceId && m.memoryType === target.memoryType)!;
+          let endpoint = target;
+          if (target.spaceId !== spaceId) {
+            await hooks.authorizeAssociation?.(id, target.memoryId);
+            endpoint = await this.addMembershipLocked(target.memoryId, spaceId, target.memoryType);
+          }
+          const association = await this.upsertAssociationLocked(own.id, endpoint.id, spaceId, target.memoryType, rel.score, rel, hooks.authorizeAssociation);
           createdAssociations.add(association.id);
         }
         if (sourceRefs.length) await this.db!.run('INSERT INTO memory_sources(memory_id,payload) VALUES (?,?)', [id,stableJSON(sourceRefs)]);
@@ -1844,7 +1864,7 @@ export class GraphMemory {
   async validateMemorySave(options: {
     content: string; dimensions?: KnowledgeDimension[]; dimension?: Dimension;
     anchors?: unknown; memberships?: Array<{ spaceId: string; memoryType?: string }>;
-    related?: unknown; importance?: number; tags?: string[]; source?: string;
+    related?: unknown; layeredAssociations?: boolean; importance?: number; tags?: string[]; source?: string;
     sessionId?: string; domain?: MemoryDomainRef; teamAuthorization?: string;
     idempotencyKey?: string; sourceRefs?: SourceReference[];
   }) {
@@ -1877,7 +1897,7 @@ export class GraphMemory {
       try {
         this.validateAssociationBasis(rel);
         if (!Number.isFinite(rel.score) || rel.score < 0 || rel.score > 1) throw new Error('score must be 0–1');
-        const target = await this.resolveSaveRelated(rel, placements, domain);
+        const {target} = await this.resolveSaveRelated(rel, placements, domain, options.layeredAssociations);
         relatedNeighbours.add(target.memoryId);
         if (relatedNeighbours.size > this.maxAssociationDegree) throw new Error(`related exceeds the ${this.maxAssociationDegree} distinct neighbour limit`);
         const neighbours = await degreeNeighbours(this.db!, target.memoryId);
@@ -1998,11 +2018,12 @@ export class GraphMemory {
     catch (error) { this.indexGeneration = -1; throw error; }
   }
 
-  async databaseReadiness() {
-    return this.withWriteLock(async()=>{
-      const audit=await auditDatabase(this.db!);
-      return {ready:!this.closing&&audit.healthy,foreignKeyViolations:audit.foreignKeys.length,crossDomainAssociations:audit.foreignAssociations.length};
-    });
+  async databaseReadiness(): Promise<{ ready: boolean }> {
+    if (!this.db || this.closing) return { ready: false };
+    this.readinessPending ??= this.db.get('SELECT id FROM nodes LIMIT 1')
+      .then(() => ({ ready: !this.closing }))
+      .finally(() => { this.readinessPending = undefined; });
+    return this.readinessPending;
   }
 
   /** Private host recovery checks durable state after a database restore. */
@@ -2272,17 +2293,81 @@ export class GraphMemory {
     return this.rowToMembership(row);
   }
 
-  /** Create/reweight an undirected association.  Both membership ids must be
-   * active members of exactly the supplied space and type. */
+  private async associationEndpoints(id: string, field: string, context?: DomainReadContext) {
+    type Endpoint = { id: string; memoryId: string; spaceId: string; memoryType: string; kind: MemoryDomainRef['kind']; domainId: string };
+    const rows = await this.db!.all<Endpoint[]>(
+      `SELECT m.id, m.memory_id AS memoryId, m.space_id AS spaceId, m.memory_type AS memoryType,
+              n.domain_kind AS kind, n.domain_id AS domainId
+       FROM memory_memberships m JOIN nodes n ON n.id = m.memory_id
+       WHERE m.active = 1 AND n.superseded_by IS NULL AND (m.id = ? OR m.memory_id = ?)`, [id, id]);
+    if (!rows.length) throw new MindPondError('not_found', 'No active graph endpoint matches ' + field, {
+      field, nextAction: 'Read the endpoint with memory_get. Use its full id or an active memberships[].id, without abbreviating it.'
+    });
+    const first = rows[0];
+    if (context) await this.assertNodeInReadableDomains({ id, domain: { kind: first.kind, id: first.domainId } }, context);
+    if (rows.some(row => row.memoryId !== first.memoryId))
+      throw new MindPondError('invalid_input', 'Endpoint ID is ambiguous', { field, nextAction: 'Use an explicit active memberships[].id from memory_get.' });
+    return rows;
+  }
+
+  private async resolveAssociationPair(a: string, b: string, context?: DomainReadContext, authorizePair?: MemoryWriteHooks['authorizeAssociation']) {
+    const left = await this.associationEndpoints(a, 'memberAId', context);
+    const right = await this.associationEndpoints(b, 'memberBId', context);
+    if (left[0].memoryId === right[0].memoryId)
+      throw new MindPondError('invalid_input', 'A memory cannot link to itself', { nextAction: 'Choose two distinct memories.' });
+    if (left[0].kind !== right[0].kind || left[0].domainId !== right[0].domainId)
+      throw new MindPondError('scope_denied', 'Associations cannot cross memory domains', { nextAction: 'Choose two memories with the same owner.' });
+
+    const placement = (m: typeof left[number]) => JSON.stringify([m.spaceId, m.memoryType]);
+    const rightByPlacement = new Map(right.map(m => [placement(m), m]));
+    const matches = left.filter(m => rightByPlacement.has(placement(m)));
+    // Full memory IDs allow a shared type to meet in the layered Memory
+    // placement. Exact membership IDs still address the specified space.
+    if (!matches.length && authorizePair && a === left[0].memoryId && b === right[0].memoryId) {
+      const rightTypes = new Set(right.map(m => m.memoryType));
+      const types = [...new Set(left.map(m => m.memoryType))].filter(type => rightTypes.has(type));
+      if (types.length === 1) {
+        const memoryType = types[0];
+        await authorizePair?.(a, b);
+        const first = await this.addMembershipLocked(a, 'memory', memoryType);
+        const second = await this.addMembershipLocked(b, 'memory', memoryType);
+        if (!first.active || !second.active) throw new MindPondError('invalid_input', 'The shared Memory placement is inactive', {
+          nextAction: 'Choose active memberships in a shared space. An association cannot reactivate an archived placement.'
+        });
+        return { memberAId: first.id, memberBId: second.id, spaceId: 'memory', memoryType };
+      }
+      if (types.length > 1) throw new MindPondError('invalid_input', 'The memories share multiple active types across different spaces', {
+        nextAction: 'Choose one shared type. Use memory_membership_add to place both memories in the same space and type, then link the returned membership IDs.'
+      });
+    }
+    if (!matches.length) throw new MindPondError('invalid_input', 'The two endpoints have no shared active space and memory type', {
+      nextAction: 'Read both memories with memory_get and compare their memberships. Link only within a shared space and type.'
+    });
+    if (matches.length > 1) throw new MindPondError('invalid_input', 'The memories share more than one active space and type', {
+      nextAction: 'Use memory_get on both memories. For the intended spaceId and memoryType, pass the matching memberships[].id values.'
+    });
+    const match = matches[0];
+    return { memberAId: match.id, memberBId: rightByPlacement.get(placement(match))!.id, spaceId: match.spaceId, memoryType: match.memoryType };
+  }
+
+  /** With an explicit placement, both IDs identify memberships. The layered MCP
+   * resolves memory IDs to a unique shared placement inside the write transaction. */
   async upsertAssociation(
-    memberAId: string, memberBId: string, spaceId: string, memoryType: string, weight = 0.5,
+    memberAId: string, memberBId: string, spaceId: string | undefined, memoryType: string | undefined, weight = 0.5,
     basis?: AssociationBasis, teamAuthorization?: string, context?: DomainReadContext, hooks:MemoryWriteHooks = {},
   ): Promise<MemoryAssociation> {
     return this.withWriteLock(async () => {
       await this.db!.exec('BEGIN IMMEDIATE');
       try {
         await hooks.authorize?.();
-        if (context) { await this.assertMembershipReadable(memberAId, context); await this.assertMembershipReadable(memberBId, context); }
+        if (spaceId === undefined || memoryType === undefined) {
+          if (spaceId !== undefined || memoryType !== undefined)
+            throw new MindPondError('invalid_input', 'Explicit membership links require both spaceId and memoryType');
+          ({ memberAId, memberBId, spaceId, memoryType } = await this.resolveAssociationPair(memberAId, memberBId, context, hooks.authorizeAssociation));
+        } else if (context) {
+          await this.assertMembershipReadable(memberAId, context);
+          await this.assertMembershipReadable(memberBId, context);
+        }
         const domains = await this.db!.all<any>('SELECT n.domain_kind,n.domain_id FROM memory_memberships m JOIN nodes n ON n.id=m.memory_id WHERE m.id IN (?,?)',[memberAId,memberBId]);
         if (domains.length !== 2 || domains[0].domain_kind !== domains[1].domain_kind || domains[0].domain_id !== domains[1].domain_id) throw new Error('Associations cannot cross memory domains');
         await this.assertTeamWrite({kind:domains[0].domain_kind, id:domains[0].domain_id}, teamAuthorization, 'association');
@@ -2395,15 +2480,23 @@ export class GraphMemory {
       createdAt: existing?.created_at ?? now, updatedAt: now, ...await this.associationEvidence(id, memberA, memberB) };
   }
 
-  async listSpaces(context?: DomainReadContext): Promise<any[]> {
+  // Match MemoryOwners.owner for older human-owned domains as well as the default.
+  private static readonly HUMAN_OWNED_NODE_SQL = `NOT (n.domain_kind='personal' AND (
+    EXISTS (SELECT 1 FROM memory_role_namespaces r WHERE r.domain_id=n.domain_id) OR
+    EXISTS (SELECT 1 FROM memory_office_namespaces o WHERE o.domain_id=n.domain_id)))`;
+
+  async listSpaces(context?: DomainReadContext, humanOnly = false): Promise<any[]> {
     const readable = context ? resolveReadDomains(context) : undefined;
     if (readable && !readable.length) return [];
-    const scopeWhere = readable?.map(() => '(n.domain_kind = ? AND n.domain_id = ?)').join(' OR ');
-    const where = readable
-      ? `WHERE (${scopeWhere}) AND (n.domain_kind != 'session' OR EXISTS (
-          SELECT 1 FROM memory_domains d WHERE d.kind = 'session' AND d.id = n.domain_id AND d.status IN ('active','paused')))`
-      : '';
-    return this.db!.all('SELECT m.space_id AS spaceId, m.memory_type AS memoryType, SUM(m.active) AS active, COUNT(*) AS total FROM memory_memberships m JOIN nodes n ON n.id = m.memory_id ' + where + ' GROUP BY m.space_id, m.memory_type ORDER BY m.space_id, m.memory_type',
+    const where: string[] = [];
+    if (humanOnly) where.push(GraphMemory.HUMAN_OWNED_NODE_SQL);
+    if (readable) {
+      where.push('(' + readable.map(() => '(n.domain_kind = ? AND n.domain_id = ?)').join(' OR ') + ')');
+      where.push(`(n.domain_kind != 'session' OR EXISTS (
+        SELECT 1 FROM memory_domains d WHERE d.kind = 'session' AND d.id = n.domain_id AND d.status IN ('active','paused')))`);
+    }
+    return this.db!.all('SELECT m.space_id AS spaceId, m.memory_type AS memoryType, SUM(m.active) AS active, COUNT(*) AS total FROM memory_memberships m JOIN nodes n ON n.id = m.memory_id '
+      + (where.length ? 'WHERE ' + where.join(' AND ') : '') + ' GROUP BY m.space_id, m.memory_type ORDER BY m.space_id, m.memory_type',
       readable?.flatMap(d => [d.kind, d.id]) ?? []);
   }
 
@@ -5117,12 +5210,13 @@ export class GraphMemory {
    *  otherwise L0 raw records drown the structured graph (43% of rpbot's nodes). */
   /** Operator visualization uses the SAME semantic edges as ripple. Provenance
    * is available separately/on demand and never masquerades as co-recall. */
-  async getFullGraph(limit=200,layer?:MemoryLayer,options:{spaceId?:string;memoryType?:string;includeEvents?:boolean;context?:DomainReadContext}={}) {
+  async getFullGraph(limit=200,layer?:MemoryLayer,options:{spaceId?:string;memoryType?:string;includeEvents?:boolean;context?:DomainReadContext;humanOnly?:boolean;associationsOnly?:boolean}={}) {
     const where=["n.superseded_by IS NULL","EXISTS(SELECT 1 FROM memory_memberships m WHERE m.memory_id=n.id AND m.active=1"+(options.spaceId?' AND m.space_id=?':'')+(options.memoryType?' AND m.memory_type=?':'')+")"];
     const args:unknown[]=[...(options.spaceId?[options.spaceId]:[]),...(options.memoryType?[options.memoryType]:[])];
+    if (options.humanOnly) where.push(GraphMemory.HUMAN_OWNED_NODE_SQL);
     if(options.context) {
       const domains=resolveReadDomains(options.context);
-      where.push('('+domains.map(()=>'(n.domain_kind=? AND n.domain_id=?)').join(' OR ')+')');
+      where.push(domains.length ? '('+domains.map(()=>'(n.domain_kind=? AND n.domain_id=?)').join(' OR ')+')' : '0');
       where.push("(n.domain_kind!='session' OR EXISTS(SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=n.domain_id AND d.status IN ('active','paused')))");
       args.push(...domains.flatMap(d=>[d.kind,d.id]));
     }
@@ -5157,7 +5251,7 @@ export class GraphMemory {
       ${options.spaceId?' AND a.space_id=?':''} ${options.memoryType?' AND a.memory_type=?':''}
       AND (NOT EXISTS(SELECT 1 FROM association_evidence e WHERE e.association_id=a.id) OR EXISTS(SELECT 1 FROM association_evidence e WHERE e.association_id=a.id AND COALESCE(json_extract(e.payload,'$.review.decision'),'')!='retire'))
       ORDER BY a.weight DESC LIMIT ?`,[ids,ids,...(options.spaceId?[options.spaceId]:[]),...(options.memoryType?[options.memoryType]:[]),limit*4]);
-    const references=await this.db!.all<any[]>(`SELECT r.*,m.memory_id from_id,t.memory_id to_id,m.space_id FROM memory_team_references r
+    const references=options.associationsOnly ? [] : await this.db!.all<any[]>(`SELECT r.*,m.memory_id from_id,t.memory_id to_id,m.space_id FROM memory_team_references r
       JOIN memory_memberships m ON m.id=r.source_member_id JOIN memory_memberships t ON t.id=r.target_member_id
       WHERE m.active=1 AND t.active=1 AND m.memory_id IN (SELECT value FROM json_each(?)) AND t.memory_id IN (SELECT value FROM json_each(?))
       ${options.spaceId?' AND m.space_id=?':''} ${options.memoryType?' AND m.memory_type=?':''} LIMIT ?`,[ids,ids,...(options.spaceId?[options.spaceId]:[]),...(options.memoryType?[options.memoryType]:[]),limit]);
@@ -5165,10 +5259,10 @@ export class GraphMemory {
       edgeSource:'memory_associations',window:{limit,returned:rows.length,neighborsOnDemand:true}};
   }
 
-  async graphNeighborhood(nodeId:string,context?:DomainReadContext,limit=60,scope:{spaceId?:string;memoryType?:string}={}) {
-    const own=await this.getNodeById(nodeId,{trackAccess:false,context});if(!own)throw new Error('Memory not found');
+  async graphNeighborhood(nodeId:string,context?:DomainReadContext,limit=60,scope:{spaceId?:string;memoryType?:string;associationsOnly?:boolean}={}) {
+    const own=await this.getNodeById(nodeId,{trackAccess:false,context});if(!own)throw new MindPondError('not_found','Memory not found');
     const neighbors=new Map<string,MemoryNode>([[own.id,own]]);const edges:MemoryEdge[]=[];
-    const associations=own.kind==='event'?[]:await this.listAssociations(nodeId);
+    const associations=own.kind==='event'?[]:await this.listAssociations(nodeId,{context});
     let total=0;
     for(const a of associations) {
       if(a.evidenceStatus==='retired' || (scope.spaceId && a.spaceId!==scope.spaceId) || (scope.memoryType && a.memoryType!==scope.memoryType))continue;
@@ -5178,7 +5272,7 @@ export class GraphMemory {
       total++;if(neighbors.size>limit)continue;
       neighbors.set(id,node);edges.push({id:a.id,fromId:nodeId,toId:id,label:a.memoryType,weight:a.weight,createdAt:a.createdAt,kind:'semantic'});
     }
-    const references=await this.db!.all<any[]>(`SELECT r.*,t.memory_id FROM memory_team_references r JOIN memory_memberships m ON m.id=r.source_member_id JOIN memory_memberships t ON t.id=r.target_member_id WHERE m.memory_id=? AND m.active=1 AND t.active=1 ${scope.spaceId?' AND m.space_id=?':''} ${scope.memoryType?' AND m.memory_type=?':''}`,[nodeId,...(scope.spaceId?[scope.spaceId]:[]),...(scope.memoryType?[scope.memoryType]:[])]);
+    const references=scope.associationsOnly ? [] : await this.db!.all<any[]>(`SELECT r.*,t.memory_id FROM memory_team_references r JOIN memory_memberships m ON m.id=r.source_member_id JOIN memory_memberships t ON t.id=r.target_member_id WHERE m.memory_id=? AND m.active=1 AND t.active=1 ${scope.spaceId?' AND m.space_id=?':''} ${scope.memoryType?' AND m.memory_type=?':''}`,[nodeId,...(scope.spaceId?[scope.spaceId]:[]),...(scope.memoryType?[scope.memoryType]:[])]);
     for(const reference of references) {
       const node=await this.getNodeById(reference.memory_id,{trackAccess:false});if(!node)continue;
       if(context && !await this.isNodeReadable(node,{...context,includeEvents:true,includeL0:true},false))continue;

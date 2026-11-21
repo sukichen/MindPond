@@ -39,6 +39,9 @@ function fail(
       'Call work_bootstrap/work_office_get for current identity and revisions. Do not invent roles or credentials.'
   });
 }
+const OFFICE_ITEM_SUMMARY = 'id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch,archived,continuationId,ownerName,reviewerName';
+const OFFICE_RECORD_PAGE_SIZE = 50;
+
 export class OfficeStore {
   private waiter: CollaborationWaiter;
   constructor(
@@ -668,9 +671,21 @@ export class OfficeStore {
     ]);
     return result;
   }
+  private async recordPage(officeId: string, kind: 'items' | 'materials', afterId: string) {
+    const table = kind === 'items' ? 'office_seat_items_observed' : 'office_materials';
+    const fields = kind === 'items' ? OFFICE_ITEM_SUMMARY : '*';
+    const rows = await this.db.all<Row[]>(
+      `SELECT ${fields} FROM ${table} WHERE office_id=? AND id>? ORDER BY id LIMIT ?`,
+      [officeId, afterId, OFFICE_RECORD_PAGE_SIZE + 1]
+    );
+    const records = rows.slice(0, OFFICE_RECORD_PAGE_SIZE);
+    return { records, nextAfterId: rows.length > records.length ? records.at(-1)!.id : null };
+  }
   async get(i: Row, a?: Actor): Promise<Row> {
     const actor = this.actor(a),
       o = await this.office(i.officeId, actor);
+    if (i.recordPage === 'items' || i.recordPage === 'materials')
+      return this.recordPage(o.id, i.recordPage, i.afterId ?? '');
     const seats = await this.db.all(
       'SELECT s.*,a.name,a.host,a.last_seen FROM office_seats s JOIN office_agents a ON a.id=s.agent_id WHERE s.office_id=? ORDER BY s.id',
       [o.id]
@@ -779,10 +794,7 @@ export class OfficeStore {
       events.push(publicEvent);
       eventBytes += bytes;
     }
-    const items = await this.db.all<Row[]>(
-      'SELECT id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch,archived,continuationId,ownerName,reviewerName FROM office_seat_items_observed WHERE office_id=? AND id>? ORDER BY id LIMIT 50',
-      [o.id, i.itemsAfterId ?? '']
-    );
+    const { records: items, nextAfterId: nextItemsAfterId } = await this.recordPage(o.id, 'items', i.itemsAfterId ?? '');
     const access = (
       await this.db.all<Row[]>(
         "SELECT * FROM office_events WHERE office_id=? AND kind='access_report' AND seq IN (SELECT MAX(seq) FROM office_events WHERE office_id=? AND kind='access_report' GROUP BY seat_id)",
@@ -800,21 +812,16 @@ export class OfficeStore {
         [o.id]
       )
     ).map((r) => ({ ...r, detailAvailable: true }));
-    const materials = await this.db.all(
-      'SELECT * FROM office_materials WHERE office_id=? AND id>? ORDER BY id LIMIT 50',
-      [o.id, i.materialsAfterId ?? '']
-    );
-    // Refresh previously paged records without replaying every page or serving
-    // stale status indefinitely. Explicit IDs never widen office visibility.
-    const nextItemsAfterId = items.length === 50 ? items.at(-1)!.id : null;
-    const nextMaterialsAfterId = materials.length === 50 ? (materials.at(-1) as Row).id : null;
+    const { records: materials, nextAfterId: nextMaterialsAfterId } = await this.recordPage(o.id, 'materials', i.materialsAfterId ?? '');
+    // Include the current version of records referenced by this event page,
+    // including records beyond the initial items/materials page.
     const itemIds = [...new Set<string>([...(i.itemIds ?? []),
       ...(i.afterSeq === undefined ? [] : events.flatMap(e => e.body.itemId ? [e.body.itemId] : []))])];
     const materialIds = [...new Set<string>([...(i.materialIds ?? []),
       ...(i.afterSeq === undefined ? [] : events.flatMap(e => e.body.materialId ? [e.body.materialId] : []))])];
     if (itemIds.length) {
       const rows = await this.db.all<Row[]>(
-        `SELECT id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch,archived,continuationId,ownerName,reviewerName FROM office_seat_items_observed WHERE office_id=? AND id IN (${itemIds.map(() => '?').join(',')})`,
+        `SELECT ${OFFICE_ITEM_SUMMARY} FROM office_seat_items_observed WHERE office_id=? AND id IN (${itemIds.map(() => '?').join(',')})`,
         [o.id, ...itemIds]
       );
       for (const row of rows) if (!items.some(t => t.id === row.id)) items.push(row);

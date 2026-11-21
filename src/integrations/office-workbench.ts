@@ -277,6 +277,12 @@ export function officeWorkbench(
   const messageReference=z.object({messageId:officeConfigurationSchema.shape.id.optional(),seq:z.number().int().positive().optional()}).strict().refine(i=>(i.messageId===undefined)!==(i.seq===undefined),'Choose exactly one messageId or seq');
   route('/message/recover',req=>graph.building.recoverMessage(z.object({officeId:z.string().min(1).max(160).optional(),messageId:z.string().min(1).max(160),action:z.enum(['cancel','retry']),expectedTakenAt:z.number().int().nonnegative().nullable(),reason:z.string().trim().min(1).max(1000),recipient:z.string().min(1).max(160).optional(),key:z.string().min(1).max(256)}).strict().refine(i=>i.action==='retry'||i.recipient===undefined,'Only retry accepts a recipient').parse(req.body),operator));
   route('/message',req=>{const input=z.object({officeId:officeConfigurationSchema.shape.id,messageId:officeConfigurationSchema.shape.id.optional(),seq:z.number().int().positive().optional()}).strict().refine(i=>(i.messageId===undefined)!==(i.seq===undefined),'Choose exactly one messageId or seq').parse(req.body);return graph.building.messagePreview(input,operator);});
+  const recordPageSchema=z.object({
+    officeId:officeConfigurationSchema.shape.id,
+    recordPage:z.enum(['items','materials']),
+    afterId:officeConfigurationSchema.shape.id
+  }).strict();
+  route('/record-page', req => graph.offices.get(recordPageSchema.parse(req.body), operator));
   route('/view', async (req) => ({
     ...(await graph.offices.get(
       {

@@ -10,6 +10,7 @@ import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {CallToolRequestSchema,ListToolsRequestSchema,ListResourcesRequestSchema,ReadResourceRequestSchema} from '@modelcontextprotocol/sdk/types.js';
 import {MEMORY_BOOTSTRAP} from './core/bootstrap.js';
 import {OFFICE_TOOL_TIMEOUT_MS} from './core/office-wait-policy.js';
+import {remoteMcpFetch} from './integrations/remote-mcp-fetch.js';
 const {values}=parseArgs({options:{url:{type:'string'},'token-file':{type:'string'},'token-env':{type:'string'},identity:{type:'string'},'allow-http':{type:'boolean'},session:{type:'string'}}});
 try {
   const url=new URL(values.url??process.env.MINDPOND_REMOTE_URL??'');
@@ -30,9 +31,10 @@ try {
   if(!/^(?:mpr_)?[A-Za-z0-9_-]{43}$/.test(token))throw new Error('Invalid token');
   const session=values.session??process.env.MINDPOND_REMOTE_SESSION;
   if(session&&!/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u.test(session))throw new Error('Invalid host session label');
-  const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:`Bearer ${token}`,...(values.identity==='connection'?{'X-MindPond-Identity':'connection'}:{}),...(session?{'X-MindPond-Session':session}:{})},redirect:'error'}});
+  const transport=new StreamableHTTPClientTransport(url,{fetch:remoteMcpFetch,requestInit:{headers:{Authorization:`Bearer ${token}`,...(values.identity==='connection'?{'X-MindPond-Identity':'connection'}:{}),...(session?{'X-MindPond-Session':session}:{})},redirect:'error'}});
   const client=new Client({name:'mindpond-remote-bridge',version:RELEASE_VERSION});
-  await client.connect(transport);
+  try { await client.connect(transport); }
+  catch (error) { await client.close(); throw error; }
   const server=new Server({name:'mindpond-remote',version:RELEASE_VERSION},{capabilities:{tools:{},...(client.getServerCapabilities()?.resources?{resources:{}}:{})},instructions:client.getInstructions()??MEMORY_BOOTSTRAP});
   server.setRequestHandler(ListToolsRequestSchema,async(request,extra)=>client.listTools(request.params,{signal:extra.signal}));
   server.setRequestHandler(CallToolRequestSchema,async(request,extra)=>client.callTool(request.params,undefined,{signal:extra.signal,timeout:OFFICE_TOOL_TIMEOUT_MS}));

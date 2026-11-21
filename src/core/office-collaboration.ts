@@ -518,7 +518,7 @@ export class OfficeCollaboration {
         if (i.action === 'retentionPreview' || i.action === 'retentionApply')
             return this.write(async () => {
                 const cutoff = this.clock() - (i.days ?? 30) * 86400000;
-                const queries = { messageWaits: "DELETE FROM role_message_waits WHERE state<>'waiting' AND expires_at<?", legacyWaits: "DELETE FROM office_waits WHERE state<>'waiting' AND expires_at<?", responsePages: 'DELETE FROM office_response_pages WHERE expires_at<?', hostReports: 'DELETE FROM office_host_reports WHERE observed_at<?', finishedQueue: 'DELETE FROM office_wait_queue WHERE expires_at<?', protocolTasks: 'DELETE FROM office_protocol_tasks WHERE expires_at<?', probeLeases: 'DELETE FROM office_probe_leases WHERE expires_at<?', exportSnapshots: 'DELETE FROM office_exports WHERE expires_at<?' };
+                const queries = { messageWaits: "DELETE FROM role_message_waits WHERE expires_at<?", legacyWaits: "DELETE FROM office_waits WHERE state<>'waiting' AND expires_at<?", responsePages: 'DELETE FROM office_response_pages WHERE expires_at<?', hostReports: 'DELETE FROM office_host_reports WHERE observed_at<?', finishedQueue: 'DELETE FROM office_wait_queue WHERE expires_at<?', protocolTasks: 'DELETE FROM office_protocol_tasks WHERE expires_at<?', probeLeases: 'DELETE FROM office_probe_leases WHERE expires_at<?', exportSnapshots: 'DELETE FROM office_exports WHERE expires_at<?' };
                 const counts: Row = {};
                 for (const [key, sql] of Object.entries(queries)) {
                     counts[key] = (await this.db.get<Row>(sql.replace(/^DELETE FROM (\w+)/, 'SELECT COUNT(*) n FROM $1'), [cutoff]))!.n;

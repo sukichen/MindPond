@@ -210,7 +210,7 @@ mindpond-office-doctor --url https://your-service.example/mcp \
 
 此命令只证明该诊断进程的 SDK 路径，真实客户端另用 `npm run verify:office-native-host -- --client codex --wait-ms 300000 --report /private/new-native-report.json` 验证。它启动隔离数据库与本机原生 CLI，不改变用户连接配置；需要该宿主已登录、模型额度可用。2026-10-19 本机 codex-cli 0.163.0-alpha.10.2 的隔离 HTTP MCP 实等300018ms并完成客户端确认。Claude 未登录、OpenCode 认证失败，不能列为已通过。
 
-固定角色凭据连接可协商 **MCP 2025-11-25 experimental Tasks**：office_wait_task 创建最长5分钟的持久消息条件，通过 tasks/get、tasks/result、tasks/list、tasks/cancel 查询/恢复/取消；每绑定最多8个活跃任务、数据库1024个、句柄最长保留1小时。每次访问重新校验绑定与权限。重启后按相同身份读取句柄，轮询时评估是否到信；没有后台模型或外部唤醒。共享宿主连接使用普通 role_sync processing/waitRecovery。此实现不是对所有客户端或另一项 SEP2663 扩展的兼容承诺。
+固定角色凭据连接可协商 **MCP 2025-11-25 experimental Tasks**：office_wait_task 创建最长5分钟的持久消息条件，通过 tasks/get、tasks/result、tasks/list、tasks/cancel 查询/恢复/取消；每绑定最多8个活跃任务、数据库1024个、句柄最长保留1小时。每次访问重新校验绑定与权限。重启后按相同身份读取句柄，轮询时评估是否到信；没有后台模型或外部唤醒。共享宿主连接使用普通 role_sync processing/waitRecovery。恢复结果指向仍待处理或处理中的关联回复，可用返回的 nextCall 读取。回复归档后，该等待记录退出恢复列表。此实现不是对所有客户端或另一项 SEP2663 扩展的兼容承诺。
 
 ### 回放、导出与维护
 

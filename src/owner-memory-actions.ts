@@ -67,12 +67,18 @@ export function registerOwnerMemoryActions(api:Options){
     const authorize=()=>writable(a.nodeId,o,g);await authorize();
     return {membership:await graph.addMembership(a.nodeId,a.spaceId,a.memoryType,undefined,await context(o),authorize)};
   });
-  action('memory_host_snapshot','Read authorized graph statistics or a bounded semantic graph window.',{view:z.enum(['stats','graph']),limit:z.number().int().min(1).max(200).optional(),includeEvents:z.boolean().optional()},async(a,o)=>a.view==='stats'?graph.getStats(await context(o)):graph.getFullGraph(a.limit??100,undefined,{context:await context(o),includeEvents:a.includeEvents}));
+  action('memory_host_snapshot','Read authorized graph statistics or a bounded semantic graph. Optionally narrow to one permitted office.',{...scope,view:z.enum(['stats','graph']),limit:z.number().int().min(1).max(200).optional(),includeEvents:z.boolean().optional()},async(a,o)=>{
+    const ctx=await context(o,a.officeId);
+    if(a.view==='stats')return graph.getStats(ctx);
+    const snapshot=await graph.getFullGraph(a.limit??100,undefined,{context:ctx,includeEvents:a.includeEvents,associationsOnly:true});
+    return {...snapshot,nodes:await graph.memoryOwners.labelGraphNodes(snapshot.nodes)};
+  });
   action('memory_expand','Read one complete authorized memory and record actual recall access; never truncate a knowledge unit.',{nodeId:id},async(a,o)=>{
     await get(a.nodeId,o);return graph.memoryOwners.present((await graph.getNodeById(a.nodeId,{trackAccess:true,context:await context(o)}))!);
   });
   action('memory_neighborhood','Inspect authorized semantic neighbours and provenance separately from query scoring.',{nodeId:id,limit:page.limit},async(a,o)=>{
-    await get(a.nodeId,o);return graph.graphNeighborhood(a.nodeId,await context(o),a.limit);
+    const view=await graph.graphNeighborhood(a.nodeId,await context(o),a.limit,{associationsOnly:true});
+    return {...view,nodes:await graph.memoryOwners.labelGraphNodes(view.nodes)};
   });
   action('memory_trace','Trace authorized source scenes without turning provenance edges into ripple associations.',{nodeId:id,maxDepth:z.number().int().min(0).max(5).optional(),limit:page.limit},async(a,o)=>{
     await get(a.nodeId,o);return graph.traceMemory(a.nodeId,await context(o),a.maxDepth,a.limit);
@@ -97,7 +103,7 @@ export function registerOwnerMemoryActions(api:Options){
     const target=api.writeTarget(o,a.officeId);await g();await api.assertWritable(o,target);
     const dimensions=a.dimensions??[(await graph.getDimensionPolicy()).defaultDimension];
     const {officeId,...input}=a;
-    const {domain,...preview}=await graph.validateMemorySave({...input,dimensions,domain:await graph.memoryOwners.domain(target,false),memberships:dimensions.map((memoryType:string)=>({spaceId:'memory',memoryType}))});
+    const {domain,...preview}=await graph.validateMemorySave({...input,dimensions,domain:await graph.memoryOwners.domain(target,false),layeredAssociations:true,memberships:dimensions.map((memoryType:string)=>({spaceId:'memory',memoryType}))});
     return {...preview,owner:target};
   });
   action('memory_improvement_list','Read pending correction/co-use suggestions in authorized knowledge; suggestions are not automatic edits.',{limit:page.limit},async(a,o)=>({signals:await graph.listImprovementSignals(await context(o),a.limit)}));

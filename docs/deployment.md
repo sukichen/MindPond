@@ -14,7 +14,7 @@
 
 本机服务优先绑定 loopback。网络监听需要 `MEMORY_API_KEY`，并在部署边界提供 TLS 和限制访问；`MEMORY_ALLOW_UNAUTHENTICATED_NETWORK=1` 仅用于明确的开发环境。共享 API key 本身不提供用户身份隔离。旧式受限 HTTP API 可另设可信上下文签名密钥；角色 Memory 以批准的角色绑定身份。管理与签名能力不得交给模型。CORS 仅允许明确的可信来源。
 
-`/health` 检查进程存活，`/ready` 检查就绪及完整性。使用以下命令只读审计数据库：
+`/health` 检查进程存活，`/ready` 检查服务能否读取数据库。使用以下命令只读审计数据库：
 
 ```sh
 mindpond-maintenance --db /absolute/private/mindpond.db --check

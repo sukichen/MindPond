@@ -164,6 +164,41 @@ try {
   await graph.roles.review({action:'approve',applicationId:application.applicationId,expectedRevision:1},operator);
   assert.equal((await req('agent/delete',{id:'cli-agent',expectedRevision:cliState.agents.find((a:any)=>a.id==='cli-agent').revision})).status,400,'associated roles require explicit removal');
   const historicalAgentRevision=(await graph.offices.registry(operator)).agents.find((a:any)=>a.id==='agent')!.revision;
+  const pageRoom='cursor-regression';
+  await graph.offices.configureOffice({id:pageRoom,title:'Large fixture office',state:'active',expectedRevision:0,seats:[]},operator);
+  const materialId=(n:number)=>'material-'+String(n).padStart(3,'0');
+  const fixtureDb=(graph as any).db;
+  await fixtureDb.exec('BEGIN IMMEDIATE');
+  try{
+    for(let n=0;n<523;n++)await fixtureDb.run(
+      "INSERT INTO office_materials VALUES(?,?,'historical-seat',?,'v1',0,0,'fixture','draft')",
+      [materialId(n),pageRoom,'Synthetic material '+n]);
+    await fixtureDb.exec('COMMIT');
+  }catch(error){await fixtureDb.exec('ROLLBACK');throw error;}
+  const firstPageResponse=await req('view',{officeId:pageRoom});
+  assert.equal(firstPageResponse.status,200,await firstPageResponse.clone().text());
+  const firstPage=await firstPageResponse.json(),knownMaterials=[...firstPage.materials];
+  let afterId=firstPage.nextMaterialsAfterId;
+  while(afterId){
+    const response=await req('record-page',{officeId:pageRoom,recordPage:'materials',afterId});
+    assert.equal(response.status,200,await response.clone().text());
+    const page=await response.json();assert(page.records.length<=50);
+    assert.equal(page.events,undefined);assert.equal(page.facilities,undefined);
+    knownMaterials.push(...page.records);
+    assert.notEqual(page.nextAfterId,afterId);
+    afterId=page.nextAfterId;
+  }
+  assert.equal(new Set(knownMaterials.map(material=>material.id)).size,523);
+  await fixtureDb.run("UPDATE office_materials SET state='published' WHERE id=?",[materialId(522)]);
+  await fixtureDb.run("INSERT INTO office_events(office_id,seat_id,actor,kind,body,ts) VALUES(?,NULL,'{}','material_published',?,?)",
+    [pageRoom,JSON.stringify({materialId:materialId(522)}),Date.now()]);
+  const live=await req('view',{officeId:pageRoom,afterSeq:firstPage.nextCursor});
+  assert.equal(live.status,200);const changed=await live.json();
+  assert(changed.materials.some((material:any)=>material.id===materialId(522)&&material.state==='published'));
+  assert(changed.events.some((event:any)=>event.body.materialId===materialId(522)));
+  assert(changed.nextCursor>firstPage.nextCursor);
+  console.log('PASS real office history >500 materials and live event cursor refresh of an older record');
+
   await graph.offices.configureOffice({id:'connector-history',title:'History',state:'active',expectedRevision:0,seats:[{id:'historical-seat',agentId:'agent',label:'Legacy participant'}]},operator);
   assert.equal((await req('agent/delete',{id:'agent',expectedRevision:historicalAgentRevision})).status,400,'active seats cannot silently disappear');
   await graph.offices.configureOffice({id:'connector-history',title:'History',state:'active',expectedRevision:1,seats:[]},operator);

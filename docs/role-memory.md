@@ -90,11 +90,15 @@ Codex 每次工具调用的 `_meta.threadId` 是角色的聊天标识；不是�
 | 查询相关知识 | `memory_brief` / `memory_search` | 结果含 `score`、深度与路径，返回检索通道和降级状态 `retrieval` |
 | 读取图操作标识 | `memory_get` | 完整记忆、来源、锚点和活动 `memberships` |
 | 保存并建立关联 | `memory_save.related[]` | 实际读过的目标、`score`（0–1）、理由 `reason`、适用条件 `context`；多分类时用精确 `membershipId` |
-| 查看邻居 | `memory_connections` | 双向关联、`weight`、邻居预览、证据状态；支持 `offset` / `limit` 分页 |
+| 查看邻居 | `memory_connections` | 指定记忆的双向关联、`weight`、邻居预览、证据状态，`total` 表示该记忆的邻居关联条数；支持 `offset` / `limit` 分页 |
 | 阅读关联证据 | `memory_association_get` | 按关联 `id` 读取完整证据及复核记录 |
-| 建立或调整关联 | `memory_association_upsert` | 两个实际读过的 `memberAId` / `memberBId`、`weight`、理由和条件；空间与分类由服务端校验 |
+| 建立或调整关联 | `memory_association_upsert` | `memberAId` 和 `memberBId` 填两次 `memory_get` 返回的完整顶层 `id`，另附 `weight`、理由和条件。若有多个共同空间与分类，选取对应的 `memberships[].id` |
 | 复核证据 | `memory_association_review` | 关联 `id`、`evidenceId`、`expectedUpdatedAt`、`confirm` / `retire` 与具体理由 |
 | 删除关联 | `memory_association_delete` | 关联 `id` 与审计理由 `reason`；永久删除 |
+
+关联以归属为边界。角色的私有记忆和办公室共享记忆分别建立关联。调换办公室会改变角色可读的办公室图谱，角色原有的私有图谱会跟随角色。人类可分别查看各归属，也可从「全部记忆（人类管理）」查看全库。
+
+如果同一归属的两条记忆来自不同空间，且只有一个共同的活动类型，使用两个完整记忆 ID 建边时，服务可在 `memory` 空间补上该类型的成员资格。分层 Memory 的 `memory_save.related[]` 也支持按完整 ID 关联同归属的旧记忆。补充成员资格会保留原空间及其证据。写入关联继续遵守六邻居上限与办公室只读锁。传具体成员 ID 时，仍按该成员所属的空间与类型建边。
 
 `score` 是相对当前查询的检索排序分；保存时的 `related[].score` 和关联的 `weight` 是带证据的共同回忆强度。两者都不是事实正确率，不能把检索分直接当成写入权重。
 

@@ -67,7 +67,16 @@ try{
   const original=await originalFor('floor'),reply=await graph.building.message({action:'send',replyTo:original.id,body:'Late feedback',key:'late'},actor('b'));
   const first=await call(send('floor',{waitForReply:true,waitSeconds:2}));assert.equal(first.receivedMessageId,reply.messageId);assert.equal(first.replyWait.message.state,'processing');
   const retried=await call(send('floor',{waitForReply:true,waitSeconds:1}));assert.equal(retried.receivedMessageId,reply.messageId);assert.equal(retried.replyWait.message.body,'Late feedback');
+  const recoveryForSend=async()=>(await graph.roles.sync(actor('a'))).waitRecovery.filter((w:any)=>w.sentMessageId===original.id);
+  const [processing]=await recoveryForSend();
+  assert.equal((await recoveryForSend()).length,1,'one recovery hint per committed send');
+  assert.equal(processing.state,'processing');
+  assert.equal(processing.message.id,reply.messageId);
+  assert.equal(processing.message.preview,'Late feedback');
+  assert.equal(processing.sendKey,undefined);
+  assert.deepEqual(processing.nextCall,{tool:'office_message',arguments:{action:'get',messageId:reply.messageId}});
   await graph.building.message({action:'finish',messageId:reply.messageId,result:'Reviewed',key:'finish-late'},actor('a'));
+  assert.deepEqual(await recoveryForSend(),[],'already archived replies never advise waiting again');
   const next=await graph.building.message({action:'send',replyTo:original.id,body:'Updated feedback',key:'next-linked'},actor('b'));const again=await call(send('floor',{waitForReply:true,waitSeconds:1}));assert.equal(again.receivedMessageId,next.messageId);assert.equal(again.replyWait.isReplyToSentMessage,true);assert.equal((await call(send('floor'))).messageId,original.id);
   assert.equal((await db.get('SELECT count(*) n FROM role_messages WHERE sender=? AND body=?',[roles[0],'Synthetic floor'])).n,1);
  });

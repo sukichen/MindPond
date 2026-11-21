@@ -20,6 +20,31 @@ try {
   for(const id of ['role-a','role-b'])await sourceDb.run("INSERT INTO character_roles VALUES(?,'human','张三','Fictional','active',1,NULL,1)",[id]);
   await sourceDb.run("INSERT INTO memory_role_namespaces VALUES('role-a','other')");
   const owners=await graph.memoryOwners.roles();assert.equal(owners.length,2);assert.equal(owners.find((r:any)=>r.id==='role-a').memoryCount,1);assert.equal(owners.find((r:any)=>r.id==='role-b').memoryCount,0);
+  // Concurrent readiness calls use one bounded read and immediately recheck
+  // on the next call. Full integrity findings remain in the operation below.
+  const ownGet=Object.getOwnPropertyDescriptor(sourceDb,'get');
+  const originalGet=sourceDb.get.bind(sourceDb);
+  let release!:()=>void,entered!:()=>void,reads=0;
+  const gate=new Promise<void>(resolve=>{release=resolve});
+  const started=new Promise<void>(resolve=>{entered=resolve});
+  sourceDb.get=async(sql:string,...params:any[])=>{
+    if(sql==='SELECT id FROM nodes LIMIT 1'){reads++;entered();await gate;}
+    return originalGet(sql,...params);
+  };
+  try {
+    const probes=Array.from({length:8},()=>graph.databaseReadiness());
+    await Promise.race([started,probes[0].then(()=>{throw Error('Readiness skipped the bounded read');})]);
+    assert.equal(reads,1);
+    release();
+    assert.deepEqual(await Promise.all(probes),Array.from({length:8},()=>({ready:true})));
+    assert.equal(reads,1);
+    assert.deepEqual(await graph.databaseReadiness(),{ready:true});
+    assert.equal(reads,2);
+  } finally {
+    release();
+    if(ownGet)Object.defineProperty(sourceDb,'get',ownGet);else delete sourceDb.get;
+  }
+  console.log('PASS readiness shares one bounded read and leaves database auditing separate');
   const admin={v:1 as const,principal:'human',operator:true,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
   assert.equal((await graph.roles.registry(admin)).roles.length,owners.length,'Memory and Office project the same role identities');
   assert.equal((await auditDatabase(sourceDb)).duplicateRoleNames.length,2,'same-name diagnostic is read-only, never an instruction to merge');
@@ -29,6 +54,7 @@ try {
   assert(await graph.getNodeById(b.id),'role catalog changes never remove knowledge');
   const ma=(await graph.getMemberships(a.id))[0],mb=(await graph.getMemberships(b.id))[0];
   await graph.close();
+  assert.deepEqual(await graph.databaseReadiness(),{ready:false});
   db=await open({filename,driver:sqlite3.Database});
   await db.exec('PRAGMA foreign_keys=OFF');
   await db.run('UPDATE nodes SET superseded_by=? WHERE id=?',['missing-target',a.id]);

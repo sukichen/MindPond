@@ -1628,22 +1628,18 @@
   }
   async function more(kind) {
     const generation = state.generation;
-    const field = kind === 'items' ? 'itemsAfterId' : 'materialsAfterId',
-      cursor = kind === 'items' ? state.itemsCursor : state.materialsCursor;
-    const result = await api('view', {
+    const cursorKey = kind === 'items' ? 'itemsCursor' : 'materialsCursor';
+    const cursor = state[cursorKey];
+    if (!cursor) return;
+    const result = await api('record-page', {
       officeId: state.office.office.id,
-      [field]: cursor,
-      afterSeq: state.cursor
+      recordPage: kind,
+      afterId: cursor
     });
-    if (generation !== state.generation || !state.logged) return;
-    state.office[kind] = mergeRecords(state.office[kind], result[kind]);
-    if (kind === 'items') {
-      state.itemsCursor = result.nextItemsAfterId;
-      state.itemsPaged = true;
-    } else {
-      state.materialsCursor = result.nextMaterialsAfterId;
-      state.materialsPaged = true;
-    }
+    if (generation !== state.generation || !state.logged || state[cursorKey] !== cursor) return;
+    state.office[kind] = mergeRecords(state.office[kind], result.records);
+    state[cursorKey] = result.nextAfterId;
+    state[kind === 'items' ? 'itemsPaged' : 'materialsPaged'] = true;
     renderOffice();
   }
   function showDetail(title, data) {
@@ -1707,8 +1703,11 @@
     const generation = state.generation;
     state.loading = true;
     try {
-      const data = await api('view', { officeId: state.office.office.id, afterSeq: state.cursor, facilityRevision:state.office.facilities?.revision,
-        itemIds: state.office.items.map(t => t.id), materialIds: state.office.materials.map(m => m.id) });
+      const data = await api('view', {
+        officeId: state.office.office.id,
+        afterSeq: state.cursor,
+        facilityRevision: state.office.facilities?.revision
+      });
       if (generation !== state.generation || !state.logged || replayController.active) return;
       const isLive = !state.office.hasMore && !data.hasMore;
       const old = state.office;

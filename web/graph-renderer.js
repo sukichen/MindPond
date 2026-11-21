@@ -241,18 +241,23 @@
       else { this.selected = null; this.focus = null; }
       this.hoverFocus = this.hovered && this.nodeById.has(this.hovered)
         ? computeWeightedRipple(this.adjacency, this.hovered, { maxDepth: 1, maxNodes: 20 }) : null;
-      const groups=new Map();
-      for(const n of nodes.filter(n=>!isEvent(n)))for(const key of identities(n)){
-        if(!groups.has(key))groups.set(key,[]);
-        groups.get(key).push(n);
+      const ownerGroups=new Map();
+      for(const node of nodes.filter(n=>!isEvent(n))){
+        const owner=JSON.stringify([node.owner?.kind,node.owner?.id]);
+        if(!ownerGroups.has(owner))ownerGroups.set(owner,new Map());
+        const dimensions=ownerGroups.get(owner);
+        for(const dimension of identities(node)){
+          if(!dimensions.has(dimension))dimensions.set(dimension,[]);
+          dimensions.get(dimension).push(node);
+        }
       }
-      const ordered=[...groups].sort((a,b)=>b[1].length-a[1].length);
-      const gap=Math.min(.10,TAU/Math.max(1,ordered.length)*.12),totalWeight=ordered.reduce((sum,[,group])=>sum+Math.sqrt(group.length),0);
-      const spans=ordered.map(([,group])=>(TAU-gap*ordered.length)*Math.sqrt(group.length)/totalWeight);
+      const ordered=[...ownerGroups.values()].flatMap(dimensions=>[...dimensions.values()].sort((a,b)=>b.length-a.length));
+      const gap=Math.min(.10,TAU/Math.max(1,ordered.length)*.12),totalWeight=ordered.reduce((sum,group)=>sum+Math.sqrt(group.length),0);
+      const spans=ordered.map(group=>(TAU-gap*ordered.length)*Math.sqrt(group.length)/totalWeight);
       let start=ordered.length?Math.PI-spans[0]/2:0;
       const candidates=new Map();
       this.home=new Map();
-      ordered.forEach(([,group],groupIndex)=>{
+      ordered.forEach((group,groupIndex)=>{
         group.sort((a,b)=>degree.get(b.id)-degree.get(a.id)||a.id.localeCompare(b.id));
         group.forEach((n,i)=>{
           if(!candidates.has(n.id))candidates.set(n.id,[]);

@@ -6,11 +6,11 @@ import {createHash,randomUUID} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {parseArgs} from 'node:util';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
-import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {StreamableHTTPClientTransport,StreamableHTTPError} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {MindPondError,toStructuredError} from './core/errors.js';
 const command=process.argv[2];
 
-let client:Client|undefined,file:Awaited<ReturnType<typeof fs.open>>|undefined,temp:string|undefined;
+let client:Client|undefined,transport:StreamableHTTPClientTransport|undefined,file:Awaited<ReturnType<typeof fs.open>>|undefined,temp:string|undefined;
 try{
  const {values}=parseArgs({args:process.argv.slice(3),options:{url:{type:'string'},'token-file':{type:'string'},'meta-file':{type:'string'},file:{type:'string'},out:{type:'string'},artifact:{type:'string'},mime:{type:'string'},scope:{type:'string'},recipient:{type:'string',multiple:true},office:{type:'string'},key:{type:'string'},retention:{type:'string'}},strict:true});
  if(!['upload','download'].includes(command)||!values.url||!values['token-file'])throw new MindPondError('invalid_input','Use upload --url <Office MCP URL> --token-file <private file> --file <path> --key <stable key>, or download with --artifact <id> --out <new path>. Optional --meta-file mirrors native per-chat MCP metadata; otherwise uses configured connection identity.');
@@ -20,7 +20,13 @@ try{
  if(values['meta-file']){const stat=await fs.stat(values['meta-file']);if(!stat.isFile()||stat.size>2048)throw new MindPondError('invalid_input','Native chat metadata must be a small JSON file supplied by the host');meta=JSON.parse(await fs.readFile(values['meta-file'],'utf8'));if(!meta||Array.isArray(meta)||typeof meta!=='object')throw new MindPondError('invalid_input','Host metadata must be a JSON object');}
  const headers:Record<string,string>={Authorization:'Bearer '+token,...(meta?{'X-MindPond-Meta':JSON.stringify(meta)}:{'X-MindPond-Identity':'connection'})};
  client=new Client({name:'mindpond-artifact-host',version:'1'});
- await client.connect(new StreamableHTTPClientTransport(endpoint,{requestInit:{headers}}));
+ transport=new StreamableHTTPClientTransport(endpoint,{
+  requestInit:{headers,redirect:'error'},
+  fetch:(url,init)=>fetch(url,init?.method==='DELETE' ? {
+   ...init,signal:AbortSignal.any([AbortSignal.timeout(5000),...(init.signal?[init.signal]:[])])
+  } : init)
+ });
+ await client.connect(transport);
  const call=async(args:Record<string,unknown>)=>{const reply=await client!.callTool({name:'office_artifact',arguments:args,...(meta?{_meta:meta}:{})});const content=reply.content as Array<{type:string;text?:string}>,text=content.find(c=>c.type==='text')?.text??'';if(reply.isError){try{const value=JSON.parse(text);throw new MindPondError(value.error?.code??'invalid_input',value.error?.message??'Artifact metadata request failed');}catch(error){if(error instanceof MindPondError)throw error;throw new MindPondError('invalid_input','Artifact metadata request failed; check scope, identity and parameters');}}return JSON.parse(text);};
  const transferURL=(route:string)=>{if(!/^\/artifacts\/[0-9a-f-]{36}\/content$/.test(route))throw new MindPondError('invalid_input','Server returned an invalid artifact route');const u=new URL(endpoint);u.pathname=endpoint.pathname.slice(0,-4)+route.slice(1);return u;};
  const checkResponse=async(response:Response)=>{if(!response.ok){const error=await response.json().catch(()=>({code:'internal',message:'File transfer failed'}));throw new MindPondError(error.code??'internal',error.message??'File transfer failed');}};
@@ -47,5 +53,13 @@ try{
   try{await fs.link(temp,target);}catch(error){if((error as NodeJS.ErrnoException).code==='EEXIST')throw new MindPondError('invalid_input','Destination already exists; choose a new --out path');throw error;}await fs.unlink(temp);temp=undefined;
   console.log(JSON.stringify({artifact:metadata.artifact,savedTo:target,verified:true}));
  }
-}catch(error){console.error(JSON.stringify({error:toStructuredError(error)}));process.exitCode=1;}
-finally{await file?.close().catch(()=>{});if(temp)await fs.unlink(temp).catch(()=>{});await client?.close().catch(()=>{});}
+}catch(error){
+ if(error instanceof StreamableHTTPError && error.code===429)
+  error=new MindPondError('temporarily_unavailable','The Office MCP connection limit is reached. Wait for a connection to close before retrying.');
+ console.error(JSON.stringify({error:toStructuredError(error)}));process.exitCode=1;
+}finally{
+ await file?.close().catch(()=>{});
+ if(temp)await fs.unlink(temp).catch(()=>{});
+ await transport?.terminateSession().catch(()=>{});
+ await client?.close().catch(()=>{});
+}

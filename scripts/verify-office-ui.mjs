@@ -48,6 +48,7 @@ vm.runInContext(
     handler('moreContainers', 'function renderFacilities'),
     source.slice(source.indexOf('  function schedule('),source.indexOf('  function submit(')),
     handler('showRecord', 'async function more'),
+    handler('more', 'function showDetail'),
     source.slice(
       source.indexOf('  function mergeRecords('),
       source.indexOf('  function renderEvents(')
@@ -94,20 +95,38 @@ await polling;
 assert.equal(state.office.office.id, 'c');
 assert.equal(state.cursor, 0);
 assert.equal(state.events.length, 0);
-// A loaded record beyond the initial page is included in refresh requests.
-state.office.items = [{ id: 'later', revision: 1, status: 'open' }];
-state.office.materials = [{ id: 'text', state: 'draft' }];
-fetcher = async (_, body) => {
-  assert.deepEqual(Array.from(body.itemIds), ['later']);
-  assert.deepEqual(Array.from(body.materialIds), ['text']);
+// More than 500 previously loaded records must not be sent back on each live poll.
+state.office.items = Array.from({length:510}, (_,n)=>({id:'item-'+n,revision:1,status:'open'}));
+state.office.materials = Array.from({length:510}, (_,n)=>({id:'material-'+n,state:'draft'}));
+state.cursor=19;state.materialsCursor='page-2';
+fetcher = async (route, body) => {
+  assert.equal(route,'record-page');
+  assert.equal(body.recordPage,'materials');
+  assert.equal(body.afterId,'page-2');
+  assert.equal(body.afterSeq,undefined);
+  return {records:[{id:'older-material',state:'draft'}],nextAfterId:null};
+};
+await context.more('materials');
+assert.equal(state.cursor,19);
+fetcher = async (route, body) => {
+  assert.equal(route,'view');
+  assert.equal(body.afterSeq,19);
+  assert.equal(body.itemIds,undefined);
+  assert.equal(body.materialIds,undefined);
   return page('c', {
-    items: [{ id: 'later', revision: 2, status: 'completed' }],
-    materials: [{ id: 'text', state: 'published' }]
+    items: [{ id: 'item-509', revision: 2, status: 'completed' }],
+    materials: [{ id: 'older-material', state: 'published' }],
+    events: [{seq:20}],
+    nextCursor:20
   });
 };
 await context.updateOffice();
-assert.equal(state.office.items[0].status, 'completed');
-assert.equal(state.office.materials[0].state, 'published');
+assert.equal(state.office.items.length,510);
+assert.equal(state.office.materials.length,511);
+assert.equal(state.office.items.find(item=>item.id==='item-509').status,'completed');
+assert.equal(state.office.materials.find(item=>item.id==='older-material').state,'published');
+assert.equal(state.cursor,20);
+assert.equal(state.materialsCursor,null);
 const merged = context.mergeRecords(
   [{ id: 'task', revision: 3, status: 'completed' }],
   [{ id: 'task', revision: 2, status: 'submitted' }]

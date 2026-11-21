@@ -44,7 +44,7 @@ try{
  console.log('PASS concurrent migration: separate SQLite connections serialize schema checks and additions');
  await graph.init();const db=(graph as any).db;
  for(const id of ['host','generic'])await graph.offices.configureAgent({id,principal:'human',name:'Synthetic '+id,host:'generic-http-mcp',state:'active',expectedRevision:0},admin);
- const hosts=['127.0.0.1'];network=createNetworkMcpApp(graph,{allowedHosts:hosts,configuration:async()=>configuration});listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener.once('listening',r));const base='http://127.0.0.1:'+listener.address().port;hosts.push(new URL(base).host);
+ const hosts=['127.0.0.1'];network=createNetworkMcpApp(graph,{allowedHosts:hosts,maxPerAccount:3,configuration:async()=>configuration});listener=network.app.listen(0,'127.0.0.1');await new Promise<void>(r=>listener.once('listening',r));const base='http://127.0.0.1:'+listener.address().port;hosts.push(new URL(base).host);
  const transport=new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:'Bearer '+token}}});const client=new Client({name:'synthetic-artifacts',version:'1'});clients.push(client);await client.connect(transport);
  const raw=(name:string,args:any={},chat='a')=>client.callTool({name,arguments:args,_meta:{threadId:chat}});
  const call=async(name:string,args:any={},chat='a')=>{const r:any=await raw(name,args,chat);assert(!r.isError,JSON.stringify(r));return JSON.parse(r.content[0].text);};
@@ -140,12 +140,24 @@ try{
  const tokenFile=path.join(dir,'host.token'),metaFile=path.join(dir,'host-meta.json'),input=path.join(dir,'cli-evidence.bin'),output=path.join(dir,'downloaded.bin');
  await fs.writeFile(tokenFile,token,{mode:0o600});await fs.writeFile(metaFile,JSON.stringify({threadId:'a'}),{mode:0o600});await fs.writeFile(input,bytes,{mode:0o600});
  const cli=async(args:string[])=>promisify(execFile)(process.execPath,['dist/artifact-client.js',...args,'--url',base+'/mcp','--token-file',tokenFile,'--meta-file',metaFile],{timeout:15000,maxBuffer:65536});
+ // Two standing connections share the same account. The only free slot must
+ // become available immediately after each short-lived CLI.
+ const fullTransport=new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:'Bearer '+token}}});
+ const fullClient=new Client({name:'synthetic-capacity',version:'1'});clients.push(fullClient);await fullClient.connect(fullTransport);
+ try {
+  await assert.rejects(cli(['upload','--file',input,'--key','capacity-denied']), (error:any)=>{
+   const {error:detail}=JSON.parse(error.stderr);
+   return detail.code==='temporarily_unavailable' && detail.retryable && /connection limit/.test(detail.message);
+  });
+ } finally {await fullTransport.terminateSession();await fullClient.close();}
  const cliResult=JSON.parse((await cli(['upload','--file',input,'--key','cli-file','--recipient',roles[1].roleId])).stdout);
  assert.equal(cliResult.artifact.sha256,sha(bytes));assert(!JSON.stringify(cliResult).includes(bytes.subarray(0,16).toString('base64')));
  await cli(['download','--artifact',cliResult.artifact.artifactId,'--out',output]);assert.deepEqual(await fs.readFile(output),bytes);
  await assert.rejects(cli(['download','--artifact',cliResult.artifact.artifactId,'--out',output]),(e:any)=>e.stderr.includes('Destination already exists'));
  const cliBlob=(await db.get('SELECT storage_key FROM office_artifacts WHERE id=?',[cliResult.artifact.artifactId])).storage_key;await fs.writeFile(path.join(graph.artifacts.directory,cliBlob),bad);
  const corruptOutput=path.join(dir,'must-not-publish.bin');await assert.rejects(cli(['download','--artifact',cliResult.artifact.artifactId,'--out',corruptOutput]),(e:any)=>e.stderr.includes('checksum_mismatch'));await assert.rejects(fs.stat(corruptOutput),{code:'ENOENT'});await fs.writeFile(path.join(graph.artifacts.directory,cliBlob),bytes);
+ await cli(['download','--artifact',cliResult.artifact.artifactId,'--out',path.join(dir,'after-cli-failure.bin')]);
+ console.log('PASS CLI connection capacity and immediate cleanup on success and failure');
  console.log('PASS generic host CLI: local hashing, streaming upload/download, native chat correlation, byte verification, corrupt-body rejection and no destination overwrite');
  const crossToken=randomBytes(32).toString('base64url');configuration.grants.push({principal:'another-human',agentId:'another-host',credentialId:'another-host',tokenHash:tokenDigest(crossToken),domains:[],toolProfile:'office'});
  await graph.offices.configureAgent({id:'another-host',principal:'another-human',name:'Synthetic independent host',host:'generic-http-mcp',state:'active',expectedRevision:0},admin);

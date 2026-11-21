@@ -103,7 +103,7 @@ export class MemoryOwners {
         }
         return {domains:[await this.domain(owner,false)]};
     }
-    async owner(node:MemoryNode):Promise<MemoryOwner> {
+    async owner(node:Pick<MemoryNode,"domain">):Promise<MemoryOwner> {
         if(node.domain.kind==='personal'){
             const office=await this.db.get('SELECT office_id FROM memory_office_namespaces WHERE domain_id=?',[node.domain.id]);
             if(office)return {kind:'office',id:office.office_id};
@@ -111,6 +111,14 @@ export class MemoryOwners {
             if(role)return {kind:'agent',id:role.role_id};
         }
         return {kind:'user',id:'default'};
+    }
+    async labelGraphNodes<T extends Pick<MemoryNode,'domain'>>(nodes:T[]) {
+        const owners = new Map<string,Promise<MemoryOwner>>();
+        return Promise.all(nodes.map(async node => {
+            const key = JSON.stringify(node.domain);
+            if (!owners.has(key)) owners.set(key, this.owner(node));
+            return { ...node, owner: await owners.get(key)! };
+        }));
     }
     async policy(memoryId:string){return await this.db.get('SELECT locked,revision,updated_at updatedAt FROM memory_office_policy WHERE memory_id=?',[memoryId])??{locked:0,revision:0,updatedAt:null};}
     async setPolicy(memoryId:string,locked:boolean,expectedRevision:number){return this.write(async()=>{
