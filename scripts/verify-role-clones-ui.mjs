@@ -40,8 +40,16 @@ submit();await tick();dispatch=requests.at(-1);
 assert(!('memoryIds' in dispatch.args));assert(!('scriptIds' in dispatch.args));
 dispatch.reject(Error('Fixture rejected default dispatch'));await tick();
 const more=find('button','更多分身');const loading=more.onclick();assert.equal(requests.at(-1).args.afterId,'child');requests.at(-1).resolve({...status,clones:[{roleId:'child-2',name:'Helper 2',mission:'Task 2',state:'active'}],clonesHasMore:false});await loading;assert(all(container).some(n=>n.textContent==='Helper 2 · 可工作'));assert(more.hidden);
+const recall=find('button','收回分身');assert(recall);
+void recall.onclick();await tick();assert.equal(requests.at(-1).args.action,'recall');
+assert.equal(requests.at(-1).args.roleId,'child');
+requests.at(-1).resolve({state:'returned'});await tick();
+requests.at(-1).resolve({...status,clones:[{roleId:'child',name:'Helper',state:'returned',pendingPackages:1}]});
+await tick();requests.at(-1).resolve({reports:[],hasMore:false});await tick();
+assert(all(container).some(n=>n.textContent==='Helper · 已收回，待整理'));
+assert(!find('button','归档分身'),'archive appears only after the return package has been reviewed');
 // Abandoned inspector responses cannot populate a new editor or notify another account.
 const prior=all(container).length;active=false;const before=requests.length;await more.onclick();assert.equal(requests.length,before);assert.equal(all(container).length,prior);
 const html=await fs.readFile(new URL('../web/collaboration.html',import.meta.url),'utf8'),app=await fs.readFile(new URL('../web/office.js',import.meta.url),'utf8'),pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
-assert(html.includes('./assets/role-clones.js?'));assert(app.includes("clonesTab=button('派遣分身'"));assert(app.includes('MindPondRoleClones?.mount'));assert(pkg.files.includes('web/role-clones.js'));assert(pkg.files.includes('docs/role-clones.md'));
+assert(html.includes('./assets/role-clones.js?'));assert(app.includes("clonesTab=button(record.cloneState?'分身与收回':'派遣分身'"));assert(app.includes('MindPondRoleClones?.mount'));assert(pkg.files.includes('web/role-clones.js'));assert(pkg.files.includes('docs/role-clones.md'));
 console.log('PASS clone UI: default all, lazy custom selection, no mount dirtiness, literal labels, busy fencing, lost-response idempotency, child pagination, stale inspector guards and packaged entry point');

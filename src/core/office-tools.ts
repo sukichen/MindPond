@@ -3,7 +3,8 @@ const id = z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/);
 const text = (max: number) => z.string().trim().min(1).max(max);
 export const agentConfigurationSchema = z.object({
   id,
-  principal: text(128),
+  principal: z.string().trim().regex(/^[\p{L}\p{N}][\p{L}\p{N}_.:-]{0,127}$/u),
+  accountAccess: z.enum(['personal', 'collaborator']).optional(),
   name: text(120),
   host: text(64),
   state: z.enum(['pending', 'active', 'disabled']),

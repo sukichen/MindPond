@@ -4,34 +4,70 @@
  const el=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
  const button=(text,run)=>{const n=el('button',text);n.type='button';n.onclick=run;return n;};
  const label=(text,input)=>{const n=el('label',text);n.append(input);return n;};
- const names={active:'可工作',revoked:'已撤回',purged:'派遣资料已清理'},changes={new:'新增',changed:'已修改',inherited:'继承，未修改'};
+ const names={active:'可工作',revoked:'已停用',returned:'已收回，待整理',archived:'已归档',purged:'派遣资料已清理'},changes={new:'新增',changed:'已修改',inherited:'继承，未修改'};
  function mount({container,role,api,current,onBusy=()=>{},onDirty=()=>{},onLifecycleChanged,notice=()=>{},confirmAction=async()=>false}){
   const root=el('div');root.className='office-clones';const status=el('p');status.setAttribute('role','status');const content=el('div');root.append(status,content);container.append(root);
-  let busy=false,readEpoch=0,dispatchKey=null,dispatchPayload=null,returnKey=null,returnPayload=null;
+  let busy=false,readEpoch=0,dispatchKey=null,dispatchPayload=null;
   const call=args=>api('role/clones',{roleId:role.id,...args});
   const fail=e=>{if(current())status.textContent=e.message;};
   async function mutation(run){if(busy||!current())return;busy=true;readEpoch++;onBusy(true);root.setAttribute('aria-busy','true');try{await run();}catch(e){fail(e);}finally{busy=false;if(current()){onBusy(false);root.setAttribute('aria-busy','false');}}}
   async function load(){if(!current())return;const epoch=++readEpoch;status.textContent='正在读取派遣状态…';try{const data=await call({action:'status'});if(!current()||epoch!==readEpoch)return;content.replaceChildren();render(data);status.textContent='';}catch(e){if(epoch===readEpoch)fail(e);}}
+  async function recallClone(target,summary){
+   const request={roleId:target.roleId,action:'recall',expectedRevision:target.revision,...(summary?{summary}:{})};
+   try{return await api('role/clones',request);}
+   catch(e){
+    if(e.code!=='material_over_budget'||!current())throw e;
+    const confirmed=await confirmAction('新增或修改的内容超出单个经验包容量。是否先收回权限，只提交说明并保留已有经验包？剩余记忆和脚本会保留在分身名下，可由管理员另行整理。');
+    if(!confirmed||!current())throw e;
+    return api('role/clones',{...request,memoryIds:[],scriptIds:[]});
+   }
+  }
   function render(data){
    const lineage=data.lineage;
    content.append(el('h3',lineage?'分身身份':'派遣独立分身'),el('p','分身以独立角色工作，默认继承本体的全部私有记忆与脚本。回归经验由本体审阅吸收。不会继承办公室、聊天连接、凭证或其他角色的授权。'));
    if(lineage){
     const info=el('section');info.className='office-clone-card';info.append(el('h4','来自「'+lineage.parentName+'」 · '+names[lineage.state]),el('p',lineage.mission),el('small','版本 '+lineage.snapshotHash));
-    if(lineage.state==='active'){
-     const summary=el('textarea');summary.rows=4;summary.maxLength=4000;summary.placeholder='完成了什么，验证了什么，适用条件、失败尝试与待确认项';
-     const returnButton=button('提交回归经验',()=>mutation(async()=>{
-      if(!summary.value.trim())throw Error('请填写回归总结。');
-      const payload={action:'submit',summary:summary.value.trim()};if(JSON.stringify(payload)!==returnPayload){returnKey=crypto.randomUUID();returnPayload=JSON.stringify(payload);}
-      const result=await call({...payload,key:returnKey});if(!current())return;notice('经验包已提交，本体可审阅。当前聊天仍保持分身身份。');summary.value='';returnPayload=returnKey=null;status.textContent='经验包 '+result.reportId+' 已固定版本。';
-     }));
-     info.append(label('回归总结',summary),el('p','提交本分身新增或修改的记忆／脚本，保持原件独立。完整未修改继承项不重复提交；在会议室时须先总结退出。提交不会停止聊天。'),returnButton);
+    const lifecycle=async(target,action,fields={})=>{
+      const result=await api('role/clones',{roleId:target.roleId,action,expectedRevision:target.revision,...fields});
+      if(current()){if(onLifecycleChanged)await onLifecycleChanged(result);else await load();}
+    };
+    if(['active','revoked'].includes(lineage.state)){
+     const summary=el('textarea');summary.rows=3;summary.maxLength=4000;summary.placeholder='可选：补充完成情况、适用条件与待确认项';
+     summary.oninput=onDirty;
+     info.append(label('收回说明',summary),button('收回分身',()=>mutation(async()=>{
+      if(!await confirmAction('收回后，此分身的工作权限立即结束。新增或修改的私有记忆和脚本会生成经验包，供本体整理。')||!current())return;
+      const result=await recallClone(lineage,summary.value.trim());
+      if(current()){if(onLifecycleChanged)await onLifecycleChanged(result);else await load();}
+     })));
+     const accounts=(data.principals??[]).filter(p=>p.principal!==role.principal);
+     if(lineage.state==='active'&&!role.connection&&accounts.length){
+      const picker=el('select');for(const account of accounts){const option=el('option',account.principal+' · '+(account.accountAccess==='collaborator'?'同事账户':'我的连接'));option.value=account.principal;picker.append(option);}
+      info.append(label('改派到其他账户',picker),button('更改接收账户',()=>mutation(async()=>{
+       const account=accounts.find(option=>option.principal===picker.value);
+       const note=account?.accountAccess==='collaborator'?'':' 此账户未绑定时可访问人类记忆。给同事用时，请先在「宿主连接」限制为同事账户。';
+       if(!await confirmAction('将此分身及其私有记忆和脚本交给账户「'+picker.value+'」？确认这些内容可以交付给该账户。查阅其他角色记忆的授权将撤销。'+note)||!current())return;
+       await lifecycle(lineage,'assign_account',{principal:picker.value});
+      })));
+     }
     }
-    if(lineage.state==='active'||lineage.state==='revoked')for(const [action,text,question] of lineage.state==='active'?[['revoke','撤回分身','撤回后，该分身连接会被拒绝访问，保留私有知识与回归经验；不会停止宿主。确认撤回？']]:[['resume','恢复派遣','恢复分身权限；不会启动宿主。确认恢复？'],['purge','清理派遣资料','永久删除此分身的派遣快照、回归经验包与审阅记录，无法恢复。现有角色私有记忆与脚本保留。确认清理？']])info.append(button(text,()=>mutation(async()=>{if(!await confirmAction(question,{destructive:action!=='resume'})||!current())return;const result=await call({action,expectedRevision:lineage.revision});if(current()){if(onLifecycleChanged)await onLifecycleChanged(result);else await load();}})));
+    if(lineage.state==='returned'){
+      info.append(el('p','请在本体会话运行 office_clone status，整理待审阅的记忆和脚本，也可在本体页面审阅。'));
+      if(lineage.pendingPackages===0)info.append(button('归档分身',()=>mutation(async()=>{await lifecycle(lineage,'archive');})));
+    }
     content.append(info);
    }
    if(role.state==='active'&&(!lineage||lineage.state==='active'))renderDispatch(data);
    const children=el('section');children.append(el('h4','已派遣分身'));
-   const appendChild=child=>{const card=el('div');card.className='office-clone-card';card.append(el('strong',(child.name??'角色已删除')+' · '+names[child.state]),el('p',child.mission),el('p',child.connectorId?'连接：'+child.hostName+' / '+child.host+' · '+(child.chatSource??'连接')+' '+(child.nativeChatId??child.runtimeId):'尚未连接聊天：在角色目录打开「'+(child.name??child.roleId)+'」，选择连接聊天。'),el('small','角色编号 '+child.roleId));children.append(card);};
+   const appendChild=child=>{const card=el('div');card.className='office-clone-card';card.append(el('strong',(child.name??'角色已删除')+' · '+names[child.state]),el('p',child.mission),el('p','接收账户 '+(child.principal??'—')),el('p',child.state==='returned'?'待审阅经验包 '+child.pendingPackages:child.connectorId?'连接：'+child.hostName+' / '+child.host+' · '+(child.chatSource??'连接')+' '+(child.nativeChatId??child.runtimeId):'尚未连接聊天：在角色目录打开「'+(child.name??child.roleId)+'」，选择连接聊天。'),el('small','角色编号 '+child.roleId));
+    if(child.state==='active'||child.state==='revoked')card.append(button('收回分身',()=>mutation(async()=>{
+      if(!await confirmAction('收回「'+child.name+'」并生成经验包？此分身的工作权限会立即结束。')||!current())return;
+      await recallClone(child);if(current())await load();
+    })));
+    if(child.state==='returned'&&child.pendingPackages===0)card.append(button('归档分身',()=>mutation(async()=>{
+      await api('role/clones',{roleId:child.roleId,action:'archive',expectedRevision:child.revision});if(current())await load();
+    })));
+    children.append(card);
+   };
    for(const child of data.clones)appendChild(child);
    if(data.clonesHasMore){let cursor=data.nextAfterId;const more=button('更多分身',async()=>{if(busy||!current())return;const epoch=readEpoch;more.disabled=true;try{const page=await call({action:'status',afterId:cursor});if(!current()||epoch!==readEpoch)return;for(const child of page.clones)appendChild(child);cursor=page.nextAfterId;more.hidden=!page.clonesHasMore;}catch(e){fail(e);}finally{if(current()&&epoch===readEpoch)more.disabled=false;}});children.append(more);}
    if(!data.clones.length)children.append(el('p','暂无派遣。'));content.append(children);
@@ -46,7 +82,7 @@
    }
    inheritance.value='all';custom.hidden=more.hidden=true;
    name.value=role.name+' · 分身';name.maxLength=120;name.required=true;mission.rows=3;mission.maxLength=4000;mission.required=true;mission.placeholder='这个分身要帮助谁，完成什么，何时整理经验返回';
-   for(const p of data.principals){const o=el('option',p.principal);o.value=p.principal;principal.append(o);}principal.value=data.principals.some(p=>p.principal===role.principal)?role.principal:data.principals[0]?.principal??'';
+   for(const p of data.principals){const o=el('option',p.principal+' · '+(p.accountAccess==='collaborator'?'同事账户':'我的连接'));o.value=p.principal;principal.append(o);}principal.value=data.principals.some(p=>p.principal===role.principal)?role.principal:data.principals[0]?.principal??'';
    for(const [value,title] of [['memory','私有记忆'],['script','私有脚本']]){const o=el('option',title);o.value=value;kind.append(o);}kind.value='memory';
    const chosen={memory:new Set(),script:new Set()};let after=null,generation=0;
    function invalidate(){onDirty();selected.textContent='已选记忆 '+chosen.memory.size+' · 脚本 '+chosen.script.size;}
@@ -72,22 +108,22 @@
     if(custom.hidden)generation++;else void loadChoices();
    };
    kind.onchange=()=>void loadChoices();for(const input of [name,mission,principal])input.oninput=invalidate;
-   const submit=el('button','创建分身');submit.type='submit';
+   const submit=el('button','创建分身');submit.type='submit';submit.disabled=!data.principals.length;
    custom.append(el('legend','自定义继承'),label('内容类型',kind),search,choices,more,selected,
     el('p','只复制勾选的项目。没有勾选的类别留空。'));
    fields.append(label('分身名字',name),label('派遣任务',mission),label('使用者账户',principal),
-    el('p','先在宿主连接里注册接收方账户；本体和分身可分别连接 Codex、OpenCode 或其他标准 MCP 宿主。'),
+    el('p','给同事使用时，请选择同事账户。先在宿主连接登记并签发配置，再让同事的聊天调用 role_sync。'),
     label('继承内容',inheritance),el('p','创建时复制所选范围的当前版本。本体后续修改不会同步。超出单次容量时，请改用自定义选择。'),custom,submit);
    form.append(fields);content.append(form);
    form.addEventListener('submit',e=>{e.preventDefault();if(!form.reportValidity())return;void mutation(async()=>{
     const payload={action:'dispatch',name:name.value.trim(),mission:mission.value.trim(),principal:principal.value,
      ...(inheritance.value==='custom'?{memoryIds:[...chosen.memory],scriptIds:[...chosen.script]}:{})};
     if(JSON.stringify(payload)!==dispatchPayload){dispatchPayload=JSON.stringify(payload);dispatchKey=crypto.randomUUID();}fields.disabled=true;
-    try{const result=await call({...payload,key:dispatchKey});if(!current())return;dispatchKey=dispatchPayload=null;notice('分身「'+result.name+'」已创建。请在角色目录为它连接聊天，并按需邀请进入办公室。');await load();}finally{if(current())fields.disabled=false;}
+    try{const result=await call({...payload,key:dispatchKey});if(!current())return;dispatchKey=dispatchPayload=null;notice('分身「'+result.name+'」已创建。请连接账户「'+payload.principal+'」下的目标聊天。');await load();}finally{if(current())fields.disabled=false;}
    });});
   }
   async function loadReports(container,afterId){
-   const epoch=readEpoch;try{const p=await call({action:'reports',...(afterId?{afterId}:{})});if(!current()||epoch!==readEpoch)return;for(const report of p.reports){const box=el('div');box.className='office-clone-card';box.append(el('strong','记忆 '+report.memories+' · 脚本 '+report.scripts+' · 已审阅 '+report.reviewed+(report.acknowledged?' · 审阅结束':'')),el('p',report.summary));if(!report.acknowledged&&report.reviewed===report.memories+report.scripts)box.append(button('确认总结已审阅',()=>mutation(async()=>{await api('role/clones',{roleId:report.parentId,action:'acknowledge',reportId:report.id});if(current())await load();})));for(const kind of ['memory','script'])box.append(button(kind==='memory'?'审阅记忆':'审阅脚本',()=>viewReturn(report,kind,box)));container.append(box);}if(!p.reports.length&&!afterId)container.append(el('p','暂无回归经验。'));if(p.hasMore){const more=button('更多经验包',async()=>{more.disabled=true;await loadReports(container,p.nextAfterId);if(current())more.hidden=true;});container.append(more);}}catch(e){fail(e);}
+   const epoch=readEpoch;try{const p=await call({action:'reports',...(afterId?{afterId}:{})});if(!current()||epoch!==readEpoch)return;for(const report of p.reports){const box=el('div');box.className='office-clone-card';box.append(el('strong','记忆 '+report.memories+' · 脚本 '+report.scripts+' · 已审阅 '+report.reviewed+(report.acknowledged?' · 审阅结束':'')),el('p',report.summary));if(report.finalReturn)box.append(el('small','收回经验 · '+(report.cloneName??report.roleId)));if(!report.acknowledged&&report.reviewed===report.memories+report.scripts)box.append(button('确认总结已审阅',()=>mutation(async()=>{await api('role/clones',{roleId:report.parentId,action:'acknowledge',reportId:report.id});if(current())await load();})));for(const kind of ['memory','script'])box.append(button(kind==='memory'?'审阅记忆':'审阅脚本',()=>viewReturn(report,kind,box)));container.append(box);}if(!p.reports.length&&!afterId)container.append(el('p','暂无回归经验。'));if(p.hasMore){const more=button('更多经验包',async()=>{more.disabled=true;await loadReports(container,p.nextAfterId);if(current())more.hidden=true;});container.append(more);}}catch(e){fail(e);}
   }
   async function viewReturn(report,kind,box,sourceId){
    if(busy||!current())return;const epoch=readEpoch,ticket=(box.readTicket??0)+1;box.readTicket=ticket;
@@ -104,7 +140,7 @@
     const note=el('textarea');note.rows=2;note.maxLength=2000;note.placeholder='吸收或跳过的理由（必填）';view.append(note);
     for(const [action,title] of [['import','作为独立副本添加给本体'],['review','跳过这条经验']])view.append(button(title,()=>mutation(async()=>{
      if(!note.value.trim())throw Error('请填写审阅理由。');if(action==='import'&&!await confirmAction('将此项作为独立副本添加给本体？不会覆盖现有知识；脚本不会自动执行。'))return;if(!current())return;
-     await api('role/clones',{roleId:report.parentId,action,kind,reportId:report.id,sourceId:first.sourceId,note:note.value.trim(),...(action==='review'?{decision:'skipped'}:{})});if(current()){status.textContent=action==='import'?'已添加独立副本。':'已记录跳过理由。';for(const control of view.children)if(control.tagName==='BUTTON')control.disabled=true;view.append(el('p',action==='import'?'已添加独立副本。':'已跳过。'));}
+     await api('role/clones',{roleId:report.parentId,action,kind,reportId:report.id,sourceId:first.sourceId,note:note.value.trim(),...(action==='review'?{decision:'skipped'}:{})});if(current()){notice(action==='import'?'已添加独立副本。':'已记录跳过理由。');await load();}
     })));
    }catch(e){if(current()&&epoch===readEpoch&&ticket===box.readTicket)fail(e);}
   }

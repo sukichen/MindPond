@@ -256,8 +256,8 @@ export function officeWorkbench(
   route('/role/activation/resolve',req=>graph.roles.resolveConnection(z.object({requestId:z.string().uuid(),expectedRevision:z.number().int().positive(),action:z.enum(['reject','delete'])}).strict().parse(req.body),operator));
   route('/role/application/delete',req=>graph.roles.deleteApplication(z.object({applicationId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(req.body),operator));
   route('/role/disconnect',req=>graph.roles.disconnect(z.object({roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),bindingId:z.string().uuid()}).strict().parse(req.body),operator));
-  route('/role/connect',req=>graph.roles.connect(z.object({roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),targetRuntimeId:z.string().min(1).max(256)}).strict().parse(req.body),operator));
-  route('/role/activate',req=>graph.roles.activate(z.object({requestId:z.string().uuid(),roleId:z.string().uuid(),expectedRevision:z.number().int().positive()}).strict().parse(req.body),operator));
+  route('/role/connect',req=>graph.roles.connect(z.object({roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),targetRuntimeId:z.string().min(1).max(256),recipientPrincipal:agentConfigurationSchema.shape.principal.optional()}).strict().parse(req.body),operator));
+  route('/role/activate',req=>graph.roles.activate(z.object({requestId:z.string().uuid(),roleId:z.string().uuid(),expectedRevision:z.number().int().positive(),recipientPrincipal:agentConfigurationSchema.shape.principal.optional()}).strict().parse(req.body),operator));
   route('/discussion-lock',req=>graph.discussions.setLock(req.body,operator));
   route('/discussions',req=>graph.discussions.run(discussionSchema.parse(req.body),operator));
   route('/discussion-history',req=>graph.discussions.history(req.body,operator));

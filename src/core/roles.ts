@@ -29,6 +29,7 @@ export class RoleStore {
   cloneStatus?:(roleId:string)=>Promise<Row>;
   assertCloneUsable?:(roleId:string)=>Promise<void>;
   assertCloneReorganizable?:(roleId:string)=>Promise<void>;
+  revokeMemoryDelegation?:(roleId:string)=>Promise<void>;
   discussionStatus?:(a?:TrustedCallContext)=>Promise<Row>;
   constructor(private db: Database, private write: <T>(fn: () => Promise<T>) => Promise<T>, private offices: OfficeStore, private clock: () => number = Date.now) {}
   async init() {
@@ -88,7 +89,7 @@ export class RoleStore {
     await this.db.run('INSERT INTO role_receipts VALUES(?,?,?,?,?,?,?)', [...p, hash, JSON.stringify(result)]);
     return result;
   }
-  async binding(a?: TrustedCallContext, required = true): Promise<Row | null> {
+  async binding(a?: TrustedCallContext, required = true, allowActivationAfterReturn = false): Promise<Row | null> {
     if (a && a.expiresAt <= this.clock()) fail('Trusted context expired', 'scope_denied');
     if (!a?.runtimeId || !a.agentId || a.transport !== 'http-mcp' || a.operator) {
       if (required) this.actor(a);
@@ -96,9 +97,10 @@ export class RoleStore {
     }
     this.actor(a);
     if (!(await this.offices.agentAuthority(a))) fail('Connector or role binding is no longer authorized', 'scope_denied');
-    const b = await this.db.get<Row>('SELECT b.*,r.name,r.introduction,r.state role_state,r.revision profile_revision,r.primary_seat FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.principal=? AND b.connector_id=? AND b.runtime_id=?', [a.principal, a.agentId, a.runtimeId]);
+    const b = await this.db.get<Row>('SELECT b.*,r.name,r.introduction,r.state role_state,r.revision profile_revision,r.primary_seat,EXISTS(SELECT 1 FROM role_clone_returns f WHERE f.role_id=r.id) clone_returned FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.principal=? AND b.connector_id=? AND b.runtime_id=?', [a.principal, a.agentId, a.runtimeId]);
     if (!b) { if (required) fail('No approved character for this session; use role_application','invalid_input'); return null; }
-    if(b.state!=='active'&&!required&&a.roleId===undefined&&a.roleBindingId===undefined&&a.roleBindingEpoch===undefined)return null;
+    if(b.clone_returned&&allowActivationAfterReturn)return null;
+    if(!b.clone_returned&&b.state!=='active'&&!required&&a.roleId===undefined&&a.roleBindingId===undefined&&a.roleBindingEpoch===undefined)return null;
     await this.assertCloneUsable?.(b.role_id);
     if (b.state !== 'active' || b.role_state !== 'active') fail('Character or session binding was disabled by the user', 'scope_denied');
     if ((a.roleId !== undefined && a.roleId !== b.role_id) ||
@@ -171,8 +173,17 @@ export class RoleStore {
     const request=await this.db.get<Row>("SELECT * FROM role_connection_requests WHERE id=? AND last_seen>?",[i.requestId,this.clock()-86400000]);
     if(!request)fail('Connection activation request expired or missing','not_found');
     const role=await this.db.get<Row>("SELECT * FROM character_roles WHERE id=? AND state='active'",[i.roleId]);
-    if(!role||role.principal!==request.principal)fail('Choose an active role belonging to this human account','invalid_input');
+    if(!role)fail('Choose an active role','invalid_input');
     if(role.revision!==i.expectedRevision)fail('Role changed; refresh before activating','stale_version');
+    const crossAccount=role.principal!==request.principal;
+    if(i.recipientPrincipal!==undefined&&i.recipientPrincipal!==request.principal)
+      fail('The target chat does not belong to the confirmed recipient account','invalid_input');
+    if(crossAccount){
+      if(i.recipientPrincipal===undefined||!await this.db.get("SELECT 1 FROM role_clones WHERE role_id=? AND state='active'",[role.id]))
+        fail('Only an active dispatched clone can be moved across accounts. Explicitly confirm its recipient account.','invalid_input');
+      if(await this.db.get("SELECT 1 FROM office_discussion_members WHERE role_id=? AND state='joined'",[role.id]))
+        fail('Have the clone summarize and leave its current discussion before moving it to another account.','invalid_input');
+    }
     if(!await this.offices.agentAuthority({v:1,principal:request.principal,agentId:request.connector_id,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}))fail('Target host connection is disabled or unavailable','scope_denied');
     const blocked=await this.db.get<Row>(`SELECT p.title FROM role_seats rs JOIN office_seats s ON s.id=rs.seat_id JOIN offices o ON o.id=s.office_id
       JOIN office_project_links l ON l.office_id=o.id JOIN office_projects p ON p.id=l.project_id
@@ -190,7 +201,12 @@ export class RoleStore {
     await this.db.run('UPDATE office_seats SET agent_id=?,revision=revision+1 WHERE id IN (SELECT seat_id FROM role_seats WHERE role_id=?)',[request.connector_id,role.id]);
     if(old)await this.db.run("UPDATE role_bindings SET role_id=?,state='active',epoch=epoch+1,last_seen=? WHERE id=?",[role.id,this.clock(),old.id]);
     else await this.db.run("INSERT INTO role_bindings VALUES(?,?,?,?,?,1,'active',?)",[randomUUID(),request.principal,request.connector_id,request.runtime_id,role.id,this.clock()]);
-    await this.db.run('UPDATE character_roles SET revision=revision+1 WHERE id=?',[role.id]);
+    await this.db.run('UPDATE character_roles SET principal=?,revision=revision+1 WHERE id=?',[request.principal,role.id]);
+    if(crossAccount){
+      await this.revokeMemoryDelegation?.(role.id);
+      await this.db.run('UPDATE role_clones SET revision=revision+1 WHERE role_id=?',[role.id]);
+      await this.event(role.id,'clone_account_assigned',{previousPrincipal:role.principal,principal:request.principal});
+    }
     await this.db.run("UPDATE role_applications SET state='cancelled',revision=revision+1 WHERE principal=? AND connector_id=? AND runtime_id=? AND state='pending'",[request.principal,request.connector_id,request.runtime_id]);
     await this.db.run('DELETE FROM role_connection_requests WHERE id=?',[request.id]);
     await this.db.run('DELETE FROM office_response_pages');
@@ -208,9 +224,11 @@ export class RoleStore {
     await this.db.run('UPDATE character_roles SET revision=revision+1 WHERE id=?',[i.roleId]);
     await this.db.run('DELETE FROM office_response_pages');
     await this.event(i.roleId,'user_disconnected_connection',{bindingId:b.id,connectorId:b.connector_id});
-    return {roleId:i.roleId,disconnected:true,notice:'The chat is now unbound (human memory). Role knowledge, mail and office assignments are preserved; in-flight role calls and dedicated credentials are revoked.'};
+    const colleague=await this.offices.accountAccess(b.principal)==='collaborator';
+    return {roleId:i.roleId,disconnected:true,memoryAccess:colleague?'role_required':'human_when_identified',
+      notice:colleague?'The chat is unbound. Bind an approved role before using Memory.':'The personal chat is unbound and can use human Memory.'};
   });}
-  async connect(i:{roleId:string;expectedRevision:number;targetRuntimeId:string},a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
+  async connect(i:{roleId:string;expectedRevision:number;targetRuntimeId:string;recipientPrincipal?:string},a?:TrustedCallContext){this.admin(a);return this.write(async()=>{
     const chat=await this.db.get<Row>('SELECT * FROM role_chat_sessions WHERE runtime_id=?',[i.targetRuntimeId]);
     if(!chat)fail('Chat not observed; call role_sync in the target chat first','not_found');
     const occupied=await this.db.get<Row>("SELECT role_id FROM role_bindings WHERE runtime_id=? AND principal=? AND connector_id=? AND state='active'",[chat.runtime_id,chat.principal,chat.connector_id]);
@@ -218,7 +236,7 @@ export class RoleStore {
     let request=await this.db.get<Row>('SELECT id FROM role_connection_requests WHERE runtime_id=?',[chat.runtime_id]);
     if(!request){request={id:randomUUID()};await this.db.run('INSERT INTO role_connection_requests VALUES(?,?,?,?,?,?,1)',[request.id,chat.principal,chat.connector_id,chat.runtime_id,this.clock(),this.clock()]);}
     else await this.db.run('UPDATE role_connection_requests SET last_seen=? WHERE id=?',[this.clock(),request.id]);
-    const result=await this.activate({requestId:request.id,roleId:i.roleId,expectedRevision:i.expectedRevision},a);
+    const result=await this.activate({requestId:request.id,roleId:i.roleId,expectedRevision:i.expectedRevision,recipientPrincipal:i.recipientPrincipal},a);
     await this.db.run('DELETE FROM role_activation_dismissals WHERE runtime_id=?',[chat.runtime_id]);
     return result;
   });}
@@ -310,10 +328,14 @@ export class RoleStore {
   }
   async sync(a?: TrustedCallContext) {
     const actor = this.actor(a);
-    const b = await this.binding(actor, false);
+    const b = await this.binding(actor, false, true);
     if (!b) {
       const application = await this.db.get<Row>('SELECT id,name,introduction,state,revision,created_at FROM role_applications WHERE principal=? AND connector_id=? AND runtime_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', [actor.principal, actor.agentId, actor.runtimeId]);
-      return { state: application?.state==='approved'?'unregistered':application?.state ?? 'unregistered', identity: null, application: application ?? null, instructions: ROLE_INSTRUCTIONS };
+      const lastReturn=await this.db.get<Row>(`SELECT f.role_id roleId,f.report_id reportId,
+        CASE WHEN f.archived_at IS NULL THEN 'returned' ELSE 'archived' END state
+        FROM role_bindings b JOIN role_clone_returns f ON f.role_id=b.role_id
+        WHERE b.runtime_id=? AND b.connector_id=? AND b.principal=?`,[actor.runtimeId,actor.agentId,actor.principal]);
+      return { lastReturn, state: application?.state==='approved'?'unregistered':application?.state ?? 'unregistered', identity: null, application: application ?? null, instructions: ROLE_INSTRUCTIONS };
     }
     const officePage = await this.rooms({},actor);
     const contactPage = await this.contacts({}, actor);
@@ -432,7 +454,7 @@ export class RoleStore {
       return {deleted:true,officeId:i.id};
     });
   }
-  private async fenceRole(roleId: string) {
+  async fenceRole(roleId: string) {
     const sessions = 'SELECT id FROM office_sessions WHERE seat_id IN (SELECT seat_id FROM role_seats WHERE role_id=?)';
     await this.db.run(`UPDATE office_sessions SET state='closed' WHERE id IN (${sessions})`, [roleId]);
     await this.db.run(`UPDATE office_items SET status='open',revision=revision+1,epoch=epoch+1,lease_hash=NULL,lease_until=NULL,session_id=NULL WHERE status='claimed' AND session_id IN (${sessions})`, [roleId]);
@@ -444,9 +466,12 @@ export class RoleStore {
     const revision=(await this.db.get<Row>('SELECT COALESCE(MAX(seq),0) n FROM role_events'))!.n;
     const directoryRevision=await this.directoryRevision(windows);
     const rolePage = await adminDirectory(this.db,`SELECT r.*,b.id binding_id,b.epoch,b.last_seen,r.id directory_key,b.connector_id,b.runtime_id,a.name connector_name,a.host,a.state host_state,c.source chat_source,c.native_chat_id,
-      EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
+      EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential,
+      cl.parent_id cloneParentId,cl.parent_name cloneParentName,cl.revision cloneRevision,
+      CASE WHEN f.role_id IS NOT NULL THEN 'returned' ELSE cl.state END cloneState
       FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
-      LEFT JOIN office_agents a ON a.id=b.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=b.runtime_id AND c.connector_id=b.connector_id AND c.principal=b.principal`,"r.state<>'merged'",[],windows.roles);
+      LEFT JOIN role_clones cl ON cl.role_id=r.id AND cl.state<>'purged' LEFT JOIN role_clone_returns f ON f.role_id=r.id
+      LEFT JOIN office_agents a ON a.id=b.connector_id LEFT JOIN role_chat_sessions c ON c.runtime_id=b.runtime_id AND c.connector_id=b.connector_id AND c.principal=b.principal`,"r.state<>'merged' AND f.archived_at IS NULL",[],windows.roles);
     const rows=rolePage.rows;
     const roles=rows.map(({connector_id,connector_name,runtime_id,host,host_state,chat_source,native_chat_id,...role})=>({...role,connection:role.binding_id?{
       connectorId:connector_id,name:connector_name??connector_id,host,hostState:host_state,chat: native_chat_id?{source:chat_source,id:native_chat_id}:null,chatRef:runtime_id,bindingId:role.binding_id,lastSeen:role.last_seen

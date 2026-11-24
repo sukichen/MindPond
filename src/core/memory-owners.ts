@@ -34,7 +34,7 @@ export class MemoryOwners {
     async nativeBinding(source:string,chatId:string) {
         const hosts=await this.db.all("SELECT id,principal,state FROM office_agents");
         const expected=new Map(hosts.map(h=>[roleRuntimeId(h.principal,h.id,source,chatId),h]));
-        const rows=await this.db.all("SELECT b.*,r.state role_state FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE b.state='active' AND b.runtime_id IN (SELECT value FROM json_each(?))",[JSON.stringify([...expected.keys()])]);
+        const rows=await this.db.all("SELECT b.*,r.state role_state FROM role_bindings b JOIN character_roles r ON r.id=b.role_id WHERE (b.state='active' OR EXISTS(SELECT 1 FROM role_clone_returns f WHERE f.role_id=b.role_id)) AND b.runtime_id IN (SELECT value FROM json_each(?))",[JSON.stringify([...expected.keys()])]);
         const matches=rows.filter(r=>{const h=expected.get(r.runtime_id);return h&&h.id===r.connector_id&&h.principal===r.principal;});
         const active=matches.filter(r=>expected.get(r.runtime_id)!.state==='active');
         if(active.length>1)throw new MindPondError('scope_denied','This chat matches multiple host connections. Use the Memory endpoint generated for the intended host.');
@@ -149,7 +149,9 @@ export class MemoryOwners {
         WHERE ns.role_id=r.id AND n.domain_kind='personal') memoryCount,
       EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
       FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
-      LEFT JOIN office_agents a ON a.id=b.connector_id WHERE r.state<>'merged' ORDER BY r.name,r.id`); }
+      LEFT JOIN office_agents a ON a.id=b.connector_id WHERE r.state<>'merged'
+      AND NOT EXISTS (SELECT 1 FROM role_clone_returns f WHERE f.role_id=r.id AND f.archived_at IS NOT NULL)
+      ORDER BY r.name,r.id`); }
     async allocate(memoryIds: string[], roleId: string) {
         const sources = new Map<string, MemoryNode>();
         for (const id of [...new Set(memoryIds)]) {
