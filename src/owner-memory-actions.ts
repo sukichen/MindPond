@@ -196,7 +196,7 @@ export function registerOwnerMemoryActions(api:Options){
   });
   async function referenced(a:any,o:Actor){const n=await get(a.nodeId,o);if(!n.sourceRefs?.some(r=>r.uri===a.uri&&r.context===a.context))throw new MindPondError('invalid_input','Read and select a source reference recorded in this memory');return n;}
   action('memory_source_observe','Record an actually checked source revision for permitted knowledge. CAS prevents blind overwrite; only this owner’s freshness is affected.',{nodeId:id,...sourceReferenceSchema.shape,status:z.enum(['present','missing']),expectedVersion:z.number().int().min(0)},async(a,o,g)=>{
-    const n=await referenced(a,o),authorize=async()=>{await g();await referenced(a,o);};await authorize();
+    const n=await referenced(a,o),authorize=async()=>{await writable(a.nodeId,o,g);await referenced(a,o);};await authorize();
     return graph.observeSource(a,n.domain,authorize);
   });
 }

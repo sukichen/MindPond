@@ -1172,7 +1172,7 @@ export class GraphMemory {
     await this.building.init();
     this.officeCollaboration=this.coordinator.service(new OfficeCollaboration(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock),['init','publish','records','handoffContext','relations','controls','requestControl','responsePage','boundResponse','layout','captureLayout','observations','permissions','impact','exportPage','operations']);
     await this.officeCollaboration.init();
-    this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential','nativeBinding','office','offices','context','ownerContext','policy','setPolicy','assertWritable','roleBinding','present']);
+    this.memoryOwners=this.coordinator.service(new MemoryOwners(this.db,this,work=>this.growthWrite(work)),['init','domain','role','owner','roles','issue','credential','nativeBinding','office','offices','context','ownerContext','policy','setPolicy','assertWritable','assertCloneMemoryWritable','roleBinding','present']);
     await this.memoryOwners.init();
     this.roleMemoryPermissions=this.coordinator.service(new RoleMemoryPermissions(this.db,work=>this.growthWrite(work),this.clock),['init','get','manage','authorize','directory','revoke','audit']);await this.roleMemoryPermissions.init();
     await this.roles.migrateModel();

@@ -3,7 +3,7 @@
 import type { Database } from 'sqlite';
 import type { GraphMemory, MemoryNode } from './graph-memory.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import {roleRuntimeId} from './roles.js';
+import {ROLE_BINDING_CHAT_POLICY,roleRuntimeId} from './roles.js';
 import { MindPondError } from './errors.js';
 export type MemoryOwner = {
     kind: 'user';
@@ -26,9 +26,11 @@ export class MemoryOwners {
   `);
     }
     async role(roleId: string) { const r = await this.db.get(`SELECT r.id,r.name,r.state,r.principal,b.connector_id,a.name connector_name,a.host FROM character_roles r
-      LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active' LEFT JOIN office_agents a ON a.id=b.connector_id WHERE r.id=?`, [roleId]); if (!r || r.state !== 'active')
+      LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active' AND ${ROLE_BINDING_CHAT_POLICY} LEFT JOIN office_agents a ON a.id=b.connector_id WHERE r.id=?`, [roleId]); if (!r || r.state !== 'active')
         throw new MindPondError('scope_denied', 'The memory role is unavailable or disabled'); await this.graph.roleClones?.assertUsable(roleId); return r; }
-    async roleBinding(roleId: string) { return this.db.get("SELECT id,epoch,runtime_id,connector_id,principal FROM role_bindings WHERE role_id=? AND state='active'", [roleId]); }
+    async roleBinding(roleId: string) { return this.db.get(`SELECT b.id,b.epoch,b.runtime_id,b.connector_id,b.principal FROM role_bindings b
+        WHERE b.role_id=? AND b.state='active'
+        AND ${ROLE_BINDING_CHAT_POLICY}`,[roleId]); }
     /** Native chat identity is supplied by the host, never by tool arguments.
      * Ambiguous matches require the authenticated host-specific Memory endpoint. */
     async nativeBinding(source:string,chatId:string) {
@@ -131,6 +133,7 @@ export class MemoryOwners {
         return {locked,revision,updatedAt:at};
     });}
     async assertWritable(actor:MemoryOwner,target:MemoryOwner,memoryId?:string,assignmentIds?:string[]){
+        await this.assertCloneMemoryWritable(actor,memoryId);
         if(actor.kind==='user')return;
         if(target.kind==='agent'&&actor.kind==='agent'&&target.id===actor.id)return;
         if(target.kind!=='office'||actor.kind!=='agent')throw new MindPondError('scope_denied','Cannot modify another owner’s knowledge');
@@ -138,17 +141,24 @@ export class MemoryOwners {
         if(!room||room.state!=='active')throw new MindPondError('scope_denied','Your role must be a current member of an active office to modify its memory');
         if(memoryId&&(await this.policy(memoryId)).locked)throw new MindPondError('scope_denied','This office memory is read-only for roles. Ask the human administrator to revise or unlock it.');
     }
+    async assertCloneMemoryWritable(actor:MemoryOwner,memoryId?:string){
+        if(actor.kind==='user'||!memoryId)return;
+        if(await this.db.get(`SELECT 1 FROM role_knowledge_copies c JOIN nodes n ON n.id=c.copy_id
+            JOIN memory_role_namespaces ns ON n.domain_kind='personal' AND ns.domain_id=n.domain_id
+            WHERE c.copy_id=? AND c.kind='memory' AND c.origin='Clone dispatch '||ns.role_id`,[memoryId]))
+            throw new MindPondError('scope_denied','Inherited clone memory is read-only. Save new findings as a separate private memory and include this memory as a source.');
+    }
     async present(node:MemoryNode) {
         const {embedding,domain,sessionId,...rest}=node,owner=await this.owner(node);
         const provenance=await this.db.get('SELECT source_id sourceId,source_revision sourceRevision,source_hash sourceHash,created_at assignedAt FROM memory_allocations WHERE copy_id=?',[node.id]);
         const copyOrigin=await this.db.get("SELECT source_id sourceId,source_version sourceVersion,source_hash sourceHash,origin,created_at createdAt FROM role_knowledge_copies WHERE copy_id=? AND kind='memory'",[node.id]);
-        return {...rest,owner,...(copyOrigin?{copyOrigin}:{}),...(owner.kind==='office'?{officePolicy:await this.policy(node.id)}:{}),...(provenance?{provenance}:{})};
+        return {...rest,owner,...(copyOrigin?{copyOrigin,...(owner.kind==='agent'&&copyOrigin.origin==='Clone dispatch '+owner.id?{inheritedReadOnly:true}:{})}:{}),...(owner.kind==='office'?{officePolicy:await this.policy(node.id)}:{}),...(provenance?{provenance}:{})};
     }
     async roles() { return this.db.all(`SELECT r.id,r.name,r.state,b.connector_id connectorId,a.name connectorName,a.host,a.state hostState,
       (SELECT COUNT(*) FROM nodes n JOIN memory_role_namespaces ns ON ns.domain_id=n.domain_id
         WHERE ns.role_id=r.id AND n.domain_kind='personal') memoryCount,
       EXISTS(SELECT 1 FROM memory_role_credentials c WHERE c.role_id=r.id AND c.state='active') hasMemoryCredential
-      FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active'
+      FROM character_roles r LEFT JOIN role_bindings b ON b.role_id=r.id AND b.state='active' AND ${ROLE_BINDING_CHAT_POLICY}
       LEFT JOIN office_agents a ON a.id=b.connector_id WHERE r.state<>'merged'
       AND NOT EXISTS (SELECT 1 FROM role_clone_returns f WHERE f.role_id=r.id AND f.archived_at IS NOT NULL)
       ORDER BY r.name,r.id`); }
@@ -190,11 +200,11 @@ export class MemoryOwners {
             return { roleId, copies, independentCopies: true };
         })();
     }
-    async issue(roleId: string, allowRotation=false) { return this.write(async () => { const role=await this.role(roleId); if(!role.connector_id||!await this.graph.offices.agentAuthority({v:1,principal:role.principal,agentId:role.connector_id,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}))throw new MindPondError('invalid_input','请先在办公室将角色连接到可用聊天，再生成专用配置。'); if(!allowRotation&&await this.db.get("SELECT 1 FROM memory_role_credentials WHERE role_id=? AND state='active'",[roleId]))throw new MindPondError('stale_version','该角色已有专用连接配置。请明确确认替换；替换后当前配置立即失效。'); await this.db.run("UPDATE memory_role_credentials SET state='revoked' WHERE role_id=?", [roleId]); const token = 'mpr_' + randomBytes(32).toString('base64url'), id = randomUUID(); await this.db.run("INSERT INTO memory_role_credentials VALUES(?,?,?,'active',?)", [id, roleId, createHash('sha256').update(token).digest('hex'), Date.now()]); return { id, roleId, token, connection:{connectorId:role.connector_id,name:role.connector_name,host:role.host}, notice: 'Store in the host secret configuration, never in chat. Rotation revokes the previous role memory credential.' }; }); }
+    async issue(roleId: string, allowRotation=false) { return this.write(async () => { const role=await this.role(roleId); if(!await this.roleBinding(roleId)||!role.connector_id||!await this.graph.offices.agentAuthority({v:1,principal:role.principal,agentId:role.connector_id,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}))throw new MindPondError('invalid_input','请先在办公室将角色连接到可用聊天，再生成专用配置。'); if(!allowRotation&&await this.db.get("SELECT 1 FROM memory_role_credentials WHERE role_id=? AND state='active'",[roleId]))throw new MindPondError('stale_version','该角色已有专用连接配置。请明确确认替换；替换后当前配置立即失效。'); await this.db.run("UPDATE memory_role_credentials SET state='revoked' WHERE role_id=?", [roleId]); const token = 'mpr_' + randomBytes(32).toString('base64url'), id = randomUUID(); await this.db.run("INSERT INTO memory_role_credentials VALUES(?,?,?,'active',?)", [id, roleId, createHash('sha256').update(token).digest('hex'), Date.now()]); return { id, roleId, token, connection:{connectorId:role.connector_id,name:role.connector_name,host:role.host}, notice: 'Store in the host secret configuration, never in chat. Rotation revokes the previous role memory credential.' }; }); }
     async credential(token: string) { const r = await this.db.get("SELECT id,role_id FROM memory_role_credentials WHERE token_hash=? AND state='active'", [createHash('sha256').update(token).digest('hex')]); if (!r)
         return null; try {
         const role=await this.role(r.role_id);
-        if(!role.connector_id||!await this.graph.offices.agentAuthority({v:1,principal:role.principal,agentId:role.connector_id,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}))return null;
+        if(!await this.roleBinding(r.role_id)||!role.connector_id||!await this.graph.offices.agentAuthority({v:1,principal:role.principal,agentId:role.connector_id,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER}))return null;
         return r;
     }
     catch {

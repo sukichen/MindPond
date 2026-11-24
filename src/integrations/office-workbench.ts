@@ -180,7 +180,7 @@ export function officeWorkbench(
     if (raw) await graph.offices.managementSession('delete',sessionHash(raw.trim().slice('mindpond_office_admin='.length)),authorityHash,operator);
     return { ok: true };
   });
-  const directoryWindows=z.object(Object.fromEntries(['agents','projects','offices','roles','pending','chats','connections'].map(k=>[k,z.string().min(1).max(512).optional()]))).strict();
+  const directoryWindows=z.object(Object.fromEntries(['agents','projects','offices','roles','clones','pending','chats','connections'].map(k=>[k,z.string().min(1).max(512).optional()]))).strict();
   route('/state', async (req) => {
     const windows=directoryWindows.parse(req.body.directoryThrough??{});
     const known=z.object({choicesRevision:z.string().regex(/^[a-f0-9]{64}$/).optional(),connectionTemplatesRevision:z.string().regex(/^[a-f0-9]{64}$/).optional()}).parse(req.body);
@@ -199,7 +199,7 @@ export function officeWorkbench(
     }
     const registry = await graph.offices.registry(operator,windows), settings = await graph.offices.settings(operator);
     const choices=conditionalProjection(await graph.offices.choices(operator),known.choicesRevision);
-    const templates=conditionalProjection(settings.mcpUrl?Object.fromEntries(registry.agents.map((a:any)=>[a.id,officeConnection({host:a.host,id:a.id,url:settings.mcpUrl})])):{},known.connectionTemplatesRevision);
+    const templates=conditionalProjection(settings.mcpUrl?Object.fromEntries(registry.agents.map((a:any)=>[a.id,officeConnection({host:a.host,id:a.id,url:settings.mcpUrl,accountAccess:a.accountAccess})])):{},known.connectionTemplatesRevision);
     return {
       ...registry, choices:choices.value,choicesRevision:choices.revision, selectedOffice:req.body.selectedOfficeId?{id:z.string().min(1).max(160).parse(req.body.selectedOfficeId),exists:await graph.offices.officeExists(req.body.selectedOfficeId,operator)}:null, settings, replyWaitPolicy:await graph.building.replyWaitPolicy.get(), release:releaseInfo(),capabilities: OFFICE_CAPABILITIES,hostReports:await graph.officeCollaboration.observations(operator),
       connectionTemplates:templates.value,connectionTemplatesRevision:templates.revision,
@@ -207,7 +207,7 @@ export function officeWorkbench(
       credentialIssuance: !!options.configFile, credentialPolicies, credentialPolicyError, oauth: false
     };
   });
-  route('/connection-template',async req=>{const i=z.object({agentId:z.string().min(1).max(128),identityMode:z.enum(['connection','native'])}).strict().parse(req.body);const agent=await graph.offices.agent(i.agentId,operator);if(!agent)throw new MindPondError('not_found','Connection not found');const settings=await graph.offices.settings(operator);if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address first');return officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:i.identityMode});});
+  route('/connection-template',async req=>{const i=z.object({agentId:z.string().min(1).max(128),identityMode:z.enum(['connection','native'])}).strict().parse(req.body);const agent=await graph.offices.agent(i.agentId,operator);if(!agent)throw new MindPondError('not_found','Connection not found');const settings=await graph.offices.settings(operator);if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address first');return officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:i.identityMode,accountAccess:agent.accountAccess});});
   route('/reply-wait-policy',req=>graph.building.replyWaitPolicy.manage(req.body,operator));
   route('/settings', (req) => graph.offices.settings(operator, req.body.mcpUrl));
   officeAdminServices(graph,route,operator);
@@ -346,6 +346,8 @@ export function officeWorkbench(
     const currentConfig=await readNetworkConfiguration(options.configFile).catch(()=>null);
     if(currentConfig)singleAgentGrant(currentConfig,agent.id); // Before changing this host's availability.
     const settings=await graph.offices.settings(operator);
+    if(agent.accountAccess==='collaborator'&&input.identityMode==='connection')
+      throw new MindPondError('invalid_input','同事账户须使用逐聊天身份。');
     if(input.identityMode){if(!settings.mcpUrl)throw new MindPondError('invalid_input','Save the public MCP address before generating a configuration');officeConnection({host:agent.host,id:agent.id,url:settings.mcpUrl,identityMode:input.identityMode});}
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mindpond-issue-'));
     // DB pending/disabled is authoritative in the gateway: a file write alone cannot activate access.

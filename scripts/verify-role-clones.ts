@@ -4,9 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import {randomBytes} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {createNetworkMcpApp} from '../src/integrations/network-server.js';
+import {officeConnection} from '../src/integrations/office-connection.js';
+import {signHostSession} from '../src/integrations/host-correlation.js';
 import {tokenDigest} from '../src/integrations/network-config.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
@@ -95,12 +97,17 @@ try{
   await rejects(()=>graph.roleClones.office({action:'submit',summary:'Cannot yet publish outside room',key:'blocked'},actor('clone',true)),'scope_denied');
   const current=await graph.discussions.run({action:'get',id:room.room.id},admin);await graph.discussions.run({action:'close',id:room.room.id,expectedRevision:current.room.revision},admin);
  });
- await test('change detection includes graph evidence and anchors, excludes access counters and embeddings',async()=>{
-  const before=await graph.roleClones.office({action:'candidates'},actor('clone',true));assert.equal(before.records.find((r:any)=>r.id===childFirst).change,'inherited');
-  await db.run('UPDATE nodes SET access_count=access_count+1 WHERE id=?',[childFirst]);assert.equal((await graph.roleClones.office({action:'candidates'},actor('clone',true))).records.find((r:any)=>r.id===childFirst).change,'inherited');
-  const anchor=await db.get('SELECT id,text FROM memory_anchors WHERE memory_id=?',[childFirst]);await db.run('UPDATE memory_anchors SET text=? WHERE id=?',['Different recall trigger',anchor.id]);assert.equal((await graph.roleClones.office({action:'candidates'},actor('clone',true))).records.find((r:any)=>r.id===childFirst).change,'changed');await db.run('UPDATE memory_anchors SET text=? WHERE id=?',[anchor.text,anchor.id]);
-  const edge=await db.get('SELECT * FROM memory_associations WHERE member_a_id IN (SELECT id FROM memory_memberships WHERE memory_id=?) OR member_b_id IN (SELECT id FROM memory_memberships WHERE memory_id=?)',[childFirst,childFirst]);
-  await db.run('UPDATE memory_associations SET weight=.6 WHERE id=?',[edge.id]);assert.equal((await graph.roleClones.office({action:'candidates'},actor('clone',true))).records.find((r:any)=>r.id===childFirst).change,'changed');await db.run('UPDATE memory_associations SET weight=? WHERE id=?',[edge.weight,edge.id]);
+ await test('inherited memory remains readable and cannot be edited, deleted, reorganized or returned',async()=>{
+  const record=await call('memory_get',{nodeId:childFirst},'clone');
+  assert.equal(record.inheritedReadOnly,true);
+  assert.equal((await call('memory_get',{nodeId:lesson.id},'clone')).inheritedReadOnly,undefined);
+  await deny('memory_update',{nodeId:childFirst,content:'Forbidden edit',expectedUpdatedAt:record.updatedAt,reason:'Synthetic check',idempotencyKey:'cannot-edit'},'clone','scope_denied');
+  await deny('memory_delete',{nodeId:childFirst,reason:'Synthetic check'},'clone','scope_denied');
+  await deny('memory_action',{tool:'memory_membership_add',arguments:{nodeId:childFirst,spaceId:'memory',memoryType:'concept'}},'clone','scope_denied');
+  const edge=(await call('memory_connections',{nodeId:childFirst},'clone')).connections[0];
+  await deny('memory_association_delete',{id:edge.id,reason:'Synthetic check'},'clone','scope_denied');
+  await rejects(()=>graph.roleClones.office({action:'submit',summary:'Should not return inherited content',memoryIds:[childFirst],key:'exclude-inherited'},actor('clone',true)),'invalid_input');
+  assert.equal((await call('memory_get',{nodeId:childFirst},'clone')).content,record.content);
  });
  let report:any;
  await test('return packages are immutable and selected; unchanged inherited assets excluded; no automatic parent writes',async()=>{
@@ -116,10 +123,10 @@ try{
   const input={roleId:parent,action:'import',reportId:report.reportId,sourceId:lesson.id,kind:'memory',note:'Verified synthetic applicability'};
   imported=await graph.roleClones.manage(input,admin);assert.equal(imported.decision,'accepted');assert.notEqual(imported.targetId,lesson.id);assert.equal((await graph.roleClones.manage(input,admin)).targetId,imported.targetId);
   const copy=await call('memory_get',{nodeId:imported.targetId});assert.equal(copy.content,'Synthetic new verified lesson from recipient work');assert(copy.sourceRefs.some((s:any)=>s.context.includes(report.reportId)));
-  const next=await graph.roleClones.office({action:'submit',memoryIds:[childFirst],scriptIds:[childScript],summary:'Second explicit return',key:'return-2'},actor('clone',true));
-  await deny('memory_clone',{action:'review',reportId:next.reportId,sourceId:childFirst,decision:'accepted',targetId:lesson.id,expectedTargetVersion:1,note:'Wrong target'},'parent','not_found');
-  await deny('memory_clone',{action:'review',reportId:next.reportId,sourceId:childFirst,decision:'accepted',targetId:imported.targetId,expectedTargetVersion:1,note:'Stale target'},'parent','stale_version');
-  const args={action:'review',reportId:next.reportId,sourceId:childFirst,decision:'accepted',targetId:imported.targetId,expectedTargetVersion:copy.updatedAt,note:'Parent has reviewed synthesis'};
+  const next=await graph.roleClones.office({action:'submit',memoryIds:[lesson.id],scriptIds:[childScript],summary:'Second explicit return',key:'return-2'},actor('clone',true));
+  await deny('memory_clone',{action:'review',reportId:next.reportId,sourceId:lesson.id,decision:'accepted',targetId:lesson.id,expectedTargetVersion:1,note:'Wrong target'},'parent','not_found');
+  await deny('memory_clone',{action:'review',reportId:next.reportId,sourceId:lesson.id,decision:'accepted',targetId:imported.targetId,expectedTargetVersion:1,note:'Stale target'},'parent','stale_version');
+  const args={action:'review',reportId:next.reportId,sourceId:lesson.id,decision:'accepted',targetId:imported.targetId,expectedTargetVersion:copy.updatedAt,note:'Parent has reviewed synthesis'};
   await call('memory_clone',args);assert((await call('memory_clone',args)).replayed);await deny('memory_clone',{...args,note:'Different decision'},'parent','idempotency_conflict');
   const scriptItem=await graph.roleClones.office({action:'get_script',reportId:next.reportId},actor('parent'));assert.equal(scriptItem.sourceId,childScript);
   await graph.roleClones.office({action:'review_script',reportId:next.reportId,sourceId:childScript,decision:'skipped',note:'Already inherited, no additional value'},actor('parent'));
@@ -144,10 +151,29 @@ try{
   try{await assert.rejects(()=>graph.roleClones.manage({...dispatch,key:'rollback'},admin));assert.equal((await db.get('SELECT count(*) n FROM character_roles')).n,before);assert(!await db.get("SELECT 1 FROM role_clone_receipts WHERE operation='dispatch' AND key='rollback'"));}finally{await db.exec('DROP TRIGGER fixture_fail_clone_script');}
   await graph.roleClones.manage({roleId:result.roleId,action:'revoke',expectedRevision:1},admin);await graph.roleClones.manage({roleId:result.roleId,action:'purge',expectedRevision:2},admin);
  });
+ await test('recall keeps a new profile and references inherited support without returning the inherited memory',async()=>{
+  const result=await graph.roleClones.manage({...dispatch,memoryIds:[first.id],scriptIds:[],key:'supported-return'},admin);
+  const domain=await graph.memoryOwners.domain({kind:'agent',id:result.roleId});
+  const profile=await graph.saveMemory('New synthesized private finding',{domain,dimensions:['practice'],
+   memberships:[{spaceId:'memory',memoryType:'practice'}],idempotencyKey:'new-profile'});
+  const inherited=await db.get(`SELECT c.source_version,c.source_hash,m.id membershipId,m.version FROM role_clone_assets a
+    JOIN role_knowledge_copies c ON c.copy_id=a.copy_id JOIN memory_memberships m ON m.memory_id=a.copy_id WHERE a.role_id=? AND a.kind='memory'`,[result.roleId]);
+  await db.run('INSERT INTO profile_records VALUES(?,1,1,?)',[profile.memberships[0].id,JSON.stringify({title:'Returned profile',coverage:['Fixture only'],unknowns:[]})]);
+  await db.run('INSERT INTO profile_supports VALUES(?,?,?,?,?)',[profile.memberships[0].id,inherited.membershipId,inherited.version,'Inherited support','Fixture']);
+  const recalled=await graph.roleClones.manage({action:'recall',roleId:result.roleId,expectedRevision:1},admin);
+  assert.equal(recalled.memories,1);
+  const report=await call('memory_clone',{action:'get',cloneId:result.roleId,part:'metadata'});
+  assert.deepEqual(report.items.map((entry:any)=>entry.sourceId),[profile.id]);
+  assert.deepEqual(JSON.parse(report.content).supports[0].inheritedSource,{
+   membershipId:inherited.membershipId,sourceMemoryId:first.id,sourceVersion:inherited.source_version,sourceHash:inherited.source_hash
+  });
+  await call('memory_clone',{action:'review',reportId:recalled.reportId,sourceId:profile.id,decision:'skipped',note:'Reviewed synthetic support'});
+  await graph.roleClones.office({action:'archive',cloneId:result.roleId},actor('parent'));
+ });
  await test('return imports honor the parent registered memory namespace instead of creating human-owned orphan copies',async()=>{
-  const report=await graph.roleClones.office({action:'submit',memoryIds:[childFirst],scriptIds:[],summary:'Namespace regression',key:'namespace-return'},actor('clone',true));const domain=await graph.memoryOwners.domain({kind:'agent',id:parent}),alias='retained:'+parent;
+  const report=await graph.roleClones.office({action:'submit',memoryIds:[lesson.id],scriptIds:[],summary:'Namespace regression',key:'namespace-return'},actor('clone',true));const domain=await graph.memoryOwners.domain({kind:'agent',id:parent}),alias='retained:'+parent;
   await db.run('UPDATE memory_role_namespaces SET domain_id=? WHERE role_id=?',[alias,parent]);await db.run("UPDATE nodes SET domain_id=? WHERE domain_kind='personal' AND domain_id=?",[alias,domain.id]);
-  try{const result=await graph.roleClones.manage({roleId:parent,action:'import',reportId:report.reportId,sourceId:childFirst,note:'Preserve registered parent namespace'},admin);const node=await db.get('SELECT domain_id FROM nodes WHERE id=?',[result.targetId]);assert.equal(node.domain_id,alias);assert.equal((await call('memory_get',{nodeId:result.targetId})).owner.id,parent);}finally{await db.run("UPDATE nodes SET domain_id=? WHERE domain_kind='personal' AND domain_id=?",[domain.id,alias]);await db.run('UPDATE memory_role_namespaces SET domain_id=? WHERE role_id=?',[domain.id,parent]);}
+  try{const result=await graph.roleClones.manage({roleId:parent,action:'import',reportId:report.reportId,sourceId:lesson.id,note:'Preserve registered parent namespace'},admin);const node=await db.get('SELECT domain_id FROM nodes WHERE id=?',[result.targetId]);assert.equal(node.domain_id,alias);assert.equal((await call('memory_get',{nodeId:result.targetId})).owner.id,parent);}finally{await db.run("UPDATE nodes SET domain_id=? WHERE domain_kind='personal' AND domain_id=?",[domain.id,alias]);await db.run('UPDATE memory_role_namespaces SET domain_id=? WHERE role_id=?',[domain.id,parent]);}
  });
  await test('registered Office MCP exposes dispatch metadata and script returns without memory reads or source-cache copies',async()=>{
   const office=createMemoryMcpServer(graph,{trusted:actor('parent')}),oc=new Client({name:'office-clone-fixture',version:'1'}),[s,c]=InMemoryTransport.createLinkedPair();
@@ -185,7 +211,7 @@ try{
   assert.equal((await call('memory_identity',{},'clone')).owner.kind,'user');assert.equal(await graph.roles.identity(actor('clone',true)),null);
   await rejects(()=>graph.roles.binding({...actor('clone',true),roleId:child.roleId,roleBindingId:binding.id,roleBindingEpoch:binding.epoch}),'scope_denied');
  });
- await test('colleague credentials are role-only across both HTTP identity modes through final return and archive',async()=>{
+ await test('colleagues use per-chat Office and Memory on the same credential through final return and archive',async()=>{
   const recipientToken=randomBytes(32).toString('base64url'), oldToken=randomBytes(32).toString('base64url');
   const allowedHosts=['127.0.0.1'];
   for(const id of ['old-peer','old-peer-2'])await graph.offices.configureAgent({
@@ -214,12 +240,38 @@ try{
   try{
    await rejects(()=>graph.offices.configureAgent({id:'account-collision',principal:'human',name:'Colleague',host:'generic',
     state:'active',expectedRevision:0,accountAccess:'collaborator'},admin),'invalid_input');
-   const oldMemory=await connect('/memory/mcp',oldToken,true);
+   const nativeTemplate=officeConnection({host:'opencode',id:'colleague',url:'http://127.0.0.1:7904/mcp',accountAccess:'collaborator'});
+   assert.equal(nativeTemplate.identityMode,'native');
+   assert.equal(Object.keys(nativeTemplate.files??{}).length,1);
+   assert(!nativeTemplate.text.includes('X-MindPond-Identity'));
+   assert.throws(()=>officeConnection({host:'opencode',id:'colleague',url:'http://127.0.0.1:7904/mcp',accountAccess:'collaborator',identityMode:'connection'}),{code:'invalid_input'});
+   const oldMemory=await connect('/memory/mcp',oldToken,true),oldOffice=await connect('/mcp',oldToken,true);
    assert.equal((await invoke(oldMemory,'memory_identity',{})).data.owner.kind,'user');
+   const shared=(await invoke(oldOffice,'role_application',{action:'submit',name:'Former shared role',introduction:'Synthetic identity',reason:'Account change regression',key:'shared'})).data;
+   const migrated=await graph.roles.review({action:'approve',applicationId:shared.applicationId,expectedRevision:1},admin);
+   assert.equal((await invoke(oldMemory,'memory_identity',{})).data.owner.id,migrated.roleId);
+   const formerShared=await graph.roleClones.manage({...dispatch,principal:'old-recipient',memoryIds:[],scriptIds:[],key:'shared-clone'},admin);
+   const sharedChat={...actor('parent'),principal:'old-recipient',agentId:'old-peer',credentialId:'fixture-shared-clone',
+    runtimeMode:'credential' as const,runtimeId:roleRuntimeId('old-recipient','old-peer','credential','fixture-shared-clone')};
+   await graph.roles.observeChat(sharedChat);
+   await graph.roles.connect({roleId:formerShared.roleId,targetRuntimeId:sharedChat.runtimeId,expectedRevision:1},admin);
+   const sharedCredential=await graph.memoryOwners.issue(formerShared.roleId);
    await graph.offices.configureAgent({id:'old-peer',principal:'old-recipient',name:'old-peer',host:'generic',
     state:'active',expectedRevision:1,accountAccess:'collaborator'},admin);
+   const parentDispatches=await graph.roleClones.manage({action:'status',roleId:parent},admin);
+   assert.equal(parentDispatches.clones.find((entry:any)=>entry.roleId===formerShared.roleId).connectorId,null);
+   await graph.roleClones.manage({action:'assign_account',roleId:formerShared.roleId,expectedRevision:1,principal:'recipient'},admin);
+   assert.equal((await db.get('SELECT state FROM role_bindings WHERE role_id=?',[formerShared.roleId])).state,'revoked');
+   assert.equal((await db.get('SELECT state FROM memory_role_credentials WHERE id=?',[sharedCredential.id])).state,'revoked');
    assert.equal((await invoke(oldMemory,'memory_identity',{})).data.error.code,'identity_required',
     'an already-open connection on a second host inherits the account restriction immediately');
+   assert.equal((await invoke(oldOffice,'role_sync',{})).data.error.code,'identity_required');
+   assert.equal((await graph.roles.registry(admin)).roles.find((entry:any)=>entry.id===migrated.roleId).connection,null);
+   const nativeOffice=await connect('/mcp',oldToken),nativeMemory=await connect('/memory/mcp',oldToken);
+   const reopened=(await invoke(nativeOffice,'role_sync',{},'recovered-chat')).data;
+   await graph.roles.activate({requestId:reopened.activation.id,roleId:migrated.roleId,expectedRevision:1},admin);
+   assert.equal((await invoke(nativeMemory,'memory_identity',{},'recovered-chat')).data.owner.id,migrated.roleId);
+   assert.equal((await invoke(nativeMemory,'memory_identity',{},'another-chat')).data.error.code,'identity_required');
    await rejects(()=>graph.offices.configureAgent({id:'old-peer',principal:'old-recipient',name:'old-peer',host:'generic',
     state:'active',expectedRevision:2,accountAccess:'personal'},admin),'invalid_input');
    const fixedMemory=await connect('/memory/mcp',recipientToken,true),memo=await connect('/memory/mcp'),office=await connect('/mcp');
@@ -257,8 +309,43 @@ try{
    assert.equal((await invoke(memo,'memory_get',{nodeId:first.id},'colleague-chat')).data.error.code,'scope_denied');
    const saved=await invoke(memo,'memory_action',{tool:'memory_save',arguments:{content:'Synthetic collaborator final instruction',idempotencyKey:'final'}},'colleague-chat');
    assert(!saved.error,JSON.stringify(saved));
-   const creds=await graph.memoryOwners.issue(transferable.roleId),dedicated=await connect('/mcp',creds.token,true);
-   const released=await invoke(dedicated,'office_clone',{action:'release',summary:'Final collaborator experience',key:'release'});
+   const creds=await graph.memoryOwners.issue(transferable.roleId),dedicated=await connect('/mcp',creds.token);
+   assert.equal((await invoke(dedicated,'role_sync',{})).data.error.code,'identity_required');
+   const siblingArgs={action:'submit',name:'Second colleague role',introduction:'Synthetic second chat',reason:'Concurrent chat test',key:'second-chat'};
+   async function signed(mcp:Client,name:string,args:Record<string,unknown>){
+    const result:any=await mcp.callTool({name,arguments:{...args,hostContext:signHostSession('second-colleague-chat',name,args,recipientToken)}});
+    return {error:result.isError,data:JSON.parse(result.content[0].text)};
+   }
+   const sibling=await signed(office,'role_application',siblingArgs);
+   assert(!sibling.error,JSON.stringify(sibling));
+   const approved=await graph.roles.review({action:'approve',applicationId:sibling.data.applicationId,expectedRevision:1},admin);
+   assert.equal((await signed(memo,'memory_identity',{})).data.owner.id,approved.roleId);
+   assert.equal((await signed(memo,'memory_get',{nodeId:saved.data.id})).data.error.code,'scope_denied');
+   await graph.roleMemoryPermissions.manage({action:'set',roleId:approved.roleId,readOthers:true,organizeOthers:true,expectedRevision:0},admin);
+   const delegated=await signed(memo,'memory_role_action',{targetRoleId:child.roleId,tool:'memory_get',arguments:{nodeId:childFirst}});
+   assert.equal(delegated.data.result.inheritedReadOnly,true);
+   const delegatedEdit=await signed(memo,'memory_role_action',{targetRoleId:child.roleId,tool:'memory_update',
+     arguments:{nodeId:childFirst,content:'Forbidden delegated edit',reason:'Synthetic check',expectedUpdatedAt:delegated.data.result.updatedAt}});
+   assert.equal(delegatedEdit.data.error.code,'scope_denied');
+   assert.equal((await invoke(memo,'memory_identity',{},'colleague-chat')).data.owner.id,transferable.roleId);
+   const file=Buffer.from('Synthetic private transfer');
+   const reservation=await invoke(office,'office_artifact',{action:'prepare',filename:'fixture.txt',mime:'text/plain',
+    size:file.length,sha256:createHash('sha256').update(file).digest('hex'),key:'private-transfer'},'colleague-chat');
+   assert(!reservation.error,JSON.stringify(reservation));
+   const contentUrl='http://'+host+reservation.data.transfer.path;
+   const counterpart={'X-MindPond-Host-Context':signHostSession('second-colleague-chat','office_artifact_transfer',
+    {method:'GET',artifactId:reservation.data.artifact.artifactId},creds.token)};
+   const rawDownload=(token:string,headers:Record<string,string>={})=>fetch(contentUrl,{headers:{Authorization:'Bearer '+token,...headers}});
+   const noChat=await rawDownload(creds.token);assert.equal((await noChat.json()).code,'identity_required');
+   const correctChat={'X-MindPond-Meta':JSON.stringify({threadId:'colleague-chat'})};
+   const sharedHeader=await rawDownload(creds.token,{...correctChat,'X-MindPond-Identity':'connection'});
+   assert.equal((await sharedHeader.json()).code,'identity_required');
+   const wrongChat=await rawDownload(creds.token,counterpart);assert.equal((await wrongChat.json()).code,'scope_denied');
+   const upload=await fetch(contentUrl,{method:'PUT',headers:{Authorization:'Bearer '+creds.token,...correctChat},body:file});
+   assert.equal(upload.status,201,await upload.text());
+   const downloaded=await rawDownload(creds.token,correctChat);assert.equal(downloaded.status,200);
+   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()),file);
+   const released=await invoke(dedicated,'office_clone',{action:'release',summary:'Final collaborator experience',key:'release'},'colleague-chat');
    assert.equal(released.data.state,'returned',JSON.stringify(released));assert.equal(released.data.memories,1);
    assert((await invoke(memo,'memory_identity',{},'colleague-chat')).error);
    await deny('memory_identity',{},'colleague-chat','scope_denied');
@@ -269,6 +356,9 @@ try{
    await rejects(()=>graph.roleClones.office({action:'archive',cloneId:transferable.roleId},actor('parent')),'invalid_input');
    const next=await call('memory_clone',{action:'get',reportId:released.data.reportId});
    assert.equal(next.content,'Synthetic collaborator final instruction');
+   assert.equal((await call('memory_clone',{action:'get',cloneId:transferable.roleId})).reportId,released.data.reportId);
+   await deny('memory_clone',{action:'get',cloneId:child.roleId,reportId:released.data.reportId},'parent','not_found');
+   assert((await call('memory_clone',{action:'reports',cloneId:transferable.roleId})).reports.every((report:any)=>report.roleId===transferable.roleId));
    const improved=await call('memory_save',{content:'Parent verified collaborator instruction',idempotencyKey:'parent-summary'});
    await call('memory_clone',{action:'review',reportId:next.reportId,sourceId:next.sourceId,decision:'accepted',
     targetId:improved.id,expectedTargetVersion:(await call('memory_get',{nodeId:improved.id})).updatedAt,note:'Verified and summarized in parent memory'});

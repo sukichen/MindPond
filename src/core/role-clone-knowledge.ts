@@ -4,7 +4,8 @@ import type {Database} from 'sqlite';
 import {digest,stableJSON} from './growth.js';
 import {MindPondError} from './errors.js';
 type Row=Record<string,any>;
-export type CloneKnowledge={nodes:Row[];members:Row[];anchors:Row[];sources:Row[];associations:Row[];evidence:Row[];edges:Row[];profiles:Row[];supports:Row[];scripts:Row[];zhVectors?:Row[];profileVectors?:Row[];bodyVersions?:Row[]};
+type InheritedSupport={membershipId:string;sourceMemoryId:string;sourceVersion:number;sourceHash:string};
+export type CloneKnowledge={nodes:Row[];members:Row[];anchors:Row[];sources:Row[];associations:Row[];evidence:Row[];edges:Row[];profiles:Row[];supports:Row[];scripts:Row[];zhVectors?:Row[];profileVectors?:Row[];bodyVersions?:Row[];inheritedSupports?:InheritedSupport[]};
 const selected='SELECT value FROM json_each(?)';
 export const CLONE_LIMITS={memories:100,scripts:100,bytes:16*1024*1024,children:64,reports:32};
 export function encodeKnowledge(bundle:CloneKnowledge){
@@ -29,7 +30,7 @@ export async function knowledgeFingerprint(db:Database,id:string,kind:'memory'|'
   profiles:await db.all(`SELECT * FROM profile_records WHERE membership_id IN (${selected}) ORDER BY membership_id`,[ids]),
   supports:await db.all(`SELECT * FROM profile_supports WHERE profile_id IN (${selected}) ORDER BY profile_id,source_id`,[ids])});
 }
-export async function captureKnowledge(db:Database,roleId:string,memoryIds?:string[],scriptIds?:string[]):Promise<CloneKnowledge>{
+export async function captureKnowledge(db:Database,roleId:string,memoryIds?:string[],scriptIds?:string[],options:{referenceInheritedSupports?:boolean}={}):Promise<CloneKnowledge>{
  const ns=await db.get<Row>('SELECT domain_id FROM memory_role_namespaces WHERE role_id=?',[roleId]);
  const domainId=ns?.domain_id??null;
  memoryIds??=(await db.all<{id:string}[]>(`SELECT id FROM nodes
@@ -62,8 +63,18 @@ export async function captureKnowledge(db:Database,roleId:string,memoryIds?:stri
  await reserve(`SELECT sum(length(CAST(claim AS BLOB))+length(CAST(context AS BLOB))+256) bytes FROM profile_supports WHERE profile_id IN (${selected})`,[mids]);
  const profiles=await db.all<Row[]>(`SELECT * FROM profile_records WHERE membership_id IN (${selected}) ORDER BY membership_id`,[mids]);
  const supports=await db.all<Row[]>(`SELECT * FROM profile_supports WHERE profile_id IN (${selected}) ORDER BY profile_id,source_id`,[mids]);
- const ownedMembers=new Set(members.map(m=>m.id)),missing=supports.filter(s=>!ownedMembers.has(s.source_id));
- if(missing.length)throw new MindPondError('invalid_input','A selected synthesized profile requires its supporting memories. Include the listed source memories or omit that profile.',{details:{requiredMemoryIds:(await db.all<Row[]>(`SELECT DISTINCT memory_id FROM memory_memberships WHERE id IN (${selected})`,[JSON.stringify(missing.map(s=>s.source_id))])).map(m=>m.memory_id)}});
+ const ownedMembers=new Set(members.map(m=>m.id));
+ const missingIds=new Set<string>(supports.filter(s=>!ownedMembers.has(s.source_id)).map(s=>s.source_id));
+ let inheritedSupports:InheritedSupport[]=[];
+ if(missingIds.size&&options.referenceInheritedSupports){
+  inheritedSupports=await db.all<InheritedSupport[]>(`SELECT m.id membershipId,c.source_id sourceMemoryId,c.source_version sourceVersion,c.source_hash sourceHash
+   FROM memory_memberships m JOIN nodes n ON n.id=m.memory_id
+   JOIN role_knowledge_copies c ON c.copy_id=n.id AND c.kind='memory'
+   WHERE m.id IN (${selected}) AND n.domain_kind='personal' AND n.domain_id=? AND c.origin=?
+   ORDER BY m.id`,[JSON.stringify([...missingIds]),domainId,'Clone dispatch '+roleId]);
+  for(const source of inheritedSupports)missingIds.delete(source.membershipId);
+ }
+ if(missingIds.size)throw new MindPondError('invalid_input','A selected synthesized profile requires its supporting memories. Include the listed source memories or omit that profile.',{details:{requiredMemoryIds:(await db.all<Row[]>(`SELECT DISTINCT memory_id FROM memory_memberships WHERE id IN (${selected})`,[JSON.stringify([...missingIds])])).map(m=>m.memory_id)}});
  await reserve(`SELECT count(*)*1024 bytes FROM memory_associations WHERE member_a_id IN (${selected}) AND member_b_id IN (${selected})`,[mids,mids]);
  const associations=await db.all<Row[]>(`SELECT * FROM memory_associations WHERE member_a_id IN (${selected}) AND member_b_id IN (${selected}) ORDER BY id`,[mids,mids]);
  await reserve(`SELECT sum(length(CAST(payload AS BLOB))) bytes FROM association_evidence WHERE association_id IN (${selected})`,[JSON.stringify(associations.map(a=>a.id))]);
@@ -73,6 +84,7 @@ export async function captureKnowledge(db:Database,roleId:string,memoryIds?:stri
  const hasZh=await db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes_zh'");
  if(hasZh)await reserve(`SELECT sum(length(embedding)+256) bytes FROM nodes_zh WHERE id IN (${selected})`,[ids]);
  const bundle={nodes,members,profiles,supports,associations,evidence,scripts,
+  ...(inheritedSupports.length?{inheritedSupports}:{}),
   zhVectors:hasZh?await db.all<Row[]>(`SELECT * FROM nodes_zh WHERE id IN (${selected}) ORDER BY id`,[ids]):[],
   profileVectors:await db.all<Row[]>(`SELECT * FROM memory_profile_vectors WHERE memory_id IN (${selected}) ORDER BY space_key,kind,owner_id,chunk`,[ids]),
   bodyVersions:await db.all<Row[]>(`SELECT * FROM memory_profile_body_versions WHERE memory_id IN (${selected}) ORDER BY memory_id`,[ids]),
@@ -83,6 +95,8 @@ export async function captureKnowledge(db:Database,roleId:string,memoryIds?:stri
 }
 /** Only trusted, server-captured rows enter here. All IDs are reissued, all links stay within the copy. */
 export async function installKnowledge(db:Database,b:CloneKnowledge,targetRoleId:string,origin:string,now:number){
+ if(b.inheritedSupports?.length)
+  throw new MindPondError('invalid_input','An evidence-only inherited reference cannot be installed as a private memory. Review it and save a sourced lesson.');
  const anchorIds=new Map(b.anchors.map(a=>[a.id,randomUUID()]));
  const nodeIds=new Map(b.nodes.map(n=>[n.id,randomUUID()])),members=new Map(b.members.map(m=>[m.id,randomUUID()])),associations=new Map(b.associations.map(a=>[a.id,randomUUID()]));
  const namespace=await db.get<Row>('SELECT domain_id FROM memory_role_namespaces WHERE role_id=?',[targetRoleId]);

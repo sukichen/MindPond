@@ -1,3 +1,4 @@
+import {MindPondError} from '../core/errors.js';
 /** One public configuration contract for the workbench and native CLI bundles.
  * Inputs contain secret variable names only; this module never reads credentials. */
 import { createHash } from 'node:crypto';
@@ -14,8 +15,8 @@ export const OFFICE_CAPABILITIES = {
   messages: { defaultPageSize: 10, maxPageSize: 20, defaultContextBytes: 16384, maxContextBytes: 65536 },
   discussions:{maxParticipants:8,maxRoomsPerOffice:16,temporary:true,oneActiveRoomPerRole:true},
   scripts:{rolePrivate:true,officeShared:true,maxBytes:131072,executesCode:false},
-  correlation: 'Standard connection identity pairs Office/Memory with no host changes; shared configuration shares one role. Optional native chat identity supports separate roles per chat. Missing identity is an error, never a human fallback.',
-  memory: 'Separate Memory MCP binds to this chat’s approved role. Humans see all knowledge; roles read their own knowledge, human-assigned independent copies and member-office knowledge. Office entries may be human-locked against role changes.'
+  correlation: 'Standard connection identity pairs Office/Memory with no host changes; shared configuration shares one role. Use native chat identity for separate roles per chat; colleague accounts require it. Missing identity is an error, never a human fallback.',
+  memory: 'Separate Memory MCP binds to this chat’s approved role. Humans see all knowledge; roles read their own knowledge, human-assigned independent copies and member-office knowledge. Office entries may be human-locked against role changes; inherited clone memories are read-only.'
 } as const;
 
 /** Both endpoints share a public prefix. Reject ambiguous paths instead of
@@ -26,7 +27,7 @@ export function memoryMcpEndpoint(value:string) {
   url.pathname=url.pathname.replace(/\/mcp\/?$/,'/memory/mcp');return url.href;
 }
 
-export function officeConnection(o: { host: string; id: string; url: string; tokenEnv?: string; sessionLabel?: string; name?: string; identityMode?:'connection'|'native' }): {
+export function officeConnection(o: { host: string; id: string; url: string; tokenEnv?: string; sessionLabel?: string; name?: string; identityMode?:'connection'|'native'; accountAccess?:'personal'|'collaborator' }): {
   env: string; name: string;identityMode:'connection'|'native'; warnings: string[]; capabilities: typeof OFFICE_CAPABILITIES;
   place: string; text: string; docs: string | null; config?: Record<string, unknown>;files?:Record<string,string>;
 } {
@@ -38,7 +39,9 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
   const name = o.name ?? 'mindpond_' + compact(o.id.replace(/[^A-Za-z0-9_]/g, '_'));
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(env) || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) throw new Error('Invalid public configuration identifier');
   if (o.sessionLabel && !/^[A-Za-z0-9_.:-]{1,128}$/.test(o.sessionLabel)) throw new Error('Invalid session label');
-  const connectionScoped=(o.identityMode??DEFAULT_OFFICE_IDENTITY)==='connection';
+  const colleague=o.accountAccess==='collaborator';
+  if(colleague&&o.identityMode==='connection')throw new MindPondError('invalid_input','同事账户须使用逐聊天身份。');
+  const connectionScoped=(o.identityMode??(colleague?'native':DEFAULT_OFFICE_IDENTITY))==='connection';
   const headers:Record<string,string> = connectionScoped?{'X-MindPond-Identity':'connection'}:o.sessionLabel&&!['codex','opencode'].includes(o.host) ? { 'X-MindPond-Session': o.sessionLabel } : {};
   const warnings = [
     ...(url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ? ['远程明文 HTTP 会暴露凭据，请改用 HTTPS。'] : []),
@@ -46,7 +49,7 @@ export function officeConnection(o: { host: string; id: string; url: string; tok
   ];
   const memoryName=o.name==='mindpond_office'?'mindpond_memory':compact('mindpond_memory_'+o.id.replace(/[^A-Za-z0-9_]/g,'_'));
   const memoryUrl=memoryMcpEndpoint(o.url);
-  warnings.push(connectionScoped?'通用连接身份：共享这份配置的聊天共享一个角色；需要不同角色时创建独立连接。无需插件，Office 和 Memory 身份一致。':'逐聊天身份：需要宿主提供可靠聊天标识，请在实际客户端验证。支持的 Codex 可提供 threadId，OpenCode 可选会话插件；不支持时使用通用连接身份。');
+  warnings.push(connectionScoped?'通用连接身份：共享这份配置的聊天共享一个角色；需要不同角色时创建独立连接。无需插件，Office 和 Memory 身份一致。':'逐聊天身份：需要宿主提供可靠聊天标识，请在实际客户端验证。支持的 Codex 可提供 threadId，OpenCode 可选会话插件。'+(colleague?'同事账户缺少聊天标识时无法使用，请检查宿主配置。':'不支持时可为个人账户使用通用连接身份。'));
   const base = { env, name,identityMode:connectionScoped?'connection' as const:'native' as const, warnings, capabilities: OFFICE_CAPABILITIES };
   if (o.host === 'codex') return { ...base, place: 'Codex 的 ~/.codex/config.toml（或可信项目的 .codex/config.toml）', docs: 'https://learn.chatgpt.com/docs/config-file/config-reference',
     text: [name,memoryName].map((entry,i)=>`[mcp_servers.${entry}]\nurl = ${JSON.stringify(i===0?o.url:memoryUrl)}\nbearer_token_env_var = ${JSON.stringify(env)}\ntool_timeout_sec = ${OFFICE_TOOL_TIMEOUT_SECONDS}\n${connectionScoped?'http_headers = { "X-MindPond-Identity" = "connection" }\n':''}`).join('\n') };
