@@ -1,3 +1,4 @@
+import {ROLE_BINDING_CHAT_POLICY} from './roles.js';
 import {adminDirectory,type DirectoryWindows} from './admin-directory.js';
 /** HTTP-MCP collaboration v2. Operational records never become memory nodes. */
 import type { Database } from 'sqlite';
@@ -162,7 +163,8 @@ export class OfficeStore {
     // Restoring a role must never revive an old in-flight binding or lease.
     return !!(await this.db.get(`SELECT 1 FROM role_bindings b JOIN character_roles r ON r.id=b.role_id
       WHERE b.id=? AND b.role_id=? AND b.epoch=? AND b.principal=? AND b.connector_id=?
-        AND b.runtime_id=? AND b.state='active' AND r.state='active'`,
+        AND b.runtime_id=? AND b.state='active' AND r.state='active'
+        AND ${ROLE_BINDING_CHAT_POLICY}`,
       [a.roleBindingId, a.roleId, a.roleBindingEpoch, a.principal, a.agentId, a.runtimeId]));
   }
   async accountAccess(principal: string): Promise<'personal'|'collaborator'> {
@@ -234,12 +236,12 @@ export class OfficeStore {
     // never remove an existing member from a form or hide a selected role.
     return {
       agents:await this.db.all("SELECT a.id,a.name,a.principal,a.host,a.state,a.revision,COALESCE(p.access,'personal') accountAccess FROM office_agents a LEFT JOIN office_account_access p ON p.principal=a.principal WHERE a.state<>'deleted' ORDER BY a.name,a.id"),
-      roles:await this.db.all("SELECT id,name,principal,state,revision FROM character_roles r WHERE state<>'merged' AND NOT EXISTS (SELECT 1 FROM role_clone_returns f WHERE f.role_id=r.id AND f.archived_at IS NOT NULL) ORDER BY name,id"),
+      roles:await this.db.all("SELECT id,name,principal,state,revision FROM character_roles r WHERE state<>'merged' AND NOT EXISTS (SELECT 1 FROM role_clone_returns f WHERE f.role_id=r.id AND f.archived_at IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM role_clones c WHERE c.role_id=r.id AND c.state='purged') ORDER BY name,id"),
       offices:await this.db.all('SELECT id,title,state FROM offices ORDER BY title,id'),
       projects:await this.db.all('SELECT id,title,enabled FROM office_projects ORDER BY title,id')
     };
   }
-  async agent(id:string,a?:Actor){this.admin(a);return this.db.get<Row>("SELECT a.*,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id WHERE a.id=? AND a.state<>'deleted'",[id]);}
+  async agent(id:string,a?:Actor){this.admin(a);return this.db.get<Row>("SELECT a.*,COALESCE(p.access,'personal') accountAccess,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id LEFT JOIN office_account_access p ON p.principal=a.principal WHERE a.id=? AND a.state<>'deleted'",[id]);}
   async officeExists(id:string,a?:Actor){this.admin(a);return !!await this.db.get('SELECT 1 FROM offices WHERE id=?',[id]);}
   async agentSeats(id:string,a?:Actor){this.admin(a);return this.db.all<Row[]>('SELECT id FROM office_seats WHERE agent_id=? AND enabled=1',[id]);}
   async deleteAgent(i:{id:string;expectedRevision:number},a?:Actor){

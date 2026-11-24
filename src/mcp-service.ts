@@ -125,6 +125,8 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         current.nativeChatId=native.id;
         await graphMemory.roles.observeChat(current);
       }
+      if(current.agentId&&await graphMemory.offices.accountAccess(current.principal)==='collaborator'&&!native)
+        throw new MindPondError('identity_required','Colleague accounts require a native chat ID on every Office call. Enable per-chat identity, then call role_sync in this chat.');
       if(current.runtimeMode==='credential'&&!options.pinnedRoleId)await graphMemory.roles.observeChat(current);
       // Bind per-call session context to the authenticated chat.
       if(current.runtimeMode==='opencode_metadata'||current.runtimeMode==='codex_metadata') current.sessionId='net-native:'+current.runtimeId;

@@ -31,6 +31,7 @@ export class RoleMemoryDelegation{
   if(!scope)return access.assertWritable(target,memoryId);
   if(target.kind!=='agent'||target.id!==scope.targetRoleId)throw new MindPondError('scope_denied','This delegated call can modify only its explicitly selected role’s private knowledge');
   await access.delegation(scope.targetRoleId,true,scope.revision);
+  await this.graph.memoryOwners.assertCloneMemoryWritable(actor,memoryId);
  }
  check(tool:string){if(this.calls.getStore()&&!reads.has(tool)&&!writes.has(tool))throw new MindPondError('scope_denied','This operation is outside delegated knowledge access',{nextAction:'Choose a knowledge read/organization operation. Delegation never grants identity, continuity, office, script or permission administration.'});}
  async run(actor:MemoryActor,targetRoleId:string,tool:string,args:unknown,guard:()=>Promise<void>,execute:(name:string,args:unknown,actor:MemoryActor,guard:()=>Promise<void>)=>Promise<unknown>){

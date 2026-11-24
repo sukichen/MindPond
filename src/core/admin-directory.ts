@@ -4,7 +4,7 @@
 import type {Database} from 'sqlite';
 import {MindPondError} from './errors.js';
 
-export type DirectoryWindows=Partial<Record<'agents'|'projects'|'offices'|'roles'|'pending'|'chats'|'connections',string>>;
+export type DirectoryWindows=Partial<Record<'agents'|'projects'|'offices'|'roles'|'clones'|'pending'|'chats'|'connections',string>>;
 const size=50;
 export async function adminDirectory(db:Database, select:string, filter:string='1', params:unknown[]=[], through?:string) {
     if(through!==undefined&&(typeof through!=='string'||!through||through.length>512))

@@ -3,6 +3,7 @@ import {previewText} from './office-context.js';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import type {Database} from 'sqlite';
+import {ROLE_BINDING_CHAT_POLICY} from './roles.js';
 import type {GraphMemory} from './graph-memory.js';
 import type {TrustedCallContext} from './trust.js';
 import type {MemoryOwner} from './memory-owners.js';
@@ -13,8 +14,8 @@ const id=z.string().uuid(),assetId=z.string().min(1).max(160),text=(n:number)=>z
 const scriptIdsSchema=ids;
 const common={part:z.enum(['content','metadata']).default('content'),reportId:id.optional(),sourceId:assetId.optional(),offset:z.number().int().min(0).default(0),characters:z.number().int().min(256).max(8000).default(4000),afterId:z.string().max(180).optional(),decision:z.enum(['accepted','skipped']).optional(),targetId:assetId.optional(),expectedTargetVersion:z.number().int().positive().optional(),note:text(2000).optional()};
 export const cloneOfficeSchema=z.object({...common,action:z.enum(['status','candidates','submit','release','archive','reports','get_script','review_script','acknowledge']),cloneId:id.optional(),summary:text(4000).optional(),memoryIds:ids.optional(),scriptIds:scriptIdsSchema.optional(),key:text(256).optional()}).strict();
-export const cloneMemoryShape={...common,action:z.enum(['reports','get','review','acknowledge'])};
-const manageSchema=z.object({...common,action:z.enum(['status','candidates','dispatch','submit','reports','get','review','import','acknowledge','revoke','resume','purge','recall','archive','assign_account']),roleId:id,name:text(120).optional(),mission:text(4000).optional(),principal:text(160).optional(),memoryIds:ids.optional(),scriptIds:scriptIdsSchema.optional(),summary:text(4000).optional(),key:text(256).optional(),kind:z.enum(['memory','script']).optional(),expectedRevision:z.number().int().positive().optional()}).strict();
+export const cloneMemoryShape={...common,cloneId:id.optional(),action:z.enum(['reports','get','review','acknowledge'])};
+const manageSchema=z.object({...common,action:z.enum(['status','candidates','dispatch','submit','reports','get','review','import','acknowledge','revoke','resume','purge','recall','archive','assign_account']),roleId:id,cloneId:id.optional(),name:text(120).optional(),mission:text(4000).optional(),principal:text(160).optional(),memoryIds:ids.optional(),scriptIds:scriptIdsSchema.optional(),summary:text(4000).optional(),key:text(256).optional(),kind:z.enum(['memory','script']).optional(),expectedRevision:z.number().int().positive().optional()}).strict();
 type Row=Record<string,any>;type Actor=Extract<MemoryOwner,{kind:'user'|'agent'}>;
 const fail=(code:ConstructorParameters<typeof MindPondError>[0],message:string):never=>{throw new MindPondError(code,message);};
 const required=(i:Row,...fields:string[])=>{if(fields.some(k=>i[k]===undefined))fail('invalid_input','Required fields: '+fields.join(', '));};
@@ -47,7 +48,7 @@ export class RoleClones{
     AND NOT EXISTS (SELECT 1 FROM role_clone_report_ack a WHERE a.report_id=r.id)) pendingPackages
    FROM role_clones c LEFT JOIN role_clone_returns f ON f.role_id=c.role_id WHERE c.role_id=?`,[roleId]);
   const counts=await this.db.get<Row>(`SELECT count(*) packages,COALESCE(sum(CASE WHEN NOT EXISTS(SELECT 1 FROM role_clone_report_ack ack WHERE ack.report_id=r.id) THEN 1 ELSE 0 END),0) pendingPackages,COALESCE(sum(r.memory_count+r.script_count-(SELECT count(*) FROM role_clone_reviews v WHERE v.report_id=r.id)),0) pendingItems FROM role_clone_reports r WHERE r.parent_id=?`,[roleId]);
-  return {lineage:own??null,returns:{packages:counts!.packages,pendingItems:counts!.pendingItems,pendingPackages:counts!.pendingPackages},next:own?'Use office_clone(status) for mission and changed-asset candidates. Use office_clone release with summary and key when done. It freezes your final experience and ends your role access. Use submit for interim packages.':counts!.pendingPackages?'Review returned memory with memory_clone and scripts with office_clone. Keep sources/uncertainty, save selected improvements using your own normal tools, then register accepted/skipped decisions. When all packages are reviewed, call office_clone archive with the returned cloneId.':counts!.packages?'For a returned clone with all packages reviewed, call office_clone archive with cloneId.':null};
+  return {lineage:own??null,returns:{packages:counts!.packages,pendingItems:counts!.pendingItems,pendingPackages:counts!.pendingPackages},next:own?'Inherited memories are read-only and never enter new return packages. Save new findings separately; use office_clone(candidates) to find your own additions. Use office_clone release with summary and key when done. It freezes your final experience and ends your role access. Use submit for interim packages.':counts!.pendingPackages?'Use memory_clone(get, cloneId if known) for the next new memory awaiting review and office_clone for scripts. Keep sources/uncertainty, save selected improvements using your own normal tools, then register accepted/skipped decisions. When all packages are reviewed, call office_clone archive with the returned cloneId.':counts!.packages?'For a returned clone with all packages reviewed, call office_clone archive with cloneId.':null};
  }
  private async event(roleId:string,kind:string,data:unknown){await this.db.run('INSERT INTO role_events(role_id,kind,body,ts) VALUES(?,?,?,?)',[roleId,kind,stableJSON(data),this.clock()]);await this.db.run('DELETE FROM office_response_pages');}
  private async receipt(actor:string,op:string,key:string,input:unknown,run:()=>Promise<Row>){const hash=digest(input),prior=await this.db.get<Row>('SELECT * FROM role_clone_receipts WHERE actor=? AND operation=? AND key=?',[actor,op,key]);if(prior){if(prior.hash!==hash)fail('idempotency_conflict','This clone operation key has another payload. Retry the exact request or use a new key.');return {...JSON.parse(prior.result),replayed:true};}const result=await run();await this.db.run('INSERT INTO role_clone_receipts VALUES(?,?,?,?,?)',[actor,op,key,hash,stableJSON(result)]);return result;}
@@ -55,18 +56,18 @@ export class RoleClones{
   const ns=await this.db.get<Row>('SELECT domain_id FROM memory_role_namespaces WHERE role_id=?',[roleId]);
   const rows=await this.db.all<Row[]>(`SELECT 'memory' kind,n.id,substr(n.content,1,160) label,n.updated_at version,length(CAST(n.content AS BLOB)) bytes,COALESCE(a.copy_fingerprint,'') baselineHash,a.source_id sourceId FROM nodes n LEFT JOIN role_clone_assets a ON a.role_id=? AND a.kind='memory' AND a.copy_id=n.id WHERE n.domain_kind='personal' AND n.domain_id=? AND n.dimension<>'event' AND ('memory:'||n.id)>? AND (? IS NULL OR ?='memory')
   UNION ALL SELECT 'script',s.id,s.filename,s.revision,length(CAST(s.content AS BLOB)),COALESCE(a.copy_fingerprint,''),a.source_id FROM office_scripts s LEFT JOIN role_clone_assets a ON a.role_id=? AND a.kind='script' AND a.copy_id=s.id WHERE s.role_id=? AND ('script:'||s.id)>? AND (? IS NULL OR ?='script') ORDER BY kind,id LIMIT 21`,[roleId,ns?.domain_id??null,afterId,kind??null,kind??null,roleId,roleId,afterId,kind??null,kind??null]);
-  const records:Row[]=[];for(const row of rows.slice(0,20)){records.push({...row,...(!previews&&row.kind==='memory'?{label:'Private memory reference '+row.id}:{}),baselineHash:undefined,change:!row.sourceId?'new':await knowledgeFingerprint(this.db,row.id,row.kind)===row.baselineHash?'inherited':'changed'});}
-  return {records,hasMore:rows.length>20,nextAfterId:rows.length>20?rows[19].kind+':'+rows[19].id:null,notice:'Only this role’s private knowledge/scripts. Inherited unchanged assets need not be returned. Snapshotting requires any synthesized memory’s supporting memories too.'};
+  const records:Row[]=[];for(const row of rows.slice(0,20)){records.push({...row,...(!previews&&row.kind==='memory'?{label:'Private memory reference '+row.id}:{}),baselineHash:undefined,change:!row.sourceId?'new':row.kind==='memory'?'inherited':await knowledgeFingerprint(this.db,row.id,'script')===row.baselineHash?'inherited':'changed'});}
+  return {records,hasMore:rows.length>20,nextAfterId:rows.length>20?rows[19].kind+':'+rows[19].id:null,notice:'Only this role’s private knowledge/scripts. Return new private memories and new or changed scripts. Inherited memories are read-only. For a new synthesized profile, include any new supporting memories; inherited supports are referenced.'};
  }
- private async report(roleId:string,reportId?:string,kind?:'memory'|'script'){
-  const r=reportId?await this.db.get<Row>('SELECT * FROM role_clone_reports WHERE id=? AND (parent_id=? OR role_id=?)',[reportId,roleId,roleId]):await this.db.get<Row>(`SELECT * FROM role_clone_reports r WHERE r.parent_id=? AND (CASE WHEN ?='memory' THEN r.memory_count WHEN ?='script' THEN r.script_count ELSE r.memory_count+r.script_count END)>(SELECT count(*) FROM role_clone_reviews v WHERE v.report_id=r.id AND (? IS NULL OR v.kind=?)) ORDER BY r.created_at,r.id LIMIT 1`,[roleId,kind??null,kind??null,kind??null,kind??null]);
+ private async report(roleId:string,reportId?:string,kind?:'memory'|'script',cloneId?:string){
+  const r=reportId?await this.db.get<Row>('SELECT * FROM role_clone_reports WHERE id=? AND (parent_id=? OR role_id=?) AND (? IS NULL OR role_id=?)',[reportId,roleId,roleId,cloneId??null,cloneId??null]):await this.db.get<Row>(`SELECT * FROM role_clone_reports r WHERE r.parent_id=? AND (? IS NULL OR r.role_id=?) AND (CASE WHEN ?='memory' THEN r.memory_count WHEN ?='script' THEN r.script_count ELSE r.memory_count+r.script_count END)>(SELECT count(*) FROM role_clone_reviews v WHERE v.report_id=r.id AND (? IS NULL OR v.kind=?)) ORDER BY r.created_at,r.id LIMIT 1`,[roleId,cloneId??null,cloneId??null,kind??null,kind??null,kind??null,kind??null]);
   if(!r)fail('not_found','No matching returned package is available. List reports first; omitted reportId selects the oldest package with undecided items for its parent.');return r!;
  }
- private async reports(roleId:string,afterId=''){
+ private async reports(roleId:string,afterId='',cloneId?:string){
   const rows=await this.db.all<Row[]>(`SELECT r.id,r.role_id roleId,r.parent_id parentId,r.summary,r.sha256,r.created_at createdAt,
    (SELECT name FROM character_roles c WHERE c.id=r.role_id) cloneName,
    EXISTS(SELECT 1 FROM role_clone_returns f WHERE f.report_id=r.id) finalReturn,
-   (SELECT archived_at FROM role_clone_returns f WHERE f.role_id=r.role_id) cloneArchivedAt,r.memory_count memories,r.script_count scripts,EXISTS(SELECT 1 FROM role_clone_report_ack ack WHERE ack.report_id=r.id) acknowledged,(SELECT count(*) FROM role_clone_reviews v WHERE v.report_id=r.id) reviewed FROM role_clone_reports r WHERE (r.parent_id=? OR r.role_id=?) AND r.id>? ORDER BY r.id LIMIT 11`,[roleId,roleId,afterId]);
+   (SELECT archived_at FROM role_clone_returns f WHERE f.role_id=r.role_id) cloneArchivedAt,r.memory_count memories,r.script_count scripts,EXISTS(SELECT 1 FROM role_clone_report_ack ack WHERE ack.report_id=r.id) acknowledged,(SELECT count(*) FROM role_clone_reviews v WHERE v.report_id=r.id) reviewed FROM role_clone_reports r WHERE (r.parent_id=? OR r.role_id=?) AND r.id>? AND (? IS NULL OR r.role_id=?) ORDER BY r.id LIMIT 11`,[roleId,roleId,afterId,cloneId??null,cloneId??null]);
   const records:Row[]=[];for(const row of rows.slice(0,10)){if(records.length&&Buffer.byteLength(JSON.stringify([...records,row]))>24000)break;records.push(row);}
   return {reports:records,hasMore:rows.length>records.length,nextAfterId:rows.length>records.length?records.at(-1)!.id:null};
  }
@@ -79,20 +80,25 @@ export class RoleClones{
   return this.receipt(roleId,final?'final_return':'submit',i.key,i,async()=>{
    if(!final&&(await this.db.get<Row>('SELECT count(*) n FROM role_clone_reports WHERE role_id=?',[roleId]))!.n>=CLONE_LIMITS.reports)fail('material_over_budget','At most 32 retained return packages per clone. Ask the human to review and clean up the completed dispatch.');
    let memoryIds=i.memoryIds,scriptIds=i.scriptIds;
-   if(memoryIds===undefined||scriptIds===undefined){const changed:{memory:string[];script:string[]}={memory:[],script:[]};let after='';do{const page=await this.candidates(roleId,after);for(const r of page.records)if(r.change!=='inherited')changed[r.kind as 'memory'|'script'].push(r.id);if(changed.memory.length>100||changed.script.length>100)fail('material_over_budget','More than 100 changed assets. Submit an explicitly selected smaller package.');if(!page.hasMore)break;after=page.nextAfterId!;}while(true);memoryIds??=changed.memory;scriptIds??=changed.script;}
-   const b=await captureKnowledge(this.db,roleId,memoryIds,scriptIds),payload=encodeKnowledge(b),reportId=randomUUID(),sha256=contentHash(payload);
+   if(memoryIds===undefined||scriptIds===undefined){const changed:{memory:string[];script:string[]}={memory:[],script:[]};let after='';do{const page=await this.candidates(roleId,after);for(const r of page.records)if(r.kind==='memory'?!r.sourceId:r.change!=='inherited')changed[r.kind as 'memory'|'script'].push(r.id);if(changed.memory.length>100||changed.script.length>100)fail('material_over_budget','More than 100 changed assets. Submit an explicitly selected smaller package.');if(!page.hasMore)break;after=page.nextAfterId!;}while(true);memoryIds??=changed.memory;scriptIds??=changed.script;}
+   if(await this.db.get(`SELECT 1 FROM role_knowledge_copies WHERE kind='memory' AND origin=?
+    AND copy_id IN (SELECT value FROM json_each(?)) LIMIT 1`,['Clone dispatch '+roleId,JSON.stringify(memoryIds)]))
+    throw new MindPondError('invalid_input','Inherited memories cannot be returned. Select private memories created by this clone.',{
+      nextAction:'Omit memoryIds to collect new memories automatically, or use office_clone(candidates) to select entries marked new.'
+    });
+   const b=await captureKnowledge(this.db,roleId,memoryIds,scriptIds,{referenceInheritedSupports:true}),payload=encodeKnowledge(b),reportId=randomUUID(),sha256=contentHash(payload);
    await this.db.run('INSERT INTO role_clone_reports VALUES(?,?,?,?,?,?,?,?,?)',[reportId,roleId,c!.parent_id,i.summary,payload,sha256,this.clock(),b.nodes.length,b.scripts.length]);
    await this.event(c!.parent_id,'clone_returned',{roleId,reportId,memories:b.nodes.length,scripts:b.scripts.length});
    return {reportId,sha256,memories:b.nodes.length,scripts:b.scripts.length,immutable:true,notice:'Selected experience is now available to the parent for review. Your live private knowledge stays independent. Submission does not stop the host, unbind the role, or automatically change parent knowledge.'};
   });
  }
  private async get(roleId:string,i:Row,kind:'memory'|'script'){
-  let r:Row;try{r=await this.report(roleId,i.reportId,kind);}catch(e){if(!i.reportId&&e instanceof MindPondError&&e.code==='not_found')return {done:true,remaining:0,next:'No returned '+kind+' items await review. List reports to inspect history.'};throw e;}
+  let r:Row;try{r=await this.report(roleId,i.reportId,kind,i.cloneId);}catch(e){if(!i.reportId&&e instanceof MindPondError&&e.code==='not_found')return {done:true,remaining:0,next:'No returned '+kind+' items await review. List reports to inspect history.'};throw e;}
   const b=decodeKnowledge(r.payload),reviews=await this.db.all<Row[]>('SELECT kind,source_id sourceId,decision,target_id targetId,target_version targetVersion,note FROM role_clone_reviews WHERE report_id=?',[r.id]);
   const rows=kind==='memory'?b.nodes:b.scripts;
   const source=i.sourceId?rows.find(n=>n.id===i.sourceId):rows.find(n=>!reviews.some(v=>v.kind===kind&&v.sourceId===n.id));
   if(!source){if(i.sourceId)fail('not_found','This asset is not part of the selected immutable return package.');return {reportId:r.id,summary:r.summary,done:true,remaining:0,next:'All '+kind+' items in this package have decisions. List reports for other packages.'};}
-  const metadata=kind==='memory'?{dimensions:JSON.parse(source.dimensions??'[]'),dimension:source.primary_dimension??source.dimension,tags:JSON.parse(source.tags),importance:source.importance,sourceRefs:JSON.parse(b.sources.find(s=>s.memory_id===source.id)?.payload??'[]'),memberships:b.members.filter(m=>m.memory_id===source.id),anchors:b.anchors.filter(a=>a.memory_id===source.id).map(({embedding,zh_embedding,...a})=>a),profile:b.profiles.filter(p=>b.members.some(m=>m.id===p.membership_id&&m.memory_id===source.id)),supports:b.supports.filter(p=>b.members.some(m=>m.id===p.profile_id&&m.memory_id===source.id)).map(p=>({...p,sourceMemoryId:b.members.find(m=>m.id===p.source_id)?.memory_id})),associations:b.associations.filter(a=>b.members.some(m=>m.memory_id===source.id&&[a.member_a_id,a.member_b_id].includes(m.id))).map(a=>({...a,memoryAId:b.members.find(m=>m.id===a.member_a_id)?.memory_id,memoryBId:b.members.find(m=>m.id===a.member_b_id)?.memory_id,evidence:b.evidence.filter(e=>e.association_id===a.id)}))}: {filename:source.filename,description:source.description,usage:source.usage,language:source.language,sha256:source.sha256};
+  const metadata=kind==='memory'?{dimensions:JSON.parse(source.dimensions??'[]'),dimension:source.primary_dimension??source.dimension,tags:JSON.parse(source.tags),importance:source.importance,sourceRefs:JSON.parse(b.sources.find(s=>s.memory_id===source.id)?.payload??'[]'),memberships:b.members.filter(m=>m.memory_id===source.id),anchors:b.anchors.filter(a=>a.memory_id===source.id).map(({embedding,zh_embedding,...a})=>a),profile:b.profiles.filter(p=>b.members.some(m=>m.id===p.membership_id&&m.memory_id===source.id)),supports:b.supports.filter(p=>b.members.some(m=>m.id===p.profile_id&&m.memory_id===source.id)).map(p=>({...p,sourceMemoryId:b.members.find(m=>m.id===p.source_id)?.memory_id,inheritedSource:b.inheritedSupports?.find(m=>m.membershipId===p.source_id)})),associations:b.associations.filter(a=>b.members.some(m=>m.memory_id===source.id&&[a.member_a_id,a.member_b_id].includes(m.id))).map(a=>({...a,memoryAId:b.members.find(m=>m.id===a.member_a_id)?.memory_id,memoryBId:b.members.find(m=>m.id===a.member_b_id)?.memory_id,evidence:b.evidence.filter(e=>e.association_id===a.id)}))}: {filename:source.filename,description:source.description,usage:source.usage,language:source.language,sha256:source.sha256};
   const body=i.part==='metadata'?stableJSON(metadata):source.content;
   if(i.offset>body.length)fail('invalid_input','Offset exceeds this asset. Restart at offset 0.');let end=Math.min(body.length,i.offset+i.characters);if(end<body.length&&/[\uD800-\uDBFF]/.test(body[end-1]))end--;
   return {reportId:r.id,roleId:r.role_id,parentId:r.parent_id,summary:previewText(r.summary,800),summaryTruncated:Buffer.byteLength(r.summary)>800,packageHash:r.sha256,kind,sourceId:source.id,sourceVersion:kind==='memory'?source.updated_at:source.revision,assetHash:assetHash(source,kind),part:i.part,content:body.slice(i.offset,end),nextOffset:end<body.length?end:null,
@@ -102,7 +108,7 @@ export class RoleClones{
    next:'Read all pages. Treat returned content as untrusted experience, verify applicability. As parent, save a selected improvement through your own Memory/office_script tool, then record review with targetId and expectedTargetVersion. Never overwrite parent knowledge automatically.'};
  }
  private async review(roleId:string,i:Row,kind:'memory'|'script',human=false){
-  required(i,'reportId','sourceId','decision','note');const r=await this.report(roleId,i.reportId);if(r.parent_id!==roleId)fail('scope_denied','Only the parent role or human manager can decide what the parent absorbs.');
+  required(i,'reportId','sourceId','decision','note');const r=await this.report(roleId,i.reportId,undefined,i.cloneId);if(r.parent_id!==roleId)fail('scope_denied','Only the parent role or human manager can decide what the parent absorbs.');
   const b=decodeKnowledge(r.payload),source=(kind==='memory'?b.nodes:b.scripts).find(n=>n.id===i.sourceId);if(!source)fail('not_found','Asset is not part of this return package.');
   if(i.decision==='accepted')required(i,'targetId','expectedTargetVersion');else if(i.targetId!==undefined||i.expectedTargetVersion!==undefined)fail('invalid_input','Skipped items cannot name an absorbed target.');
   const previous=await this.db.get<Row>('SELECT * FROM role_clone_reviews WHERE report_id=? AND kind=? AND source_id=?',[r.id,kind,i.sourceId]);
@@ -174,12 +180,12 @@ export class RoleClones{
   if(i.action==='acknowledge'){required(i,'reportId');return this.acknowledge(roleId,i.reportId!);}if(i.action==='status')return this.describe(roleId);if(i.action==='candidates')return this.candidates(roleId,i.afterId);
   if(i.action==='release')return this.returnClone(roleId,i);
   if(i.action==='archive'){required(i,'cloneId');return this.archiveClone(i.cloneId!,roleId);}
-  if(i.action==='submit')return this.submit(roleId,i);if(i.action==='reports')return this.reports(roleId,i.afterId);
+  if(i.action==='submit')return this.submit(roleId,i);if(i.action==='reports')return this.reports(roleId,i.afterId,i.cloneId);
   if(i.action==='get_script')return this.get(roleId,i,'script');return this.review(roleId,i,'script');
  });}
  async memory(value:unknown,owner:Actor,guard:()=>Promise<void>){const i=z.object(cloneMemoryShape).strict().parse(value);return this.write(async()=>{
   await guard();if(owner.kind!=='agent')fail('invalid_input','Use the human role-management page to inspect dispatches; memory_clone requires a bound parent or clone role.');await this.graph.memoryOwners.role(owner.id);await this.assertUsable(owner.id);await this.assertOutsideDiscussion(owner.id);
-  if(i.action==='acknowledge'){required(i,'reportId');return this.acknowledge(owner.id,i.reportId!);}if(i.action==='reports')return this.reports(owner.id,i.afterId);if(i.action==='get')return this.get(owner.id,i,'memory');return this.review(owner.id,i,'memory');
+  if(i.action==='acknowledge'){required(i,'reportId');return this.acknowledge(owner.id,i.reportId!);}if(i.action==='reports')return this.reports(owner.id,i.afterId,i.cloneId);if(i.action==='get')return this.get(owner.id,i,'memory');return this.review(owner.id,i,'memory');
  });}
  async manage(value:unknown,a?:TrustedCallContext){this.admin(a);const i=manageSchema.parse(value);return this.write(async()=>{
   this.admin(a);const role=await this.role(i.roleId);
@@ -190,7 +196,7 @@ export class RoleClones{
     (SELECT count(*) FROM role_clone_reports p WHERE p.role_id=c.role_id
      AND NOT EXISTS(SELECT 1 FROM role_clone_report_ack a WHERE a.report_id=p.id)) pendingPackages
     FROM role_clones c LEFT JOIN role_clone_returns f ON f.role_id=c.role_id LEFT JOIN character_roles r ON r.id=c.role_id
-    LEFT JOIN role_bindings b ON b.role_id=c.role_id AND b.state='active' LEFT JOIN office_agents h ON h.id=b.connector_id
+    LEFT JOIN role_bindings b ON b.role_id=c.role_id AND b.state='active' AND ${ROLE_BINDING_CHAT_POLICY} LEFT JOIN office_agents h ON h.id=b.connector_id
     LEFT JOIN role_chat_sessions chat ON chat.runtime_id=b.runtime_id AND chat.principal=b.principal AND chat.connector_id=b.connector_id
     WHERE c.parent_id=? AND c.role_id>? AND f.archived_at IS NULL AND c.state<>'purged' ORDER BY c.role_id LIMIT 21`,[role.id,i.afterId??'']);
    const principals=await this.db.all<Row[]>(`SELECT DISTINCT h.principal,COALESCE(p.access,'personal') accountAccess FROM office_agents h
@@ -198,7 +204,7 @@ export class RoleClones{
    return {...await this.describe(role.id),clones:clones.slice(0,20),clonesHasMore:clones.length>20,nextAfterId:clones.length>20?clones[19].roleId:null,principals:principals.slice(0,100),principalsHasMore:principals.length>100,limits:CLONE_LIMITS};
   }
   if(i.action==='candidates')return this.candidates(role.id,i.afterId,i.kind,true);
-  if(i.action==='acknowledge'){required(i,'reportId');return this.acknowledge(role.id,i.reportId!);}if(i.action==='reports')return this.reports(role.id,i.afterId);
+  if(i.action==='acknowledge'){required(i,'reportId');return this.acknowledge(role.id,i.reportId!);}if(i.action==='reports')return this.reports(role.id,i.afterId,i.cloneId);
   if(i.action==='get')return this.get(role.id,i,i.kind??'memory');
   if(i.action==='review')return this.review(role.id,i,i.kind??'memory',true);
   if(i.action==='submit')return this.submit(role.id,i);
@@ -238,12 +244,16 @@ export class RoleClones{
   if(i.action==='assign_account'){
    required(i,'principal');await this.assertUsable(role.id);
    if(role.principal===i.principal)return {roleId:role.id,principal:role.principal,revision:c!.revision};
-   if(await this.db.get("SELECT 1 FROM role_bindings WHERE role_id=? AND state='active'",[role.id]))
+   if(await this.graph.memoryOwners.roleBinding(role.id))
     fail('invalid_input','Disconnect the current role chat before changing the recipient account.');
    if(await this.db.get("SELECT 1 FROM role_seats r JOIN office_seats s ON s.id=r.seat_id WHERE r.role_id=? AND s.enabled=1",[role.id]))
     fail('invalid_input','Remove this clone from its assigned offices before changing the recipient account.');
    if(!await this.db.get("SELECT 1 FROM office_agents WHERE principal=? AND state='active'",[i.principal]))
     fail('invalid_input','Choose an account with an active host connection.');
+   // Retire unusable shared bindings before moving the role to another account.
+   await this.graph.roles.fenceRole(role.id);
+   await this.db.run("UPDATE role_bindings SET state='revoked',epoch=epoch+1 WHERE role_id=? AND state='active'",[role.id]);
+   await this.db.run("UPDATE memory_role_credentials SET state='revoked' WHERE role_id=? AND state='active'",[role.id]);
    await this.graph.roleMemoryPermissions.revoke(role.id);
    await this.db.run('UPDATE character_roles SET principal=?,revision=revision+1 WHERE id=?',[i.principal,role.id]);
    await this.db.run('UPDATE role_clones SET revision=revision+1 WHERE role_id=?',[role.id]);

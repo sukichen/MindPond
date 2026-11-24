@@ -86,5 +86,19 @@ try{
  // Expired activation requests must update even without a new role event.
  const before=await graph.roles.registry(admin);await db.run('UPDATE role_connection_requests SET last_seen=?',[clock-86400001]);
  const expired:any=await graph.roles.state(admin,before.revision,{},before.directoryRevision);assert(!expired.unchanged);assert.equal(expired.directory.connections.total,0);
+ await (graph as any).growthWrite(async()=>{
+  for(let n=0;n<55;n++){
+   const id='clone-'+pad(n);
+   await db.run("INSERT INTO character_roles VALUES(?,?,?,?,'active',1,NULL,?)",[id,'human','Synthetic clone '+n,'Synthetic clone duty',clock]);
+   await db.run("INSERT INTO role_clones VALUES(?,?,?,?,'active',1,NULL,?,?)",[id,'role-0000','Synthetic role 0','Directory fixture','',clock]);
+  }
+ });
+ const grouped=(await(await req('role/state')).json());
+ assert.deepEqual(grouped.roleCounts,{main:525,clones:55});
+ assert.equal(grouped.roles.filter((r:any)=>r.cloneState).length,50);
+ assert.equal(grouped.roles.filter((r:any)=>!r.cloneState).length,50);
+ const moreClones=await(await req('role/state',{directoryThrough:{clones:grouped.directory.clones.nextCursor}})).json();
+ assert.equal(moreClones.roles.filter((r:any)=>r.cloneState).length,55);
+ assert.equal(moreClones.directory.roles.loaded,50);
  console.log('PASS production directories: complete counts, expandable windows, stable insert/delete, all selector references, exact off-page configuration/credential grants, selected room existence, expiry and authorization');
 }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await graph.close();await fs.rm(dir,{recursive:true,force:true});}

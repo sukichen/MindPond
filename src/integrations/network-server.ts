@@ -144,8 +144,11 @@ export function createNetworkMcpApp(
     if(req.header('mcp-session-id')&&(!connection||JSON.stringify(connection.grant)!==JSON.stringify(grant)))throw new MindPondError('not_found','MCP session not found for this account');
     let actor:TrustedCallContext={v:1,transport:'http-mcp',principal:grant.principal,agentId:networkHostId(grant),credentialId:grant.credentialId,assignmentIds:grant.assignmentIds,issuedAt:0,expiresAt:Number.MAX_SAFE_INTEGER};
     const identity=req.header('x-mindpond-identity');if(identity!==undefined&&identity!=='connection')throw new MindPondError('invalid_input','X-MindPond-Identity must be connection');
-    if(pinned){const binding=await graph.memoryOwners.roleBinding(pinned.role_id);if(!binding)throw new MindPondError('scope_denied','Role is not connected');actor={...actor,runtimeId:binding.runtime_id,roleId:pinned.role_id,roleBindingId:binding.id,roleBindingEpoch:binding.epoch,runtimeMode:'credential'};}
-    else if(identity==='connection'||connection?.connectionIdentity){
+    const requireChat=await graph.offices.accountAccess(grant.principal)==='collaborator';
+    if(requireChat&&(identity==='connection'||connection?.connectionIdentity))
+      throw new MindPondError('identity_required','Colleague attachments require native per-chat identity. Remove the shared connection header.');
+    if(pinned&&!requireChat){const binding=await graph.memoryOwners.roleBinding(pinned.role_id);if(!binding)throw new MindPondError('scope_denied','Role is not connected');actor={...actor,runtimeId:binding.runtime_id,roleId:pinned.role_id,roleBindingId:binding.id,roleBindingEpoch:binding.epoch,runtimeMode:'credential'};}
+    else if(!requireChat&&(identity==='connection'||connection?.connectionIdentity)){
       actor={...actor,runtimeId:roleRuntimeId(grant.principal,actor.agentId!,'credential',grant.credentialId??actor.agentId!),runtimeMode:'credential'};
     }else{
       // The host mirrors its per-call MCP metadata. Never infer the last chat on a multiplexed connection.
@@ -154,13 +157,17 @@ export function createNetworkMcpApp(
       const proof=req.header('x-mindpond-host-context');if(proof)meta['mindpond/verifiedSessionID']=verifyHostSession(proof,'office_artifact_transfer',{method:req.method,artifactId:req.params.artifactId},token);
       const chat=hostChatIdentity(meta);
       if(chat)actor={...actor,runtimeId:roleRuntimeId(grant.principal,actor.agentId!,chat.source,chat.id),runtimeMode:chat.mode,nativeChatId:chat.id};
-      else if(connection)actor={...connection.trusted};
+      else if(connection&&!requireChat)actor={...connection.trusted};
       else throw new MindPondError('identity_required','Supply the host-configured connection identity, native chat metadata, or the matching MCP session; never choose another role');
     }
-    const binding=await graph.roles.binding(actor);actor={...actor,roleId:binding!.role_id,roleBindingId:binding!.id,roleBindingEpoch:binding!.epoch};
+    const binding=await graph.roles.binding(actor);
+    if(pinned&&binding!.role_id!==pinned.role_id)throw new MindPondError('scope_denied','This chat is not bound to the role credential.');
+    actor={...actor,roleId:binding!.role_id,roleBindingId:binding!.id,roleBindingEpoch:binding!.epoch};
     const recheck=async()=>{
       if(pinned){const current=await graph.memoryOwners.credential(token);if(current?.id!==pinned.id)throw new MindPondError('scope_denied','Role credential was revoked');}
       else{const current=authenticateNetworkAccount(await options.configuration(),req.header('authorization'));if(JSON.stringify(current)!==JSON.stringify(grant))throw new MindPondError('scope_denied','Account permission changed during transfer');}
+      if(!['codex_metadata','opencode_metadata'].includes(actor.runtimeMode??'')&&await graph.offices.accountAccess(grant.principal)==='collaborator')
+        throw new MindPondError('identity_required','Colleague attachments require the same native chat identity as Office and Memory.');
       await graph.roles.binding(actor);
     };
     return {actor,recheck};
