@@ -1164,9 +1164,9 @@ export class GraphMemory {
     await this.organizationRequests.init();
     this.collaboration=this.coordinator.service(new CollaborationStore(this.db,work=>this.growthWrite(work),this.clock,work=>this.coordinator.exclusive(work)),['init','configure','workspaces','handoff','inbox','get','reply','ack','managedTask','taskList','taskMutation','submitIteration','verifyIteration','activity']);
     await this.collaboration.init();
-    this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','seen','configureAgent','registry','choices','agent','officeExists','agentSeats','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
+    this.offices=this.coordinator.service(new OfficeStore(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.clock),['init','settings','agentAuthority','accountAccess','seen','configureAgent','registry','choices','agent','officeExists','agentSeats','configureProject','configureOffice','materialPreview','cancelItem','bootstrap','authorizedSeats','pending','open','get','exchange','material','progress','item']);
     await this.offices.init();
-    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','connect','disconnect','init','migrateModel','application','sync','identity','binding','review','configure','workingGuidance','deleteRole','deleteOffice','registry','state','configureOffice','link']);
+    this.roles=this.coordinator.service(new RoleStore(this.db,work=>this.growthWrite(work),this.offices,this.clock),['connectionRequest','activate','connect','disconnect','fenceRole','init','migrateModel','application','sync','identity','binding','review','configure','workingGuidance','deleteRole','deleteOffice','registry','state','configureOffice','link']);
     await this.roles.init();
     this.building=this.coordinator.service(new OfficeBuilding(this.db,work=>this.growthWrite(work),work=>this.coordinator.exclusive(work),this.roles,this.offices,this.clock),['init','directory','receive','message','container','snapshot','material','replay','pollWait']);
     await this.building.init();
@@ -1184,7 +1184,7 @@ export class GraphMemory {
       await initSeatArchive(this.db!);
       await retireSeatEngine(this.db!,this.clock());
     });
-    this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','assertCommunication','sweep','setLock']);await this.discussions.init();
+    this.discussions=this.coordinator.service(new OfficeDiscussions(this.db,this,work=>this.growthWrite(work),this.clock),['init','run','attention','assertMailbox','assertCommunication','sweep','setLock','removeRecalledRole']);await this.discussions.init();
     this.scripts=this.coordinator.service(new OfficeScripts(this.db,this,work=>this.growthWrite(work),this.clock),['init','run']);await this.scripts.init();
     // Streaming intentionally stays outside the connection coordinator; only its short metadata phases transact.
     this.artifacts=new OfficeArtifacts(this.db,this,work=>this.growthWrite(work),this.dataPath,this.clock);await this.artifacts.init();
@@ -1194,6 +1194,7 @@ export class GraphMemory {
     this.roles.cloneStatus=roleId=>this.roleClones.describe(roleId);
     this.roles.assertCloneUsable=roleId=>this.roleClones.assertUsable(roleId);
     this.roles.assertCloneReorganizable=roleId=>this.roleClones.assertReorganizable(roleId);
+    this.roles.revokeMemoryDelegation=roleId=>this.roleMemoryPermissions.revoke(roleId);
     this.building.artifactAttachments=(ids,recipient,a)=>this.artifacts.attach(ids,recipient,a);
     this.building.assertRetryAttachments=(ids,recipient)=>this.artifacts.assertRetryRecipient(ids,recipient);
     const expireArtifacts=async()=>{try{await this.artifacts.sweep();}catch(error){logger.debug('Artifact maintenance failed',getErrorMessage(error));}finally{this.later(expireArtifacts,60000);}};this.later(expireArtifacts,60000);

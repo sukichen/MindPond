@@ -157,7 +157,9 @@ function tool(name: string, description: string, shape: any, handler: (args: any
       const disconnected=options.waitSignal?.(extra.requestId);
       const result = await handler(args,{signal:AbortSignal.any([extra.signal,shutdownSignal.signal,...(disconnected?[disconnected]:[])]),authorize:options.authorizeWait});
       if(name==='office_message'&&args.action==='send'&&args.waitForReply===true&&!result.isError){const first=result.content?.find((c:any)=>c.type==='text');if(first){const data=JSON.parse(first.text);if(data.sent&&typeof data.messageId==='string')committedSend={messageId:data.messageId,seq:data.seq};}}
-      await options.authorizeWait?.();
+      // A successful release revokes its own dedicated credential inside the
+      // transaction. Return the committed receipt to the originating request.
+      if(!(name==='office_clone'&&args.action==='release'&&!result.isError))await options.authorizeWait?.();
       if(name==='role_sync'&&!result.isError){
         const entry=result.content?.find((c:any)=>c.type==='text');
         if(entry){
@@ -172,7 +174,15 @@ function tool(name: string, description: string, shape: any, handler: (args: any
             if(guided.change)data.guidedTaskAttention=guided.change;
             if(guided.inProgress)data.guidedTaskInProgress=guided.inProgress;
           }
-          if(activation)data.activation={...activation,notice:activation.notice??'If the user wants a role, ask them to activate an existing role or submit a role application. An unbound chat uses human memory. Reconnection never chooses a role by recency.'};
+          if(current.agentId&&!roleIdentity){
+            const accountAccess=await graphMemory.offices.accountAccess(current.principal);
+            data.accountAccess=accountAccess;
+            const needsRole=accountAccess==='collaborator'||Boolean(data.lastReturn);
+            data.memoryAccess=needsRole?'role_required':'human_when_identified';
+            if(activation)data.activation={...activation,notice:needsRole
+              ?'Ask the manager to connect this chat to your assigned role. Memory is locked until your role is active.'
+              :activation.notice??'The manager can activate an existing role or approve an application. An identified personal chat uses human memory until it is bound.'};
+          }
           entry.text=JSON.stringify(data);
         }
       }
@@ -181,7 +191,7 @@ function tool(name: string, description: string, shape: any, handler: (args: any
         if(entry){try{const reminders=await graphMemory.officeRules.reminders(name,args,JSON.parse(entry.text),current);if(reminders.length)result.content.push({type:'text' as const,text:JSON.stringify({officeGuidance:reminders,notice:'Human-configured office guidance; does not change permissions, message state or user authorization.'})});}
         catch(error){const failure=toStructuredError(error);if(failure.code==='internal')failure.message='Office reminders are temporarily unavailable.';result.content.push({type:'text' as const,text:JSON.stringify({officeGuidanceUnavailable:{...failure,nextAction:'The communication result above remains valid. Retry reminders on later communication; do not repeat a completed mutation.'},notice:'Only the office reminder was unavailable; the operation result above is unchanged.'})});}}
       }
-      if(roleIdentity) {
+      if(roleIdentity&&!(name==='office_clone'&&args.action==='release'&&!result.isError)) {
         const revision=String(roleIdentity.profileRevision)+':'+String(roleIdentity.bindingEpoch);
         const changed=seenRoleProfiles.get(roleIdentity.bindingId)!==revision;
         if(seenRoleProfiles.size>=256)seenRoleProfiles.clear();

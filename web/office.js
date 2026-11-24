@@ -252,7 +252,7 @@
     const advanced=make('details');advanced.append(make('summary','高级：环境变量模板与访问范围'),make('p','连接编号：'+agent.id+' · 账户：'+agent.principal),make('p',cfg.place),make('pre',cfg.text),make('p','上面的模板使用环境变量 '+cfg.env+'；完整配置下载会直接包含凭据。请私下保存配置，不要发给模型或提交仓库。'));
     for(const warning of cfg.warnings)advanced.append(make('p',warning));
     for(const filename of Object.keys(cfg.files??{}))advanced.append(make('p','逐聊天模式：将上方下载的插件保存到项目 '+filename+'，或用户配置目录 plugins/。'));
-    advanced.append(make('p','消息等待最多 5 分钟，调用期限配置为 6 分钟。未绑定的明确连接/聊天使用人类记忆；身份缺失时不会猜测。'));
+    advanced.append(make('p',agent.accountAccess==='collaborator'?'同事账户：请先在同事的聊天调用 role_sync，由你绑定角色后才能使用记忆。':'我的连接：已识别但未绑定角色时可以使用人类记忆。'));
     if(cfg.docs){const a=make('a','宿主配置文档');a.href=cfg.docs;a.target='_blank';a.rel='noopener noreferrer';advanced.append(a);}
     const policy = state.data.credentialPolicies?.[agent.id];
     const initialRestrictions = (policy?.assignmentIds ?? []).join(',');
@@ -359,7 +359,7 @@
     el('officeEndpoint').elements.mcpUrl.value = state.data.settings.mcpUrl ?? '';
     if(replyWaitSettingsEpoch!==state.authEpoch){const epoch=state.authEpoch;replyWaitSettingsEpoch=epoch;replyWaitSettings=window.MindPondOfficeReplyWait?.mount({container:el('officeReplyWaitPolicy'),api,current:()=>state.logged&&state.authEpoch===epoch});}
     replyWaitSettings?.update(state.data.replyWaitPolicy);
-    if(!state.agentPrincipalEdited){const principals=[...new Set(agentChoices().map(a=>a.principal).concat(roleChoices().map(r=>r.principal)))];if(principals.length===1)el('officeAgentForm').elements.principal.value=principals[0];}
+    renderAccountChoices();
     renderDiagnostics();
     el('officeInstance').textContent =
       '实例 ' +
@@ -378,11 +378,21 @@
     renderProjects();
 
   }
+  function renderAccountChoices(){
+    const form=el('officeAgentForm'),type=form.elements.accountAccess.value;
+    const accounts=[...new Set(agentChoices().filter(a=>(a.accountAccess??'personal')===type).map(a=>a.principal))];
+    const options=accounts.map(id=>{const option=make('option');option.value=id;return option;});
+    el('officeAccountIds').replaceChildren(...options);
+    if(!state.agentPrincipalEdited)form.elements.principal.value=type==='personal'?(accounts.length===1?accounts[0]:'human'):'';
+    el('officeAccountHelp').textContent=type==='collaborator'
+      ?'为同事使用独立标识，例如 colleague-lin。同一同事的多个宿主可用同一标识。未绑定角色时不能读写记忆。'
+      :'未绑定角色时可使用人类记忆。请仅为自己的宿主签发此类配置。';
+  }
   function agentStatus(agent){return agent.state==='disabled'?'接入已停用':agent.state==='pending'?'等待配置凭据':agent.discovered_at?'已观测工具发现':agent.last_seen?'已观测连接握手':'尚未观测连接';}
   function renderAgents(){
     const box = el('officeAgentList'),previous=new Map([...box.children].filter(n=>n.dataset.connectorId).map(n=>[n.dataset.connectorId,n])),next=[];
     for (const agent of state.data.agents) {
-      const signature=JSON.stringify([agent.revision,state.data.credentialPolicies?.[agent.id],state.data.credentialIssuance,state.data.credentialPolicyError,state.data.connectionTemplates?.[agent.id]]),old=previous.get(agent.id);
+      const signature=JSON.stringify([agent.revision,agent.accountAccess,state.data.credentialPolicies?.[agent.id],state.data.credentialIssuance,state.data.credentialPolicyError,state.data.connectionTemplates?.[agent.id]]),old=previous.get(agent.id);
       if(old){old.querySelector('[data-agent]').textContent=agentStatus(agent);const seen=old.querySelector('[data-last-seen]');if(seen)seen.textContent=agent.last_seen?'最近握手 '+new Date(agent.last_seen).toLocaleString():'尚未观察到握手';}
       if(old?.dataset.signature===signature){next.push(old);continue;}
       const draft=old?.querySelector('[data-connection-draft]');
@@ -402,7 +412,7 @@
       card.append(
         make('h3', agent.name),
         badge,
-        make('p',hostNames[agent.host]??'HTTP MCP')
+        make('p',(hostNames[agent.host]??'HTTP MCP')+' · '+agent.principal+' · '+(agent.accountAccess==='collaborator'?'同事账户':'我的连接'))
       );
       const seen=make('p',agent.last_seen?'最近握手 '+new Date(agent.last_seen).toLocaleString():'尚未观察到握手');seen.dataset.lastSeen='';card.append(seen);
       if (agent.state === 'disabled')
@@ -421,6 +431,12 @@
           await refresh();
         })
       );
+      if(agent.accountAccess!=='collaborator')card.append(button('限制为同事账户',async()=>{
+        if(!await confirmAction(`将账户「${agent.principal}」的所有宿主限制为仅限获批角色？该账户未绑定角色的聊天将立即失去人类记忆访问。`))return;
+        await api('agent',{id:agent.id,principal:agent.principal,name:agent.name,host:agent.host,state:agent.state,
+          expectedRevision:agent.revision,accountAccess:'collaborator'});
+        await refresh();notice('此账户的宿主现需绑定角色后才能使用记忆。');
+      }));
       const remove=button('删除连接',async()=>{
         if(!(await confirmAction(`永久删除宿主连接「${agent.name}」并撤销其访问？办公室历史与记忆会保留。有关联角色或正在使用的工位时，需先移除它们。`,{destructive:true,title:'删除宿主连接'})))return;
         const result=await api('agent/delete',{id:agent.id,expectedRevision:agent.revision});await refresh();
@@ -450,7 +466,7 @@
       for(const warning of state.data.connectionTemplates?.[agent.id]?.warnings??[])row.append(make('p',warning));
       box.append(row);
     }
-    box.append(make('p','绑定角色的聊天只访问自身和当前有权限的办公室记忆；已识别且未绑定角色的聊天按人类权限访问全部记忆。缺少可靠身份时会明确报错。成员资格不共享私人记忆或文件。'));
+    box.append(make('p','我的连接在未绑定角色时可使用全部记忆。同事连接需要先绑定获批角色，只访问该角色和它有权使用的办公室记忆。'));
   }
   function renderRoomChoices() {
     const box = el('officeRoomList'); box.replaceChildren();
@@ -606,22 +622,29 @@
       const data=await api('role/state',{directoryThrough:state.directoryThrough});
       if(generation!==roleConnectionGeneration||epoch!==state.authEpoch||!state.logged||!dialog.open)return;
       const role=data.roles.find(r=>r.id===record.id&&r.state==='active');if(!role)throw Error('角色已变化，请刷新角色目录。');
-      body.replaceChildren(make('h3',role.name),make('p','当前连接：'+roleConnectionLabel(role)),make('p','账户：'+role.principal+'。目标宿主连接须登记在同一账户下。'),make('p','先在目标连接调用 role_sync，再核对宿主名称及身份范围。逐聊天模式还需核对真实聊天 ID。'));
+      body.replaceChildren(make('h3',role.name),make('p','当前连接：'+roleConnectionLabel(role)),make('p','当前账户：'+role.principal+'。'+(role.cloneState==='active'?'分身可以选择其他账户下的聊天。':'目标宿主连接须登记在同一账户下。')),make('p','先在目标连接调用 role_sync，再核对宿主名称及身份范围。逐聊天模式还需核对真实聊天 ID。'));
       const select=document.createElement('select'),targetInfo=make('div');select.append(new Option('请选择目标连接或聊天',''));
-      const requests=[...(data.chats??[]).map(r=>({...r,targetId:r.runtime_id})),...(data.connections??[]).filter(r=>!(data.chats??[]).some(c=>c.runtime_id===r.runtime_id)).map(r=>({...r,targetId:r.id,requestId:r.id}))].filter(r=>r.principal===role.principal);
-      for(const request of requests){const host=agentChoices().find(a=>a.id===request.connector_id)??{id:request.connector_id,name:request.connector_name??request.connector_id,host:request.host,state:request.host_state};const option=new Option(`${hostNames[request.chat_source==='connection'?host.host:request.chat_source??host.host]??'HTTP MCP'} · ${host.name} · ${request.chat_source==='connection'?'连接共享身份':request.native_chat_id??'激活编号 '+request.id}${request.role_id===role.id?' · 当前连接':request.role_id?' · 已连接「'+request.role_name+'」':host.state!=='active'?' · 宿主已停用':' · 可连接'}`,request.targetId);option.disabled=Boolean(request.role_id)||host.state!=='active';select.append(option);}
+      const requests=[...(data.chats??[]).map(r=>({...r,targetId:r.runtime_id})),...(data.connections??[]).filter(r=>!(data.chats??[]).some(c=>c.runtime_id===r.runtime_id)).map(r=>({...r,targetId:r.id,requestId:r.id}))].filter(r=>role.cloneState==='active'||r.principal===role.principal);
+      for(const request of requests){const host=agentChoices().find(a=>a.id===request.connector_id)??{id:request.connector_id,name:request.connector_name??request.connector_id,host:request.host,state:request.host_state};const option=new Option(`${hostNames[request.chat_source==='connection'?host.host:request.chat_source??host.host]??'HTTP MCP'} · ${host.name} · 账户 ${request.principal} · ${request.chat_source==='connection'?'连接共享身份':request.native_chat_id??'激活编号 '+request.id}${request.role_id===role.id?' · 当前连接':request.role_id?' · 已连接「'+request.role_name+'」':host.state!=='active'?' · 宿主已停用':' · 可连接'}`,request.targetId);option.disabled=Boolean(request.role_id)||host.state!=='active';select.append(option);}
       for(const kind of ['chats','connections'])directoryFooter(body,kind,data.directory?.[kind],kind==='chats'?'聊天记录':'连接激活',()=>{if(dialog.open&&generation===roleConnectionGeneration)return switchRoleConnection(role);});
       const error=make('p','');error.className='office-inspector-error';error.setAttribute('role','alert');error.hidden=true;
       const save=button('确认切换连接',async()=>{
         const request=requests.find(r=>r.targetId===select.value);if(!request)throw Error('请选择目标连接或聊天');
         const host=agentChoices().find(a=>a.id===request.connector_id)??{id:request.connector_id,name:request.connector_name??request.connector_id,host:request.host,state:request.host_state};
-        if(!await confirmAction(`请核对目标${request.chat_source==='connection'?'连接名称 '+host?.name:'聊天 ID '+(request.native_chat_id??request.id)}。将「${role.name}」切换到「${host?.name??request.connector_id}」后，原聊天解除角色绑定，成为人类聊天；角色专用凭据撤销，知识、消息和办公室分工保留。`))return;
+        const crossAccount=request.principal!==role.principal;
+        const destination=request.chat_source==='connection'?host.name:request.native_chat_id??request.id;
+        const personalAccount=host.accountAccess!=='collaborator';
+        const accountNotice=personalAccount?' 此账户当前为「我的连接」，未绑定的连接可访问人类记忆。给同事用时，请先在「宿主连接」限制为同事账户。':'';
+        const transfer=crossAccount
+          ?`将「${role.name}」改派给账户「${request.principal}」并绑定「${destination}」？对方将接手此分身的私有记忆、脚本、消息与现有工作。原聊天解绑，角色专用凭据和查阅其他角色记忆的授权撤销。${accountNotice}`
+          :`将「${role.name}」连接到「${destination}」？原聊天的角色绑定和专用凭据将撤销。`;
+        if(!await confirmAction(transfer))return;
         if(generation!==roleConnectionGeneration||epoch!==state.authEpoch||!dialog.open)return;
         dialog.dataset.saving='true';save.disabled=true;select.disabled=true;el('officeRoleConnectionClose').disabled=true;
-        try{await api(request.requestId?'role/activate':'role/connect',{...(request.requestId?{requestId:request.requestId}:{targetRuntimeId:request.runtime_id}),roleId:role.id,expectedRevision:role.revision});if(epoch!==state.authEpoch)return;dialog.close();await refresh();notice('连接已切换，请在目标聊天调用 role_sync 继续。');}
+        try{await api(request.requestId?'role/activate':'role/connect',{...(request.requestId?{requestId:request.requestId}:{targetRuntimeId:request.runtime_id}),roleId:role.id,expectedRevision:role.revision,...(crossAccount?{recipientPrincipal:request.principal}:{})});if(epoch!==state.authEpoch)return;dialog.close();await refresh();notice(crossAccount?'分身已改派并绑定到目标账户。':'连接已切换，请在目标聊天调用 role_sync 继续。');}
         catch(e){error.textContent=e.message;error.hidden=false;}
         finally{delete dialog.dataset.saving;save.disabled=!select.value;select.disabled=false;el('officeRoleConnectionClose').disabled=false;}
-      });save.disabled=true;select.onchange=()=>{save.disabled=!select.value;error.hidden=true;targetInfo.replaceChildren();const target=requests.find(r=>r.targetId===select.value);if(target)targetInfo.append(chatLocator(target),make('p','目标最近通信：'+new Date(target.last_seen).toLocaleString()+' · 不代表宿主当前在线'));};
+      });save.disabled=true;select.onchange=()=>{save.disabled=!select.value;error.hidden=true;targetInfo.replaceChildren();const target=requests.find(r=>r.targetId===select.value);save.textContent=target&&target.principal!==role.principal?'确认改派并连接':'确认连接';if(target)targetInfo.append(chatLocator(target),make('p','目标最近通信：'+new Date(target.last_seen).toLocaleString()+' · 不代表宿主当前在线'));};
       if(role.connection)body.append(chatLocator(role.connection),make('p','最近通信：'+new Date(role.connection.lastSeen).toLocaleString()+' · 不代表宿主当前在线'));
       body.append(button('刷新聊天列表',async()=>{dialog.close();await switchRoleConnection(role);}),label('目标连接 / 聊天',select),targetInfo,make('p','被其他角色占用的目标需先断开其角色。切换不会启动或关闭宿主；文件与项目权限按实际配置检查。'),error,save);
       if(select.options.length===1)body.append(make('p','尚无可选目标。请让目标聊天调用 role_sync；服务只能列出已调用过 MindPond 的聊天，不能扫描宿主中所有聊天。'));
@@ -644,7 +667,8 @@
       const heading = make('div'); heading.className = 'office-character-heading';
       heading.append(avatar, make('strong', role.name));
       const places = state.data.characters.mappings.filter(m => m.role_id === role.id).length;
-      const status = make('span', role.state === 'active' ? '已批准' : '已停用');status.className = 'office-character-status';
+      const status = make('span', role.cloneState==='returned'?'分身 · 已收回，待整理':
+        role.cloneState==='revoked'?'分身 · 已停用':role.cloneState?'分身':role.state === 'active' ? '已批准' : '已停用');status.className = 'office-character-status';
       card.append(heading, status, make('span', roleConnectionLabel(role), 'office-role-connection'), make('p', role.introduction), make('small', `${role.principal} · ${places ? places + ' 个工位' : '未安排办公室'}`));
       list.append(card);
     }
@@ -746,13 +770,15 @@
       form.append(label('角色常用提示词',guidance),guidanceHint,retry);
       void refreshGuidance();
     }
-    const meta = make('p', `账户 ${record.principal} · ${application ? '待审核' : record.state === 'active' ? '已批准 · 运行状态未知' : '已停用'}`);meta.className = 'office-hint';
+    const roleStatus=record.cloneState==='returned'?'分身 · 已收回，待整理':
+      record.cloneState?'分身 · 本体 '+record.cloneParentName:record.state==='active'?'已批准 · 运行状态未知':'已停用';
+    const meta = make('p', `账户 ${record.principal} · ${application?'待审核':roleStatus}`);meta.className = 'office-hint';
     const profile=make('section');profile.append(meta,form);body.append(profile);let initialFocus=name;
     if(!application){
       const connection=make('section');connection.className='office-role-current';connection.append(make('h3','当前连接'),make('strong',roleConnectionLabel(record)));
       if(record.connection)connection.append(chatLocator(record.connection),make('p','最近通信：'+new Date(record.connection.lastSeen).toLocaleString()+' · 不代表宿主当前在线'));
       if(record.state==='active')connection.append(button(record.connection?'切换连接':'连接到聊天',()=>switchRoleConnection(record)));
-      if(record.connection)connection.append(button('断开连接',async()=>{const epoch=state.authEpoch;if(!await confirmAction('断开「'+record.name+'」与当前聊天的连接？该连接或聊天将恢复人类记忆权限，角色的记忆、消息与办公室分工保留，角色专用凭据撤销。'))return;if(epoch!==state.authEpoch||state.roleDraft!==draft)return;if(!await closeRoleInspector())return;if(epoch!==state.authEpoch||!state.logged)return;await api('role/disconnect',{roleId:record.id,expectedRevision:record.revision,bindingId:record.connection.bindingId});if(epoch!==state.authEpoch)return;await refresh();notice('角色已断开连接。');}));
+      if(record.connection)connection.append(button('断开连接',async()=>{const epoch=state.authEpoch;if(!await confirmAction('断开「'+record.name+'」与当前聊天的连接？该聊天会解除角色身份，角色的记忆、消息与办公室分工保留，角色专用凭据撤销。'))return;if(epoch!==state.authEpoch||state.roleDraft!==draft)return;if(!await closeRoleInspector())return;if(epoch!==state.authEpoch||!state.logged)return;await api('role/disconnect',{roleId:record.id,expectedRevision:record.revision,bindingId:record.connection.bindingId});if(epoch!==state.authEpoch)return;await refresh();notice('角色已断开连接。');}));
       body.prepend(connection);
     }
     const info = make('details');info.append(make('summary', '身份与连接信息'), make('p', `编号：${record.id}`));
@@ -769,14 +795,14 @@
     if(!application){
       const tabs=make('div'),working=make('section');tabs.className='office-continuity-controls';tabs.setAttribute('aria-label','角色详情视图');
       const scripts=make('section'),reorganization=make('section'),clones=make('section');let libraryMounted=false,reorganizationMounted=false,clonesMounted=false;
-      const workTab=button('接续工作',()=>selectView('work')),profileTab=button('角色资料',()=>selectView('profile')),scriptTab=button('专属脚本',()=>selectView('scripts')),reorganizationTab=button('合并 / 拆分',()=>selectView('reorganization')),clonesTab=button('派遣分身',()=>selectView('clones'));
+      const workTab=button('接续工作',()=>selectView('work')),profileTab=button('角色资料',()=>selectView('profile')),scriptTab=button('专属脚本',()=>selectView('scripts')),reorganizationTab=button('合并 / 拆分',()=>selectView('reorganization')),clonesTab=button(record.cloneState?'分身与收回':'派遣分身',()=>selectView('clones'));
       function selectView(view){
         if(draft.saving)return;
         clones.hidden=view!=='clones';reorganization.hidden=view!=='reorganization';profile.hidden=view!=='profile';
         working.hidden=view!=='work';scripts.hidden=view!=='scripts';
         for(const [tab,name] of [[workTab,'work'],[profileTab,'profile'],[scriptTab,'scripts'],[reorganizationTab,'reorganization'],[clonesTab,'clones']])tab.setAttribute('aria-pressed',String(view===name));
         const epoch=state.authEpoch,current=()=>state.roleDraft===draft&&state.logged&&state.authEpoch===epoch;
-        if(view==='clones'&&!clonesMounted){clonesMounted=true;window.MindPondRoleClones?.mount({container:clones,role:record,api,current,notice,confirmAction,onLifecycleChanged:async result=>{await closeRoleInspector(true);notice(result.state==='active'?'分身已恢复，请核对聊天身份。':result.state==='revoked'?'分身已撤回，原绑定拒绝访问；宿主进程不受控制。':'派遣资料已清理，角色当前的私有知识保留。');await refresh();},onDirty:()=>{draft.dirty=true;state.roleEditing=true;},onBusy:saving=>{if(state.roleDraft!==draft)return;draft.saving=saving;el('officeRoleInspectorClose').disabled=saving;}});}
+        if(view==='clones'&&!clonesMounted){clonesMounted=true;window.MindPondRoleClones?.mount({container:clones,role:record,api,current,notice,confirmAction,onLifecycleChanged:async result=>{await closeRoleInspector(true);notice(result.state==='returned'?'分身已收回。本体可以开始整理经验。':result.state==='archived'?'分身已归档。':result.principal?'已更改接收方账户，请在角色目录连接同事的聊天。':'分身状态已更新。');await refresh();},onDirty:()=>{draft.dirty=true;state.roleEditing=true;},onBusy:saving=>{if(state.roleDraft!==draft)return;draft.saving=saving;el('officeRoleInspectorClose').disabled=saving;}});}
         if(view==='reorganization'&&!reorganizationMounted){
           reorganizationMounted=true;
           window.MindPondRoleReorganization?.mount({container:reorganization,role:record,api,current,
@@ -791,7 +817,7 @@
         }
         if(view==='scripts'&&!libraryMounted){libraryMounted=true;window.MindPondOfficeResources?.library({container:scripts,scope:{roleId:record.id},api,current,notice,confirmAction,download});}
       }
-      tabs.append(workTab,profileTab,scriptTab,clonesTab,reorganizationTab);body.insertBefore(clones,profile);body.insertBefore(tabs,profile);body.insertBefore(working,profile);body.insertBefore(scripts,profile);body.insertBefore(reorganization,profile);selectView('work');initialFocus=workTab;
+      tabs.append(workTab,profileTab,scriptTab,clonesTab,reorganizationTab);body.insertBefore(clones,profile);body.insertBefore(tabs,profile);body.insertBefore(working,profile);body.insertBefore(scripts,profile);body.insertBefore(reorganization,profile);selectView(record.cloneState?'clones':'work');initialFocus=record.cloneState?clonesTab:workTab;
       const continuityEpoch=state.authEpoch;window.MindPondRoleContinuity?.mount({container:working,role:record,offices:state.data.choices?.offices??state.data.offices,api,current:()=>state.roleDraft===draft&&state.logged&&state.authEpoch===continuityEpoch,notice,confirmAction});
     }
     form.addEventListener('input', () => {draft.dirty = true;state.roleEditing = true;save.textContent = application ? '批准这个角色' : '保存修改';});
@@ -1802,12 +1828,14 @@
     await refresh();
     notice('接入地址已保存。请确认目标宿主可访问这个地址，并与工作台使用同一数据实例。');
   });
+  el('officeAgentForm').elements.accountAccess.addEventListener('change',()=>{state.agentPrincipalEdited=false;renderAccountChoices();});
   el('officeAgentForm').elements.principal.addEventListener('input',()=>{state.agentPrincipalEdited=true;});
   submit('officeAgentForm', async (data) => {
     await api('agent', {
       id: 'ag-' + uuid(),
       name: data.get('name'),
       principal: data.get('principal'),
+      accountAccess: data.get('accountAccess'),
       host: data.get('host'),
       state: 'pending',
       expectedRevision: 0

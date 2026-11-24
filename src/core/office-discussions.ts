@@ -330,6 +330,15 @@ export class OfficeDiscussions{
   await this.db.run('INSERT INTO office_discussion_posts(room_id,author,key,body,created_at) VALUES(?,?,?,?,?)',[roomId,roleId,'exit-summary:'+departureId,'## Exit summary\n\n'+summary,this.clock()]);
  }
 
+ async removeRecalledRole(roleId:string){
+  const rooms=await this.db.all<Row[]>(`SELECT r.id,r.office_id,m.state FROM office_discussion_members m
+   JOIN office_discussions r ON r.id=m.room_id WHERE m.role_id=? AND m.state IN ('joined','invited')`,[roleId]);
+  for(const room of rooms){
+   await this.db.run('UPDATE office_discussion_members SET state=? WHERE room_id=? AND role_id=?',
+    [room.state==='joined'?'left':'declined',room.id,roleId]);
+   await this.changed(room);
+  }
+ }
  private async changed(row:Row){await this.db.run('UPDATE office_discussions SET revision=revision+1 WHERE id=?',[row.id]);await this.log('discussion_updated',row.id,row.office_id);this.waiter.notify();}
  async history(value:unknown,a?:TrustedCallContext):Promise<Row>{
   const page=discussionHistorySchema.parse(value);

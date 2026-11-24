@@ -4,6 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import {randomBytes} from 'node:crypto';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {createNetworkMcpApp} from '../src/integrations/network-server.js';
+import {tokenDigest} from '../src/integrations/network-config.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {GraphMemory} from '../src/core/graph-memory.js';
@@ -23,7 +27,7 @@ const test=async(name:string,run:()=>Promise<void>)=>{await run();passed++;conso
 const rejects=async(run:()=>Promise<unknown>,code:string)=>assert.rejects(run,(e:any)=>{assert.equal(e.code,code,e.message);assert(e.nextAction);return true;});
 try{
  await graph.init();const db=(graph as any).db;
- for(const [id,principal] of [['host','human'],['foreign','recipient']])await graph.offices.configureAgent({id,principal,name:'Synthetic '+id,host:'generic',state:'active',expectedRevision:0},admin);
+ for(const [id,principal] of [['host','human'],['foreign','recipient']])await graph.offices.configureAgent({id,principal,name:'Synthetic '+id,host:'generic',state:'active',expectedRevision:0,accountAccess:id==='foreign'?'collaborator':'personal'},admin);
  const apply=await graph.roles.application({action:'submit',name:'Parent',introduction:'Synthetic tested skill',reason:'Clone regression',key:'apply'},actor('parent'));
  const parent=(await graph.roles.review({action:'approve',applicationId:apply.applicationId,expectedRevision:1},admin)).roleId;
  const pDomain=await graph.memoryOwners.domain({kind:'agent',id:parent});
@@ -180,6 +184,126 @@ try{
   await graph.roles.disconnect({roleId:child.roleId,expectedRevision:role.revision,bindingId:binding.id},admin);
   assert.equal((await call('memory_identity',{},'clone')).owner.kind,'user');assert.equal(await graph.roles.identity(actor('clone',true)),null);
   await rejects(()=>graph.roles.binding({...actor('clone',true),roleId:child.roleId,roleBindingId:binding.id,roleBindingEpoch:binding.epoch}),'scope_denied');
+ });
+ await test('colleague credentials are role-only across both HTTP identity modes through final return and archive',async()=>{
+  const recipientToken=randomBytes(32).toString('base64url'), oldToken=randomBytes(32).toString('base64url');
+  const allowedHosts=['127.0.0.1'];
+  for(const id of ['old-peer','old-peer-2'])await graph.offices.configureAgent({
+   id,principal:'old-recipient',name:id,host:'generic',state:'active',expectedRevision:0
+  },admin);
+  const gateway=createNetworkMcpApp(graph,{allowedHosts,configuration:async()=>({version:2,grants:[{
+    principal:'recipient',agentId:'foreign',credentialId:'fixture-colleague',domains:[],tokenHash:tokenDigest(recipientToken),toolProfile:'office'
+  },{
+    principal:'old-recipient',agentId:'old-peer-2',credentialId:'fixture-older-colleague',domains:[],tokenHash:tokenDigest(oldToken),toolProfile:'office'
+  }]})});
+  const listener=gateway.app.listen(0,'127.0.0.1');
+  await new Promise<void>(r=>listener.once('listening',r));const address=listener.address() as {port:number};
+  const host='127.0.0.1:'+address.port;allowedHosts.push(host);
+  const transports:StreamableHTTPClientTransport[]=[];
+  const connections:Client[]=[];
+  async function connect(endpoint:string,token=recipientToken,fixed=false){
+   const transport=new StreamableHTTPClientTransport(new URL('http://'+host+endpoint),{requestInit:{headers:{
+     Authorization:'Bearer '+token,...(fixed?{'X-MindPond-Identity':'connection'}:{})}}});
+   const mcp=new Client({name:'colleague-fixture',version:'1'});transports.push(transport);connections.push(mcp);
+   await mcp.connect(transport);return mcp;
+  }
+  async function invoke(mcp:Client,name:string,args:Record<string,unknown>,threadId?:string){
+   const result:any=await mcp.callTool({name,arguments:args,...(threadId?{_meta:{threadId}}:{})});
+   return {error:result.isError,data:JSON.parse(result.content[0].text)};
+  }
+  try{
+   await rejects(()=>graph.offices.configureAgent({id:'account-collision',principal:'human',name:'Colleague',host:'generic',
+    state:'active',expectedRevision:0,accountAccess:'collaborator'},admin),'invalid_input');
+   const oldMemory=await connect('/memory/mcp',oldToken,true);
+   assert.equal((await invoke(oldMemory,'memory_identity',{})).data.owner.kind,'user');
+   await graph.offices.configureAgent({id:'old-peer',principal:'old-recipient',name:'old-peer',host:'generic',
+    state:'active',expectedRevision:1,accountAccess:'collaborator'},admin);
+   assert.equal((await invoke(oldMemory,'memory_identity',{})).data.error.code,'identity_required',
+    'an already-open connection on a second host inherits the account restriction immediately');
+   await rejects(()=>graph.offices.configureAgent({id:'old-peer',principal:'old-recipient',name:'old-peer',host:'generic',
+    state:'active',expectedRevision:2,accountAccess:'personal'},admin),'invalid_input');
+   const fixedMemory=await connect('/memory/mcp',recipientToken,true),memo=await connect('/memory/mcp'),office=await connect('/mcp');
+   assert.equal((await invoke(fixedMemory,'memory_directory',{})).data.error.code,'identity_required');
+   assert.equal((await invoke(memo,'memory_get',{nodeId:human.id},'colleague-chat')).data.error.code,'identity_required');
+   assert.equal((await invoke(memo,'memory_action',{tool:'memory_save',arguments:{content:'No fallback',idempotencyKey:'deny'}},'colleague-chat')).data.error.code,'identity_required');
+   const sync=(await invoke(office,'role_sync',{},'colleague-chat')).data;
+   assert.equal(sync.memoryAccess,'role_required');
+   const transferable=await graph.roleClones.manage({...dispatch,principal:'human',memoryIds:[],scriptIds:[],key:'transferable'},admin);
+   const priorChat=actor('personal-clone-before-transfer');
+   await graph.roles.observeChat(priorChat);
+   await graph.roles.connect({roleId:transferable.roleId,targetRuntimeId:priorChat.runtimeId,expectedRevision:1},admin);
+   await graph.roleMemoryPermissions.manage({action:'set',roleId:transferable.roleId,readOthers:true,organizeOthers:true,expectedRevision:0},admin);
+   const oldRoleCredential=await graph.memoryOwners.issue(transferable.roleId);
+   const targetRuntimeId=actor('colleague-chat',true).runtimeId;
+   const switchClone={roleId:transferable.roleId,targetRuntimeId,expectedRevision:2};
+   await rejects(()=>graph.roles.connect(switchClone,admin),'invalid_input');
+   await rejects(()=>graph.roles.connect({...switchClone,recipientPrincipal:'wrong-account'},admin),'invalid_input');
+   const parentRevision=(await db.get('SELECT revision FROM character_roles WHERE id=?',[parent])).revision;
+   await rejects(()=>graph.roles.connect({roleId:parent,targetRuntimeId,expectedRevision:parentRevision,recipientPrincipal:'recipient'},admin),'invalid_input');
+   assert.equal((await graph.roles.identity(priorChat))?.roleId,transferable.roleId,'failed transfers leave the old connection intact');
+   const base='http://127.0.0.1:'+http.address().port+'/api/office';
+   const login=await fetch(base+'/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operatorKey:'fixture-control'})});
+   const cookie=login.headers.get('set-cookie')!.split(';')[0];
+   const moved=await fetch(base+'/role/connect',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie},
+     body:JSON.stringify({...switchClone,recipientPrincipal:'recipient'})});
+   assert.equal(moved.status,200,await moved.text());
+   assert.equal((await db.get('SELECT principal FROM character_roles WHERE id=?',[transferable.roleId])).principal,'recipient');
+   assert.equal(await graph.roles.identity(priorChat),null);
+   assert.equal(await graph.memoryOwners.credential(oldRoleCredential.token),null);
+   assert.equal((await graph.roleMemoryPermissions.get(transferable.roleId)).readOthers,false);
+   assert.equal((await invoke(memo,'memory_identity',{},'colleague-chat')).data.owner.id,transferable.roleId);
+   assert.equal((await invoke(memo,'memory_identity',{},'parallel-chat')).data.error.code,'identity_required');
+   assert.equal((await invoke(memo,'memory_get',{nodeId:human.id},'colleague-chat')).data.error.code,'scope_denied');
+   assert.equal((await invoke(memo,'memory_get',{nodeId:first.id},'colleague-chat')).data.error.code,'scope_denied');
+   const saved=await invoke(memo,'memory_action',{tool:'memory_save',arguments:{content:'Synthetic collaborator final instruction',idempotencyKey:'final'}},'colleague-chat');
+   assert(!saved.error,JSON.stringify(saved));
+   const creds=await graph.memoryOwners.issue(transferable.roleId),dedicated=await connect('/mcp',creds.token,true);
+   const released=await invoke(dedicated,'office_clone',{action:'release',summary:'Final collaborator experience',key:'release'});
+   assert.equal(released.data.state,'returned',JSON.stringify(released));assert.equal(released.data.memories,1);
+   assert((await invoke(memo,'memory_identity',{},'colleague-chat')).error);
+   await deny('memory_identity',{},'colleague-chat','scope_denied');
+   const syncAfterRelease=(await invoke(office,'role_sync',{},'colleague-chat')).data;
+   assert(syncAfterRelease.activation?.id,'colleague can request new role activation after returning');
+   assert.equal(syncAfterRelease.lastReturn.reportId,released.data.reportId,'sync can confirm a lost release reply');
+   assert.equal((await graph.roles.registry(admin)).roles.find((r:any)=>r.id===transferable.roleId).cloneState,'returned');
+   await rejects(()=>graph.roleClones.office({action:'archive',cloneId:transferable.roleId},actor('parent')),'invalid_input');
+   const next=await call('memory_clone',{action:'get',reportId:released.data.reportId});
+   assert.equal(next.content,'Synthetic collaborator final instruction');
+   const improved=await call('memory_save',{content:'Parent verified collaborator instruction',idempotencyKey:'parent-summary'});
+   await call('memory_clone',{action:'review',reportId:next.reportId,sourceId:next.sourceId,decision:'accepted',
+    targetId:improved.id,expectedTargetVersion:(await call('memory_get',{nodeId:improved.id})).updatedAt,note:'Verified and summarized in parent memory'});
+   assert.equal((await graph.roleClones.office({action:'archive',cloneId:transferable.roleId},actor('parent'))).state,'archived');
+   assert(!(await graph.roles.registry(admin)).roles.some((r:any)=>r.id===transferable.roleId));
+   assert(!(await graph.offices.choices(admin)).roles.some((r:any)=>r.id===transferable.roleId));
+   assert((await call('memory_clone',{action:'get',reportId:next.reportId,sourceId:next.sourceId})).decision);
+   assert.equal((await call('memory_get',{nodeId:improved.id})).owner.id,parent);
+   const recalled=await graph.roleClones.manage({...dispatch,principal:'human',memoryIds:[],scriptIds:[],key:'human-recall'},admin);
+   await graph.roleClones.manage({roleId:recalled.roleId,action:'assign_account',principal:'recipient',expectedRevision:1},admin);
+   const reset=(await db.get('SELECT revision FROM character_roles WHERE id=?',[recalled.roleId])).revision;
+   const activate=(await invoke(office,'role_sync',{},'colleague-chat')).data.activation;
+   await graph.roles.activate({roleId:recalled.roleId,requestId:activate.id,expectedRevision:reset},admin);
+   await graph.roles.configureOffice({id:'recall-office',title:'Recall room',state:'active',expectedRevision:0,seats:[
+    {id:'recall-parent',roleId:parent,label:'Parent'},{id:'recall-clone',roleId:recalled.roleId,label:'Clone'}
+   ]},admin);
+   const focus=await graph.discussions.run({action:'create',officeId:'recall-office',title:'Recall during discussion',
+    question:'What happened?',doneWhen:'Conclusions',participants:[recalled.roleId],key:'recall-room'},actor('parent'));
+   await graph.discussions.run({action:'join',id:focus.room.id},actor('colleague-chat',true));
+   await rejects(()=>graph.roleClones.office({action:'release',summary:'Still in discussion',key:'early-release'},actor('colleague-chat',true)),'scope_denied');
+   const rec=await graph.roleClones.manage({roleId:recalled.roleId,action:'recall',expectedRevision:2},admin);
+   assert.equal((await db.get('SELECT state FROM office_discussion_members WHERE room_id=? AND role_id=?',[focus.room.id,recalled.roleId])).state,'left');
+   assert(await db.get('SELECT id FROM office_discussions WHERE id=?',[focus.room.id]));
+   assert.equal((await db.get("SELECT enabled FROM office_seats WHERE id='recall-clone'")).enabled,0);
+   const visible=await graph.discussions.run({action:'get',id:focus.room.id},actor('parent'));
+   await graph.discussions.run({action:'close',id:focus.room.id,expectedRevision:visible.room.revision,
+    summary:'Discussion closed after recall',key:'end-qa-discussion'},actor('parent'));
+   assert.equal(rec.state,'returned');
+   await call('memory_clone',{action:'acknowledge',reportId:rec.reportId});
+   assert.equal((await graph.roleClones.manage({roleId:recalled.roleId,action:'archive',expectedRevision:3},admin)).state,'archived');
+  }finally{
+   for(const transport of transports)await transport.terminateSession().catch(()=>{});
+   for(const mcp of connections)await mcp.close();
+   await gateway.close(listener);
+  }
  });
  const tools=buildingOperations(graph);assert(tools.some(t=>t.name==='office_clone'));assert(!tools.some(t=>t.name==='memory_clone'));assert((await client.listTools()).tools.some(t=>t.name==='memory_clone'));assert(!(await client.listTools()).tools.some(t=>t.name==='office_clone'));
  console.log('PASS '+passed+' clone lifecycle scenarios; Memory/Office separation, SQLite integrity and no new dependencies');

@@ -31,6 +31,8 @@ try {
   assert.ok(names.includes('dist/mcp-http.js')&&names.includes('dist/mcp-remote.js'));
   assert.ok(names.includes('npm-shrinkwrap.json'),'Published package must retain audited transitive pins');
   assert.ok(names.includes('examples/minimal-host/run.mjs'));
+  assert.ok(names.includes('examples/local-inference/npm-shrinkwrap.json'));
+  assert.ok(!names.some(name=>name.split('/').includes('node_modules')),'Packaged examples must exclude installed dependencies');
   assert.ok(names.includes('LICENSE')&&names.includes('THIRD_PARTY_NOTICES.md')&&names.includes('licenses/dependencies.txt'));
   assert.ok(names.every(n => !/^(data|logs|models|src|node_modules)\//.test(n) && !/\.db(?:\.|$)/.test(n) && n !== '.env'));
   await fs.writeFile(path.join(temp, 'package.json'), '{"private":true,"type":"module"}\n');

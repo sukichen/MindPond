@@ -95,6 +95,7 @@ export class OfficeStore {
     CREATE TABLE IF NOT EXISTS office_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS office_agent_discovery(agent_id TEXT PRIMARY KEY,ts INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS office_agents(id TEXT PRIMARY KEY,principal TEXT NOT NULL,name TEXT NOT NULL,host TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,last_seen INTEGER,created_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS office_account_access(principal TEXT PRIMARY KEY,access TEXT NOT NULL CHECK(access IN ('personal','collaborator')));
     CREATE TABLE IF NOT EXISTS office_agent_tombstones(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,deleted_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS office_projects(id TEXT PRIMARY KEY,title TEXT NOT NULL,members TEXT NOT NULL,enabled INTEGER NOT NULL,revision INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS office_project_links(office_id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES office_projects(id));
@@ -164,6 +165,9 @@ export class OfficeStore {
         AND b.runtime_id=? AND b.state='active' AND r.state='active'`,
       [a.roleBindingId, a.roleId, a.roleBindingEpoch, a.principal, a.agentId, a.runtimeId]));
   }
+  async accountAccess(principal: string): Promise<'personal'|'collaborator'> {
+    return (await this.db.get<{access:'personal'|'collaborator'}>('SELECT access FROM office_account_access WHERE principal=?',[principal]))?.access ?? 'personal';
+  }
   async seen(a: Actor) {
     await this.db.run(
       "UPDATE office_agents SET last_seen=? WHERE id=? AND principal=? AND state='active'",
@@ -179,6 +183,16 @@ export class OfficeStore {
         fail('Agent settings changed', 'stale_version');
       if (old && old.principal !== i.principal)
         fail('Agent account cannot be changed', 'invalid_input');
+      if(i.accountAccess!==undefined){
+        const policy=await this.db.get<Row>('SELECT access FROM office_account_access WHERE principal=?',[i.principal]);
+        if(policy?.access==='collaborator'&&i.accountAccess==='personal')
+          fail('A colleague account cannot be upgraded to human Memory. Use a separate personal account.','invalid_input');
+        if(!old&&policy?.access!=='collaborator'&&i.accountAccess==='collaborator'&&await this.db.get(
+          'SELECT 1 FROM office_agents WHERE principal=? UNION ALL SELECT 1 FROM character_roles WHERE principal=? LIMIT 1',[i.principal,i.principal]))
+          fail('This account already has personal connections or roles. Choose a new identifier or restrict the existing account from its connection card.','invalid_input');
+        await this.db.run(`INSERT INTO office_account_access VALUES(?,?)
+          ON CONFLICT(principal) DO UPDATE SET access=excluded.access`,[i.principal,i.accountAccess]);
+      }
       await this.db.run(
         'INSERT INTO office_agents VALUES(?,?,?,?,?,?,NULL,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,host=excluded.host,state=excluded.state,revision=excluded.revision',
         [
@@ -200,14 +214,15 @@ export class OfficeStore {
       }
       await this.audit(null, a!, 'agent_configured', {
         agentId: i.id,
-        state: i.state ?? 'pending'
+        state: i.state ?? 'pending',
+        ...(i.accountAccess?{accountAccess:i.accountAccess}:{})
       });
       return { id: i.id, revision: i.expectedRevision + 1 };
     });
   }
   async registry(a?: Actor, windows:DirectoryWindows={}) {
     this.admin(a);
-    const agents=await adminDirectory(this.db,"SELECT a.*,a.id directory_key,(SELECT COUNT(*) FROM role_bindings b WHERE b.connector_id=a.id AND b.state='active') roleCount,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id","a.state<>'deleted'",[],windows.agents);
+    const agents=await adminDirectory(this.db,"SELECT a.*,COALESCE(access.access,'personal') accountAccess,a.id directory_key,(SELECT COUNT(*) FROM role_bindings b WHERE b.connector_id=a.id AND b.state='active') roleCount,d.ts discovered_at FROM office_agents a LEFT JOIN office_agent_discovery d ON d.agent_id=a.id LEFT JOIN office_account_access access ON access.principal=a.principal","a.state<>'deleted'",[],windows.agents);
     const projects=await adminDirectory(this.db,'SELECT *,id directory_key FROM office_projects','1',[],windows.projects);
     const offices=await adminDirectory(this.db,'SELECT *,id directory_key FROM offices','1',[],windows.offices);
     return {agents:agents.rows,projects:projects.rows.map(p=>({...p,members:JSON.parse(p.members)})),offices:offices.rows,
@@ -218,8 +233,8 @@ export class OfficeStore {
     // Lightweight, complete references for selectors. Paging rich cards must
     // never remove an existing member from a form or hide a selected role.
     return {
-      agents:await this.db.all("SELECT id,name,principal,host,state,revision FROM office_agents WHERE state<>'deleted' ORDER BY name,id"),
-      roles:await this.db.all("SELECT id,name,principal,state,revision FROM character_roles WHERE state<>'merged' ORDER BY name,id"),
+      agents:await this.db.all("SELECT a.id,a.name,a.principal,a.host,a.state,a.revision,COALESCE(p.access,'personal') accountAccess FROM office_agents a LEFT JOIN office_account_access p ON p.principal=a.principal WHERE a.state<>'deleted' ORDER BY a.name,a.id"),
+      roles:await this.db.all("SELECT id,name,principal,state,revision FROM character_roles r WHERE state<>'merged' AND NOT EXISTS (SELECT 1 FROM role_clone_returns f WHERE f.role_id=r.id AND f.archived_at IS NOT NULL) ORDER BY name,id"),
       offices:await this.db.all('SELECT id,title,state FROM offices ORDER BY title,id'),
       projects:await this.db.all('SELECT id,title,enabled FROM office_projects ORDER BY title,id')
     };
