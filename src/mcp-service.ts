@@ -1,3 +1,4 @@
+import {officeWaitSchema} from './core/office-wait-policy.js';
 import {RELEASE_VERSION} from './core/release-info.js';
 import {MAX_MCP_INPUT_ELEMENTS} from './core/mcp-limits.js';
 import {hostChatIdentity} from './integrations/host-correlation.js';
@@ -90,7 +91,7 @@ const server = new McpServer({
 const exposedTools: string[] = [];
 if(taskStore){
   exposedTools.push('office_wait_task');
-  server.experimental.tasks.registerToolTask('office_wait_task',{description:'Experimental MCP task: durable five-minute wait with the same human-control, discussion and message priorities as office_wait. Poll task status; fetching a match does not claim a message. Survives server reconnects with the same approved fixed host session. Does not wake a stopped model.',inputSchema:{afterSeq:z.number().int().min(0).optional(),replyTo:z.string().max(160).optional(),waitMs:z.number().int().min(100).max(300000).optional()},execution:{taskSupport:'required'}},{
+  server.experimental.tasks.registerToolTask('office_wait_task',{description:'Experimental MCP task: durable five-minute wait with the same human-control, discussion, message and optional guided-task updates as office_wait (afterTaskChange, mutually exclusive with replyTo). Poll task status; fetching a match does not claim a message. Survives server reconnects with the same approved fixed host session. Does not wake a stopped model.',inputSchema:officeWaitSchema.shape,execution:{taskSupport:'required'}},{
     createTask:async(_args,extra)=>{await options.authorizeWait?.();return {task:await extra.taskStore.createTask({ttl:3600000,pollInterval:1000})};},
     getTask:async(_args,extra)=>{await options.authorizeWait?.();return (await extra.taskStore.getTask(extra.taskId))!;},
     getTaskResult:async(_args,extra)=>{await options.authorizeWait?.();return await extra.taskStore.getTaskResult(extra.taskId) as any;}

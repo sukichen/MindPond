@@ -10,4 +10,8 @@ for(const order of [[undefined,0],[0,undefined]]){
 }
 const mixed=new VectorIndex();mixed.addBatch([{id:'other-space',vector:[1,0,100]},{id:'same-space',vector:[1,0]}]);
 assert.deepEqual(mixed.search([1,0],{topK:10,minScore:.5}).map(r=>r.id),['same-space']);
+const filtered=new VectorIndex();
+filtered.addBatch([{id:'visible',vector:[1,0]},{id:'hidden',vector:[1,0]}]);
+assert.equal(filtered.search([1,0],{topK:2}).length,2);
+assert.deepEqual(filtered.search([1,0],{topK:2,filterKey:'',filter:item=>item.id==='visible'}).map(r=>r.id),['visible']);
 console.log('PASS vector index: dimensions cannot match by prefix and cached unset/zero thresholds preserve negative-score filtering');

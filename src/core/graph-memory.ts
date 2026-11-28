@@ -390,6 +390,13 @@ interface NodeRow {
  * Paths that need the vector (loadIndex, backfill, createNode) read the
  * embedding column explicitly.
  */
+function storedDomain(row: Pick<NodeRow,'domain_kind'|'domain_id'|'session_id'>): MemoryDomainRef {
+  return {
+    kind: (row.domain_kind || (row.session_id ? 'session' : 'personal')) as MemoryDomainRef['kind'],
+    id: row.domain_id || row.session_id || 'default',
+  };
+}
+
 const NODE_COLUMNS_NO_EMBEDDING =
   'id, dimension, primary_dimension, dimensions, layer, content, importance, tags, verified, source, domain_kind, domain_id, session_id, created_at, updated_at, access_count, superseded_by';
 
@@ -1309,7 +1316,7 @@ export class GraphMemory {
       const rebuilt = new VectorIndex();
       // Read every embedding in bounded pages. Old knowledge must not silently
       // disappear when a collection grows beyond 10k records.
-      const indexColumns = `${NODE_COLUMNS_NO_EMBEDDING.replace('content,', 'substr(content,1,200) AS content,')}, embedding`;
+      const indexColumns = 'id, layer, domain_kind, domain_id, session_id, superseded_by, embedding';
       const expectedDims = getEmbeddingService()['dimensions'] ?? 384;
       let cursor = 0, loaded = 0, skippedDims = 0;
       for (;;) {
@@ -1323,7 +1330,7 @@ export class GraphMemory {
             const embedding = this.bufferToVector(row.embedding);
             if (!embedding.length) continue;
             if (embedding.length !== expectedDims) { skippedDims++; continue; }
-            indexed.push({id: row.id, vector: embedding, metadata: this.indexMetadata(this.rowToNode(row))});
+            indexed.push({id: row.id, vector: embedding, metadata: this.indexMetadata({layer:row.layer ?? 'L1', domain:storedDomain(row), supersededBy:row.superseded_by ?? undefined})});
           } catch { /* malformed vectors remain available through text retrieval */ }
         }
         rebuilt.addBatch(indexed);
@@ -1368,13 +1375,8 @@ export class GraphMemory {
     if (this.indexGeneration === next - 1) this.indexGeneration = next;
   }
 
-  private indexMetadata(node: MemoryNode): VectorItem['metadata'] {
-    return {
-      dimensions:node.dimensions, kind:node.kind,
-      dimension: node.dimension, layer: node.layer, domain: node.domain, sessionId: node.sessionId,
-      tags: node.tags, supersededBy: node.supersededBy,
-      content: node.content.slice(0, 200), importance: node.importance,
-    };
+  private indexMetadata(node: Pick<MemoryNode,'layer'|'domain'|'supersededBy'>): VectorItem['metadata'] {
+    return { layer: node.layer, domain: node.domain, supersededBy: node.supersededBy };
   }
 
   private refreshIndexedNode(node: MemoryNode): void {
@@ -1842,11 +1844,10 @@ export class GraphMemory {
         await this.logAction({ action: 'node_created', nodeId: id, reason: JSON.stringify({ action: 'memory_save', domain, contextualAssociations: resolved.length }) });
         await this.db!.run("UPDATE memory_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'index_generation'");
         const generation = Number((await this.db!.get<{value:string}>("SELECT value FROM memory_meta WHERE key='index_generation'"))?.value);
-        const indexNode = this.rowToNode((await this.db!.get<NodeRow>(`SELECT ${NODE_COLUMNS_NO_EMBEDDING} FROM nodes WHERE id=?`, [id]))!);
         await hooks.saved?.(id);
         await this.db!.exec('COMMIT');
-        if (embedding.length) this.vectorIndex.add({id, vector: embedding, metadata: this.indexMetadata(indexNode)});
-        if (zhEmbedding.length) this.zhVectorIndex?.add({id, vector: zhEmbedding, metadata: this.indexMetadata(indexNode)});
+        if (embedding.length) this.vectorIndex.add({id, vector: embedding, metadata: this.indexMetadata({layer:'L1',domain})});
+        if (zhEmbedding.length) this.zhVectorIndex?.add({id, vector: zhEmbedding});
         // Keep the exact generation committed by this transaction. A write
         // from another process after COMMIT must still trigger a reload.
         if (indexWasCurrent) this.indexGeneration = generation;
@@ -3976,12 +3977,12 @@ export class GraphMemory {
       if (nodes.length < 2) continue;
       nodes.sort((a, b) => (b.importance - a.importance) || (b.accessCount - a.accessCount) || (b.createdAt - a.createdAt));
       const keep = nodes[0];
-      const keepVec = items.find(i => i.id === keep.id)?.vector;
+      const keepVec = this.vectorIndex.get(keep.id)?.vector;
       // Similarity is not transitive. A≈B and B≈C does not justify merging A
       // and C, so only return candidates that individually clear the keeper
       // threshold for an explicit caller-approved merge.
       const duplicates = nodes.slice(1).map(node => {
-        const vec = items.find(i => i.id === node.id)?.vector;
+        const vec = this.vectorIndex.get(node.id)?.vector;
         const similarity = keepVec && vec ? cosineSimilarity(keepVec, vec) : 0;
         return { node, similarity };
       }).filter(candidate => candidate.similarity >= threshold);
@@ -4672,28 +4673,51 @@ export class GraphMemory {
    * become entry points. */
   private async eligibleNodeIds(nodeIds: string[], query: MemoryQuery): Promise<Set<string>> {
     if (!this.db || nodeIds.length === 0) return new Set();
-    if(nodeIds.length>500){const all=new Set<string>();for(let i=0;i<nodeIds.length;i+=500)for(const id of await this.eligibleNodeIds(nodeIds.slice(i,i+500),query))all.add(id);return all;}
-    const clauses = ['active = 1', `memory_id IN (${nodeIds.map(() => '?').join(',')})`];
-    const params: unknown[] = [...nodeIds];
     const domains = this.queryDomains(query);
-    // No readable domains is an empty result, never an invalid SQL predicate
-    // or a reason to fall back to the human domain.
     if (!query.operatorAll && !domains.length) return new Set();
-    if(!query.operatorAll)clauses.push('EXISTS (SELECT 1 FROM nodes dn LEFT JOIN memory_domains dd ON dd.kind=dn.domain_kind AND dd.id=dn.domain_id WHERE dn.id=memory_memberships.memory_id AND (' +
-      domains.map(() => '(dn.domain_kind=? AND dn.domain_id=? AND (dn.domain_kind != \'session\' OR dd.status IN (\'active\',\'paused\')))').join(' OR ') + '))');
-    if(!query.operatorAll)for (const domain of domains) params.push(domain.kind, domain.id);
+    // JSON table parameters avoid both the SQLite variable limit and one query
+    // per 500 indexed rows. Resolve eligibility before any channel cuts to top K.
+    const clauses = ["n.id IN (SELECT value FROM json_each(?))"];
+    const params: string[] = [JSON.stringify(nodeIds)];
+    if (!query.operatorAll) {
+      clauses.push(`(n.domain_kind,n.domain_id) IN (SELECT json_extract(value,'$.kind'),json_extract(value,'$.id') FROM json_each(?))`,
+        "(n.domain_kind!='session' OR EXISTS (SELECT 1 FROM memory_domains d WHERE d.kind='session' AND d.id=n.domain_id AND d.status IN ('active','paused')))");
+      params.push(JSON.stringify(domains));
+    }
+    if (!query.includeSuperseded) clauses.push('n.superseded_by IS NULL');
+    if (!query.includeL0) clauses.push("COALESCE(n.layer,'L1')!='L0'");
+    if (query.eventOnly) clauses.push("(n.dimension='event' OR n.layer='L0')");
+    const dimensions = query.dimension && [query.dimension].flat();
+    if (!query.includeEvents && !query.includeL0 && !dimensions?.includes('event'))
+      clauses.push("n.dimension!='event'");
+    if (dimensions) {
+      clauses.push(`EXISTS (SELECT 1 FROM json_each(
+        CASE WHEN json_valid(n.dimensions) AND json_array_length(n.dimensions)>0 AND n.dimension!='event'
+          THEN n.dimensions ELSE json_array(n.dimension) END)
+        WHERE value IN (SELECT value FROM json_each(?)))`);
+      params.push(JSON.stringify(dimensions));
+    }
+    if (query.layer) {
+      clauses.push("COALESCE(n.layer,'L1') IN (SELECT value FROM json_each(?))");
+      params.push(JSON.stringify([query.layer].flat()));
+    }
+    if (query.tags?.length) {
+      clauses.push(`EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(n.tags) THEN n.tags ELSE '[]' END)
+        WHERE value IN (SELECT value FROM json_each(?)))`);
+      params.push(JSON.stringify(query.tags));
+    }
+    const placement = ['m.memory_id=n.id', 'm.active=1'];
     if (query.spaceId) {
-      const spaces = Array.isArray(query.spaceId) ? query.spaceId : [query.spaceId];
-      clauses.push(`space_id IN (${spaces.map(() => '?').join(',')})`);
-      params.push(...spaces);
+      placement.push('m.space_id IN (SELECT value FROM json_each(?))');
+      params.push(JSON.stringify([query.spaceId].flat()));
     }
     if (query.memoryType) {
-      const types = Array.isArray(query.memoryType) ? query.memoryType : [query.memoryType];
-      clauses.push(`memory_type IN (${types.map(() => '?').join(',')})`);
-      params.push(...types);
+      placement.push('m.memory_type IN (SELECT value FROM json_each(?))');
+      params.push(JSON.stringify([query.memoryType].flat()));
     }
-    const rows = await this.db.all<any>(`SELECT DISTINCT memory_id FROM memory_memberships WHERE ${clauses.join(' AND ')}`, params);
-    return new Set(rows.map((row: any) => row.memory_id));
+    clauses.push(`EXISTS (SELECT 1 FROM memory_memberships m WHERE ${placement.join(' AND ')})`);
+    const rows = await this.db.all<Array<{id:string}>>(`SELECT n.id FROM nodes n WHERE ${clauses.join(' AND ')}`, params);
+    return new Set(rows.map(row => row.id));
   }
 
   /**
@@ -4815,9 +4839,9 @@ export class GraphMemory {
 
   private async profileSearch(profileId:string,text:string,query:MemoryQuery,limit:number){
     const eligible=await this.eligibleNodeIds(await this.profileRetrieval.ownerIds(profileId),query);
-    const rows=await this.anchors.candidates();
+    const rows=query.useAnchors===false ? [] : await this.anchors.candidates();
     const scoped=rows.filter(row=>eligible.has(row.memory_id)&&this.matchesMembershipScope({active:true,spaceId:row.space_id,memoryType:row.memory_type} as MemoryMembership,query));
-    const hits=await this.profileRetrieval.search(profileId,text,eligible,new Set(query.useAnchors===false?[]:scoped.map(row=>row.id)),limit,query.vectorAlgorithm);
+    const hits=await this.profileRetrieval.search(profileId,text,eligible,new Set(scoped.map(row=>row.id)),limit,query.vectorAlgorithm);
     const best=new Map<string,{score:number;version:string|undefined}>();
     for(const hit of hits.body)if(hit.score>(best.get(hit.ownerId)?.score??-1))best.set(hit.ownerId,{score:hit.score,version:hit.version});
     const ids=[...best].sort((a,b)=>b[1].score-a[1].score).slice(0,limit).map(([id])=>id);
@@ -4828,7 +4852,7 @@ export class GraphMemory {
       body.sort((a,b)=>b.score-a.score);
     }
     const anchors:Array<{memoryId:string;spaceId:string;memoryType:string;match:AnchorMatch}>=[];
-    const latest=await this.anchors.candidates();
+    const latest=hits.anchors.length ? await this.anchors.candidates() : [];
     const byId=new Map(latest.filter(row=>eligible.has(row.memory_id)&&this.matchesMembershipScope({active:true,spaceId:row.space_id,memoryType:row.memory_type} as MemoryMembership,query)).map(row=>[row.id,row]));
     for(const hit of hits.anchors){const row=byId.get(hit.ownerId);if(row&&row.content_hash===hit.version)anchors.push({memoryId:row.memory_id,spaceId:row.space_id,memoryType:row.memory_type,match:{id:row.id,text:row.text,channel:'anchor-profile',similarity:hit.score}});}
     return {body,anchors,algorithm:hits.algorithm,runtime:hits.runtime};
@@ -4844,38 +4868,13 @@ export class GraphMemory {
     query: MemoryQuery,
     limit: number
   ): Promise<{ node: MemoryNode; score: number }[]> {
-    if (!this.db || !this.zhVectorIndex || this.zhVectorIndex.getAll().length === 0) return [];
+    if (!this.db || !this.zhVectorIndex || this.zhVectorIndex.size === 0) return [];
     if (!isChineseText(queryText)) return [];
 
     const embedding = await getZhEmbeddingService().generateEmbedding(queryText);
     if (embedding.length === 0) return [];
 
-    const eligible = await this.eligibleNodeIds(this.zhVectorIndex.getAll().map(item => item.id), query);
-
-    const results = query.vectorAlgorithm==='hnsw'?await this.approximateSearch(this.zhVectorIndex,embedding,eligible,limit):this.zhVectorIndex.search(embedding, {
-      topK: limit,
-      minScore: this.DEFAULT_MIN_SCORE,
-      filterKey: this.queryScopeCacheKey(query) + crypto.createHash('sha1').update([...eligible].sort().join(',')).digest('hex'),
-      filter: item => eligible.has(item.id),
-    });
-    if (results.length === 0) return [];
-
-    const placeholders = results.map(() => '?').join(',');
-    const rows = await this.db.all<any>(
-      `SELECT ${NODE_COLUMNS_NO_EMBEDDING} FROM nodes WHERE id IN (${placeholders})`,
-      results.map(r => r.id)
-    );
-    const nodesById = new Map<string, MemoryNode>(rows.map((r: NodeRow) => [r.id, this.rowToNode(r)]));
-
-    const nodes: { node: MemoryNode; score: number }[] = [];
-    for (const r of results) {
-      const node = nodesById.get(r.id);
-      if (!node) continue;
-      if (!eligible.has(node.id)) continue;
-      if (!this.matchesNodeScope(node, query)) continue;
-      nodes.push({ node, score: r.score });
-    }
-    return nodes;
+    return this.searchVectorIndex(this.zhVectorIndex, embedding, query, limit);
   }
 
   private async approximateSearch(index:VectorIndex,query:number[],eligible:Set<string>,limit:number){
@@ -4906,20 +4905,26 @@ export class GraphMemory {
       embedding = await getEmbeddingService().generateEmbedding(queryText);
     }
 
-    const eligible = await this.eligibleNodeIds(this.vectorIndex.getAll().map(item => item.id), query);
-    const results = query.vectorAlgorithm==='hnsw'?await this.approximateSearch(this.vectorIndex,embedding,new Set([...eligible].filter(id=>this.indexMetadataMatchesQuery(this.vectorIndex.get(id)?.metadata,query))),limit):this.vectorIndex.search(embedding, {
-      topK: limit,
-      minScore: this.DEFAULT_MIN_SCORE,
-      filterKey: this.queryScopeCacheKey(query) + crypto.createHash('sha1').update([...eligible].sort().join(',')).digest('hex'),
-      filter: (item) => eligible.has(item.id) && this.indexMetadataMatchesQuery(item.metadata, query),
-    });
+    if (!embedding.length) return [];
+    return this.searchVectorIndex(this.vectorIndex, embedding, query, limit);
+  }
+
+  private async searchVectorIndex(index:VectorIndex, embedding:number[], query:MemoryQuery, limit:number) {
+    const eligible = await this.eligibleNodeIds(index.getAll().map(item => item.id), query);
+    const results = query.vectorAlgorithm === 'hnsw'
+      ? await this.approximateSearch(index, embedding, eligible, limit)
+      : index.search(embedding, {
+          topK: limit, minScore: this.DEFAULT_MIN_SCORE,
+          filterKey: crypto.createHash('sha256').update(JSON.stringify([...eligible].sort())).digest('hex'),
+          filter: item => eligible.has(item.id),
+        });
     if (results.length === 0) return [];
 
     // Batch-fetch all candidates in one query instead of one getNodeById
     // round-trip per candidate (which also bumped access_count on every
     // search). ANN distance order is preserved by iterating `results`.
     const placeholders = results.map(() => '?').join(',');
-    const rows = await this.db.all<any>(
+    const rows = await this.db!.all<NodeRow[]>(
       `SELECT ${NODE_COLUMNS_NO_EMBEDDING} FROM nodes WHERE id IN (${placeholders})`,
       results.map(r => r.id)
     );
@@ -5017,29 +5022,6 @@ export class GraphMemory {
     }
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, limit);
-  }
-
-  private queryScopeCacheKey(query: MemoryQuery): string {
-    return JSON.stringify({
-      operatorAll:!!query.operatorAll,dimension: query.dimension, layer: query.layer, includeL0: !!query.includeL0,includeEvents:!!query.includeEvents,eventOnly:!!query.eventOnly,
-      includeSuperseded: !!query.includeSuperseded, tags: query.tags?.slice().sort(), sessionId: query.sessionId,
-      domains: this.queryDomains(query),
-      spaceId: query.spaceId, memoryType: query.memoryType,
-    });
-  }
-
-  private indexMetadataMatchesQuery(metadata: VectorItem['metadata'] | undefined, query: MemoryQuery): boolean {
-    if (!metadata) return false;
-    const node = {
-      dimensions:metadata.dimensions as KnowledgeDimension[]|undefined,kind:metadata.kind as MemoryNode['kind'],
-      id: '', dimension: metadata.dimension as Dimension, layer: metadata.layer as MemoryLayer,
-      content: '', embedding: [], importance: 0, tags: Array.isArray(metadata.tags) ? metadata.tags : [],
-      domain: metadata.domain ?? {kind:'personal',id:'default'},
-      sessionId: typeof metadata.sessionId === 'string' ? metadata.sessionId : undefined,
-      createdAt: 0, updatedAt: 0, accessCount: 0,
-      supersededBy: typeof metadata.supersededBy === 'string' ? metadata.supersededBy : undefined,
-    } satisfies MemoryNode;
-    return this.matchesNodeScope(node, query);
   }
 
   /**
@@ -5429,7 +5411,7 @@ export class GraphMemory {
       tags: safeParse(row.tags, []),
       verified: row.verified === 1,
       source: row.source || undefined,
-      domain: { kind: (row.domain_kind || (row.session_id ? 'session' : 'personal')) as MemoryDomainRef['kind'], id: row.domain_id || row.session_id || 'default' },
+      domain: storedDomain(row),
       sessionId: row.session_id || undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

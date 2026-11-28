@@ -11,7 +11,7 @@ export async function auditDatabase(db:Database) {
     JOIN memory_memberships ma ON ma.id=a.member_a_id JOIN nodes na ON na.id=ma.memory_id
     JOIN memory_memberships mb ON mb.id=a.member_b_id JOIN nodes nb ON nb.id=mb.memory_id
     WHERE na.domain_kind!=nb.domain_kind OR na.domain_id!=nb.domain_id`);
-  const healthy=integrity.length===1&&Object.values(integrity[0])[0]==='ok'&&foreignKeys.length===0&&foreignAssociations.length===0;
+  const healthy=integrity.length===1&&Object.values(integrity[0])[0]==='ok'&&foreignKeys.length===0&&dangling.length===0&&foreignAssociations.length===0;
   const duplicateRoleNames=await db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='character_roles'")
     ?await db.all(`SELECT r.id,r.name,r.principal,r.state,r.primary_seat primarySeat,
       (SELECT kind FROM role_events e WHERE e.role_id=r.id AND e.kind IN ('approved','role_migrated') ORDER BY seq LIMIT 1) origin,

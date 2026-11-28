@@ -6,6 +6,7 @@ import path from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {roleRuntimeId} from '../src/core/roles.js';
 import {GraphMemory} from '../src/core/graph-memory.js';
 import {createNetworkMcpApp} from '../src/integrations/network-server.js';
 import {tokenDigest} from '../src/integrations/network-config.js';
@@ -73,6 +74,15 @@ try{
   assert.equal(wake.status,'task_update');
   assert.equal(wake.wakeReason,'task_update');
   assert.equal(wake.nextCall.arguments.taskId,created.id);
+  const workerActor={...human,operator:false,agentId:'fixture',runtimeId:roleRuntimeId('human','fixture','codex','worker'),transport:'http-mcp' as const};
+  const store=graph.officeTaskStore(workerActor);
+  const durable=await store.createTask({},1,{method:'tools/call',params:{
+    name:'office_wait_task',arguments:{afterTaskChange:0,waitMs:4000}
+  }});
+  const payload=JSON.parse(((await store.getTaskResult(durable.taskId)).content as Array<{text:string}>)[0].text);
+  assert.equal(payload.status,'task_update');
+  assert.deepEqual(payload.nextCall,wake.nextCall);
+  assert.deepEqual(payload.resume,wake.resume);
   const taskId=created.id;
   assert.equal(created.status,'queued');
   const queuedDashboard=await task('lead',{action:'dashboard'});

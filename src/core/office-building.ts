@@ -13,7 +13,7 @@ import type { OfficeStore } from './office.js';
 import { digest } from './growth.js';
 import { toStructuredError, MindPondError } from './errors.js';
 import { CollaborationWaiter, type WorkCallRuntime } from './collaboration-wait.js';
-import { OFFICE_WAIT_MS, OFFICE_REPLY_WAIT_MAX_MS, officeWaitResult } from './office-wait-policy.js';
+import { OFFICE_WAIT_MS, OFFICE_REPLY_WAIT_MAX_MS, officeWaitResult, validateWaitFilters } from './office-wait-policy.js';
 import { messageState, messageStateSql } from './office-message-state.js';
 import { boundedMessage, jsonBytes, previewText } from './office-context.js';
 import { OfficeWaitQueue } from './office-wait-queue.js';
@@ -47,8 +47,8 @@ export class OfficeBuilding {
             inspect: (i,a)=>this.inspectWait(i,a),
             start: (id, i, a, ms) => this.write(async () => {
                 const b = await this.roles.binding(a);
-                await this.db.run('INSERT INTO role_message_waits(id,role_id,binding_id,state,started_at,expires_at,conditions) VALUES(?,?,?,?,?,?,?)', [id, b!.role_id, b!.id, 'waiting', this.clock(), this.clock() + ms,JSON.stringify({afterSeq:i.afterSeq??0,replyTo:(i as Row).requestId??null,waitMs:ms,...((i as Row).afterTaskChange===undefined?{}:{afterTaskChange:(i as Row).afterTaskChange}),...((i as Row).replyWaitRevision!==undefined?{purpose:'sent_message_reply',sendKey:(i as Row).sendKey,policyRevision:(i as Row).replyWaitRevision}:{})})]);
-                await this.log(b!.role_id, 'wait_started', { waitId: id, replyTo: (i as Row).requestId ?? null });
+                await this.db.run('INSERT INTO role_message_waits(id,role_id,binding_id,state,started_at,expires_at,conditions) VALUES(?,?,?,?,?,?,?)', [id, b!.role_id, b!.id, 'waiting', this.clock(), this.clock() + ms,JSON.stringify({afterSeq:i.afterSeq??0,replyTo:(i as Row).replyTo??null,waitMs:ms,...((i as Row).afterTaskChange===undefined?{}:{afterTaskChange:(i as Row).afterTaskChange}),...((i as Row).replyWaitRevision!==undefined?{purpose:'sent_message_reply',sendKey:(i as Row).sendKey,policyRevision:(i as Row).replyWaitRevision}:{})})]);
+                await this.log(b!.role_id, 'wait_started', { waitId: id, replyTo: (i as Row).replyTo ?? null });
             }),
             finish: (id, a, result, state) => this.write(async () => {
                 const row = await this.db.get<Row>('SELECT role_id FROM role_message_waits WHERE id=?', [id]);
@@ -61,7 +61,7 @@ export class OfficeBuilding {
     private async inspectWait(i:Row,a?:TrustedCallContext):Promise<any>{
         return this.read(async()=>{const b=await this.roles.binding(a);const control=await roleControlAttention(this.db,b!.role_id);if(control)return {...control,nextCursor:i.afterSeq??0};const discussion=await this.discussionStatus?.(a);if(discussion?.active||discussion?.activeUnavailable||i.replyWaitRevision===undefined&&discussion?.invitations?.length)return {status:'discussion',discussions:discussion,nextCursor:i.afterSeq??0};
             if(i.replyWaitRevision!==undefined){
-                const original=(await this.ownMessage(i.requestId,b!.role_id,a!)).row;
+                const original=(await this.ownMessage(i.replyTo,b!.role_id,a!)).row;
                 if(original.sender!==b!.role_id)fail('Send-wait recovery must reference a message sent by this role.','invalid_input');
                 const policy=await this.replyWaitPolicy.forRole(original.office_id,b!.role_id);
                 if(!policy.enabled||policy.disabledRevision>i.replyWaitRevision)return SEND_WAIT_DISABLED;
@@ -71,8 +71,8 @@ export class OfficeBuilding {
                 const incoming=await this.db.get<Row>(`SELECT m.id,m.seq FROM role_messages m JOIN role_message_states s ON s.message_id=m.id WHERE m.recipient=? AND m.sender=? AND COALESCE(m.reply_to,m.request_id)=? AND (${messageStateSql()}='pending' OR (m.id=? AND ${messageStateSql()}='processing')) ORDER BY CASE WHEN m.id=? THEN 0 ELSE 1 END,m.seq LIMIT 1`,[b!.role_id,original.recipient,original.id,delivered,delivered]);
                 return incoming?{status:'matched',message:{id:incoming.id},nextCursor:incoming.seq}:undefined;
             }
-            if(i.requestId)await this.ownMessage(i.requestId,b!.role_id,a!);
-            const page=await this.receive({action:'list',limit:1,state:'pending',afterSeq:i.afterSeq,replyTo:i.requestId},a);
+            if(i.replyTo)await this.ownMessage(i.replyTo,b!.role_id,a!);
+            const page=await this.receive({action:'list',limit:1,state:'pending',afterSeq:i.afterSeq,replyTo:i.replyTo},a);
             if(page.messages.length)return {status:'matched',message:page.messages[0],nextCursor:page.nextCursor};
             if(i.afterTaskChange===undefined || !this.taskChange)return;
             const actor={...a!,roleId:b!.role_id,roleBindingId:b!.id,roleBindingEpoch:b!.epoch};
@@ -481,7 +481,7 @@ export class OfficeBuilding {
                     if(r?.signal?.aborted)return {status:'cancelled',nextCursor:0,wakeReason:'request_cancelled',nextAction:'The send is committed, but delivery was cancelled before claiming inbox work. Pending messages were left untouched.'};
                     await r?.authorize?.();await this.roles.binding(actor.a);
                     // Recheck controls, focus and inbox in the same transaction as take.
-                    const fresh=await this.inspectWait({requestId:sent.messageId,replyWaitRevision:policy.revision},actor.a);
+                    const fresh=await this.inspectWait({replyTo:sent.messageId,replyWaitRevision:policy.revision},actor.a);
                     if(!fresh||fresh.status!=='matched')return fresh;
                     const source=(await this.ownMessage(fresh.message.id,actor.b.role_id,actor.a)).row;
                     if(messageState(source.state)==='pending')await this.transition({action:'take',messageId:source.id},actor.b,actor.a);
@@ -697,13 +697,24 @@ export class OfficeBuilding {
         });
     }
     /** One authorized observation; durable Tasks use the same priority as live waits. */
-    pollWait(i:Row,a?:TrustedCallContext){return this.inspectWait({afterSeq:i.afterSeq,requestId:i.replyTo},a);}
+    pollWait(i:Row,a?:TrustedCallContext){
+        const {afterSeq,replyTo,afterTaskChange}=i;
+        return this.inspectWait({afterSeq,replyTo,afterTaskChange},a);
+    }
     async wait(i: Row, a?: TrustedCallContext, r?: WorkCallRuntime) {
-        if(i.replyTo && i.afterTaskChange!==undefined)fail('Choose replyTo or afterTaskChange for this wait.','invalid_input');
+        validateWaitFilters(i);
         const started=performance.now(),binding=await this.roles.binding(a),waitMs=i.waitMs??OFFICE_WAIT_MS;
         const maxMs=i.replyWaitRevision===undefined?OFFICE_WAIT_MS:OFFICE_REPLY_WAIT_MAX_MS;
         if(!Number.isInteger(waitMs)||waitMs<100||waitMs>maxMs)fail(`waitMs must be 100–${maxMs} milliseconds`,'invalid_input');
-        const result:Row=await this.waitQueue.run<Row>(a!.principal,binding!.id,waitMs,r?.signal,async()=>{await r?.authorize?.();await this.roles.binding(a);},remaining=>this.waiter.wait({afterSeq:i.afterSeq,requestId:i.replyTo,afterTaskChange:i.afterTaskChange,replyWaitRevision:i.replyWaitRevision,sendKey:i.sendKey,waitMs:remaining} as any,a,r),()=>({status:'timeout',nextCursor:i.afterSeq??0,queued:true}),()=>this.inspectWait({afterSeq:i.afterSeq,requestId:i.replyTo,afterTaskChange:i.afterTaskChange,replyWaitRevision:i.replyWaitRevision},a));
+        const {afterSeq,replyTo,afterTaskChange,replyWaitRevision,sendKey} = i;
+        const conditions = {afterSeq,replyTo,afterTaskChange,replyWaitRevision,sendKey};
+        const result:Row = await this.waitQueue.run<Row>(
+            a!.principal, binding!.id, waitMs, r?.signal,
+            async () => { await r?.authorize?.(); await this.roles.binding(a); },
+            remaining => this.waiter.wait({...conditions,waitMs:remaining},a,r),
+            () => ({status:'timeout',nextCursor:afterSeq??0,queued:true}),
+            () => this.inspectWait(conditions,a),
+        );
         return officeWaitResult(result,i,performance.now()-started);
     }
     close() { this.waitQueue.close();return this.waiter.close(); }
