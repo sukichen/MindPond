@@ -4729,10 +4729,14 @@ export class GraphMemory {
     if (results.length < 2) return;
     const DUP_THRESHOLD = 0.92;
     for (let i = 0; i < results.length; i++) {
-      const a = this.vectorIndex.get(results[i].node.id)?.vector;
+      const source = results[i].node;
+      if (source.supersededBy || source.layer === 'L0') continue;
+      const a = this.vectorIndex.get(source.id)?.vector;
       if (!a) continue;
       for (let j = i + 1; j < results.length; j++) {
-        const b = this.vectorIndex.get(results[j].node.id)?.vector;
+        const target = results[j].node;
+        if (target.supersededBy || target.layer === 'L0' || !sameDomain(source.domain,target.domain)) continue;
+        const b = this.vectorIndex.get(target.id)?.vector;
         if (!b) continue;
         const sim = cosineSimilarity(a, b);
         if (sim >= DUP_THRESHOLD) {

@@ -267,7 +267,7 @@ server.registerResource('protocol-rules', 'mindpond://protocol/rules', {
 
 tool(
   'memory_search',
-  'Search the layered memory graph (ripple retrieval across L0-L3). Response includes recallId; after the task report used/rejected/unassessed decisions with memory_recall_feedback. Results include node ids — use them to fill related[] when saving. nearDuplicates flags redundant memories (cosine ≥ 0.92) you may merge with memory_dedupe_resolve.',
+  'Search the layered memory graph (ripple retrieval across L0-L3). Response includes recallId; after the task report used/rejected/unassessed decisions with memory_recall_feedback. Results include node ids — use them to fill related[] when saving. nearDuplicates suggests same-domain candidates for review (cosine ≥ 0.92). Read the evidence before proposing a merge.',
   {
     sourceContext: z.string().optional().describe('Source checkout/ref context for freshness evaluation'),
     query: z.string().describe('Search query text'),
