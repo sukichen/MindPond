@@ -128,6 +128,26 @@ try {
   assert(!(await reader.search({query:'revive daemon'})).some(h=>h.node.id===saved.id));
   assert.equal((await (g as any).anchors.list(saved.id)).length,0);
   pass('canonical deletion cascades to anchors and is visible to another reader');
+  const placement={spaceId:'rank-boundary',memoryType:'knowledge'};
+  for(let i=0;i<3;i++) await g.saveMemory('Outside candidate '+i,{
+    memberships:[placement],tags:['outside'],anchors:[{...placement,text:'orbital calibration',basis:'candidate'}]
+  });
+  const inside=await g.saveMemory('Retained candidate',{
+    memberships:[placement],tags:['inside'],anchors:[{...placement,text:'orbital calibrator',basis:'candidate'}]
+  });
+  const ranked=await reader.search({query:'orbital calibration',...placement,tags:['inside'],limit:1,maxDepth:0});
+  assert.equal(ranked[0]?.node.id,inside.id);
+  assert(ranked[0].matchedAnchors?.some(match=>match.channel==='anchor-text'));
+  pass('a lower-scoring eligible anchor survives stronger out-of-scope anchors before top K');
+  zh.generateEmbedding=async text=>{
+    const xy = text.includes('备用记录') ? [.8,.6] : [1,0];
+    return [...xy,...Array(510).fill(0)];
+  };
+  for(let i=0;i<3;i++) await g.saveMemory('范围以外的笔记'+i,{memberships:[placement],tags:['outside']});
+  const zhInside=await g.saveMemory('备用记录',{memberships:[placement],tags:['inside']});
+  const scopedZh=await reader.search({query:'无线协议',...placement,tags:['inside'],useAnchors:false,limit:1,maxDepth:0});
+  assert.equal(scopedZh[0]?.node.id,zhInside.id);
+  pass('a reopened Chinese side index ranks tagged knowledge before truncation');
   console.log('PASS '+checks+' anchor contract groups; vectors are deterministic fixtures, not a real-model quality claim');
 } finally {
   await reader?.close();await g.close();main.generateEmbedding=originalMain;zh.generateEmbedding=originalZh;

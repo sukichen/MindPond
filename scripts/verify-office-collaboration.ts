@@ -135,11 +135,17 @@ try {
     await assert.rejects(graph.officeCollaboration.responsePage({ id: pointer.id }, b));
     await assert.rejects(graph.officeCollaboration.responsePage({ id: pointer.id }, {...a,domains:[]}), (e:any)=>e.code==='not_found','a narrowed grant cannot read an earlier cached response');
     await assert.rejects(graph.officeCollaboration.responsePage({ id: pointer.id, offset: 9999999 }, a), /offset/);
+    const waitArguments = { afterSeq: 999999, waitMs: 100, afterTaskChange: 0 };
     const negotiated = [];
-    for await (const event of client.experimental.tasks.callToolStream({ name: 'office_wait_task', arguments: { afterSeq: 999999, waitMs: 100 } })) {
+    for await (const event of client.experimental.tasks.callToolStream({ name: 'office_wait_task', arguments: waitArguments })) {
         negotiated.push(event);
     }
-    assert(negotiated.some((e: any) => e.type === 'result'), 'real MCP task negotiation returns the deferred tool result');
+    const finished = negotiated.find(event => event.type === 'result');
+    assert(finished && finished.type === 'result', 'real MCP task negotiation returns the deferred tool result');
+    assert.deepEqual(JSON.parse((finished.result.content as Array<{text:string}>)[0].text).resume,waitArguments);
+    await assert.rejects(taskStore.createTask({}, 3, {method:'tools/call',params:{
+        name:'office_wait_task',arguments:{...waitArguments,replyTo:first}
+    }}), (error:any)=>error.code==='invalid_input');
     const capacityBefore = { per: process.env.MINDPOND_OFFICE_WAIT_PER_ACCOUNT, global: process.env.MINDPOND_OFFICE_WAIT_GLOBAL };
     process.env.MINDPOND_OFFICE_WAIT_PER_ACCOUNT = '1';
     process.env.MINDPOND_OFFICE_WAIT_GLOBAL = '1';

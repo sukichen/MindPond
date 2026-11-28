@@ -106,7 +106,7 @@ export class VectorIndex {
   }
   add(item: VectorItem): void {
     this.items.set(item.id, this.pack(item));
-    this.markDirty();
+    this.cache.clear();
     logger.debug(`VectorIndex: added item ${item.id}, total: ${this.items.size}`);
   }
 
@@ -117,7 +117,7 @@ export class VectorIndex {
     for (const item of items) {
       this.items.set(item.id, this.pack(item));
     }
-    this.markDirty(items.length);
+    if (items.length) this.cache.clear();
     logger.info(`VectorIndex: added ${items.length} items, total: ${this.items.size}`);
   }
 
@@ -140,12 +140,12 @@ export class VectorIndex {
    */
   search(queryVector: number[] | Float32Array, options: SearchOptions): SearchResult[] {
     const startTime = Date.now();
-    const cacheKey = this.getCacheKey(queryVector, options);
 
     // 检查缓存（含 TTL 过期判断）
     const cacheable=!options.filter || options.filterKey!==undefined;
-    const cached = cacheable ? this.cache.get(cacheKey) : undefined;
-    if (cached) {
+    const cacheKey = cacheable ? this.getCacheKey(queryVector, options) : undefined;
+    const cached = cacheKey !== undefined ? this.cache.get(cacheKey) : undefined;
+    if (cached && cacheKey !== undefined) {
       if (Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
         this._cacheHits++;
         logger.debug('VectorIndex: cache hit');
@@ -160,7 +160,7 @@ export class VectorIndex {
     // 如果有分类维度权重，使用多字段搜索
     if (options.dimensionWeights && Object.keys(options.dimensionWeights).length > 0) {
       const results = this.searchWithWeights(queryVector, options);
-      if(cacheable)this.updateCache(cacheKey, results);
+      if(cacheKey !== undefined)this.updateCache(cacheKey, results);
       getMetricsCollector().recordMemoryRetrieval(Date.now() - startTime, 'vector', false);
       return results;
     }
@@ -192,7 +192,7 @@ export class VectorIndex {
     const topResults = results.slice(0, options.topK);
     
     // 更新缓存
-    if(cacheable)this.updateCache(cacheKey, topResults);
+    if(cacheKey !== undefined)this.updateCache(cacheKey, topResults);
     
     logger.debug(`VectorIndex: searched ${this.items.size} items, returned ${topResults.length} results`);
 
@@ -273,6 +273,8 @@ options: SearchOptions
     return Array.from(this.items.values());
   }
 
+  get size(): number { return this.items.size; }
+
   get(id: string): VectorItem | undefined {
     return this.items.get(id);
   }
@@ -302,7 +304,7 @@ options: SearchOptions
    */
   clear(): void {
     this.items.clear();
-    this.clearCache();
+    this.cache.clear();
     logger.info('VectorIndex: cleared all items');
   }
 
@@ -311,8 +313,7 @@ options: SearchOptions
    */
   private getCacheKey(vector: number[] | Float32Array, options: SearchOptions): string {
     const hash=createHash('sha256').update(Buffer.from(Float64Array.from(vector).buffer)).digest('hex');
-    const weights = options.dimensionWeights ? JSON.stringify(options.dimensionWeights) : '';
-    return `${hash}_${vector.length}_${options.topK}_${options.minScore ?? 'unset'}_${weights}_${options.filterKey ?? ''}`;
+    return JSON.stringify([hash, options.topK, options.minScore, options.dimensionWeights, !!options.filter, options.filterKey]);
   }
 
   /**
@@ -333,16 +334,6 @@ options: SearchOptions
   }
 
   /**
-   * 标记缓存为脏（add/addBatch 调用）。
-   * 新向量可能改变任意查询的排名，因此立即清空缓存。
-   */
-  private markDirty(_count: number = 1): void {
-    // Read-after-write is a memory-system invariant. A cached miss must never
-    // hide a just-saved fact for five minutes.
-    this.clearCache();
-  }
-
-  /**
    * 增量失效：只清除结果中包含指定 id 的缓存项。
    * 用于 remove 操作，避免全量清空缓存。
    */
@@ -352,13 +343,6 @@ options: SearchOptions
         this.cache.delete(key);
       }
     }
-  }
-
-  /**
-   * 清空缓存
-   */
-  private clearCache(): void {
-    this.cache.clear();
   }
 }
 

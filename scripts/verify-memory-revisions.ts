@@ -12,8 +12,10 @@ const vector=[1,...Array(383).fill(0)],scope={spaceId:'project/revisions',memory
 // Verify revision/index synchronization without a machine-specific model cache.
 const embeddingService=getEmbeddingService(),originalEmbedding=embeddingService.generateEmbedding,originalBatch=embeddingService.generateBatch;
 const originalConnection=embeddingService.testConnection,originalStatus=embeddingService.status;
-embeddingService.generateEmbedding=async()=>vector.slice();
-embeddingService.generateBatch=async texts=>texts.map(()=>vector.slice());
+const editedVector=[0,1,...Array(382).fill(0)];
+const encode=(text:string)=>(text.startsWith('Development proxy')?editedVector:vector).slice();
+embeddingService.generateEmbedding=async text=>encode(text);
+embeddingService.generateBatch=async texts=>texts.map(encode);
 embeddingService.testConnection=async()=>true;
 embeddingService.status=()=>({model:embeddingService.getModelName(),state:'ready'});
 const personal={domains:[{kind:'personal' as const,id:'default'}]};
@@ -29,11 +31,12 @@ try {
   await assert.rejects(g.restoreMemoryEdit(n.id,{revisionId:first.revisionId,expectedUpdatedAt:(await get(n.id)).updatedAt,reason:'no grants',context:{domains:[]}}),/outside the readable domains/,'explicit empty grants cannot restore personal memory');
   const history=await g.memoryEditHistory(n.id,personal);assert.equal(history.length,1);assert.equal(history[0].before.node.content,original);
   assert(!JSON.stringify(history).includes('embeddingModel'),'history responses omit binary vector details');
-  const currentIndex=(g as any).vectorIndex.getAll().find((item:any)=>item.id===n.id);
-  assert(currentIndex&&currentIndex.metadata.content.startsWith('Development proxy'),'edited body must stay in the live semantic index');
+  const semantic=(embedding:number[],filters={})=>g.search({query:'qzxv',embedding,useAnchors:false,maxDepth:0,...filters});
+  assert((await semantic(editedVector)).some(hit=>hit.node.id===n.id && hit.node.content.startsWith('Development proxy')));
+  assert(!(await semantic(vector)).some(hit=>hit.node.id===n.id),'the old vector must stop matching after editing');
   const changed=await get(n.id),undo=await g.restoreMemoryEdit(n.id,{revisionId:first.revisionId,expectedUpdatedAt:changed.updatedAt,reason:'port observation was for another checkout',context:personal});
-  const restoredIndex=(g as any).vectorIndex.getAll().find((item:any)=>item.id===n.id);
-  assert(restoredIndex&&restoredIndex.metadata.content.startsWith('Proxy binds'),'undo must restore the live semantic index');
+  assert((await semantic(vector)).some(hit=>hit.node.id===n.id && hit.node.content===original));
+  assert(!(await semantic(editedVector)).some(hit=>hit.node.id===n.id),'undo must remove the edited vector');
   const restored=await get(n.id);assert.equal(restored.content,original);assert.deepEqual(restored.dimensions,['fact']);assert.equal(restored.sourceRefs![0].revision,'r1');
   assert.equal(restored.anchors![0].text,'loopback proxy');assert.equal(restored.anchors![0].status,'active');
   assert((await (g as any).db.get('SELECT length(embedding) n FROM memory_anchors WHERE memory_id=?',[n.id])).n>0,'restored anchors keep their vector channel');
@@ -63,6 +66,10 @@ try {
   console.log('PASS profile support prevents in-place undo and requires evidence-aware organization');
 
   const s=await g.createNode({dimension:'fact',sessionId:'private-session',content:'PRIVATE-REVISION-SOURCE',embedding:vector});
+  const both=await semantic(vector,{sessionId:'private-session'});
+  assert(both.some(hit=>hit.node.id===s.id) && both.some(hit=>hit.node.id===another.id));
+  assert(!both.find(hit=>hit.node.id===another.id)?.nearDuplicates?.some(dup=>dup.id===s.id),
+    'a jointly readable session copy cannot be suggested for a cross-domain merge');
   const sr=await g.editMemory(s.id,{content:'PRIVATE-REVISION-UPDATED',expectedUpdatedAt:s.updatedAt});
   await assert.rejects(g.memoryEditHistory(s.id,personal));
   await assert.rejects(g.restoreMemoryEdit(s.id,{revisionId:sr.revisionId,expectedUpdatedAt:(await get(s.id)).updatedAt,reason:'foreign',context:personal}));
@@ -82,10 +89,10 @@ try {
   (g as any).vectorIndex.remove(dimensionsOnly.id);
   await (g as any).backfillEmbeddings();
   assert((await g.search({query:'internal review reusable lesson',memoryType:'lesson'})).some(hit=>hit.node.id===dimensionsOnly.id),'The next scoped recall must pick up the committed backfill');
-  const filled=(g as any).vectorIndex.getAll().find((item:any)=>item.id===dimensionsOnly.id);
-  assert(filled&&filled.metadata.dimensions.includes('lesson'),'background vector backfill must retain scope metadata');
-  assert.equal(filled.metadata.domain.kind,'personal');
-  console.log('PASS dimension reclassification persists and vector backfill keeps scope metadata');
+  assert((await semantic(vector,{dimension:'lesson'})).some(hit=>hit.node.id===dimensionsOnly.id));
+  assert(!(await semantic(vector,{dimension:'fact'})).some(hit=>hit.node.id===dimensionsOnly.id));
+  assert(!(await semantic(vector,{domains:[]})).some(hit=>hit.node.id===dimensionsOnly.id));
+  console.log('PASS dimension reclassification persists and vector-only recall honors scope after backfill');
 
   process.env.MEMORY_TEAM_AUTH_SECRET='revision-test-only';
   const grant=signTeamWriteGrant({v:1,authorizationId:'test-user',teamId:'team-revisions',requestId:'user-edit',operations:['save','edit'],issuedAt:Date.now()-1000,expiresAt:Date.now()+60000},process.env.MEMORY_TEAM_AUTH_SECRET);

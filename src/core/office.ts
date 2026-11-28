@@ -35,10 +35,7 @@ function fail(
   message: string,
   code: 'not_found' | 'scope_denied' | 'invalid_input' | 'stale_version' | 'idempotency_conflict'
 ): never {
-  throw new MindPondError(code, message, {
-    nextAction:
-      'Call work_bootstrap/work_office_get for current identity and revisions. Do not invent roles or credentials.'
-  });
+  throw new MindPondError(code, message);
 }
 const OFFICE_ITEM_SUMMARY = 'id,title,owner,reviewer,parent_id,status,revision,epoch,lease_until,round_id,round_number,code_version,material_id,transfer_to,transfer_epoch,archived,continuationId,ownerName,reviewerName';
 const OFFICE_RECORD_PAGE_SIZE = 50;

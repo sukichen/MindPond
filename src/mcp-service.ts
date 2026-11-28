@@ -1,3 +1,4 @@
+import {officeWaitSchema} from './core/office-wait-policy.js';
 import {RELEASE_VERSION} from './core/release-info.js';
 import {MAX_MCP_INPUT_ELEMENTS} from './core/mcp-limits.js';
 import {hostChatIdentity} from './integrations/host-correlation.js';
@@ -90,7 +91,7 @@ const server = new McpServer({
 const exposedTools: string[] = [];
 if(taskStore){
   exposedTools.push('office_wait_task');
-  server.experimental.tasks.registerToolTask('office_wait_task',{description:'Experimental MCP task: durable five-minute wait with the same human-control, discussion and message priorities as office_wait. Poll task status; fetching a match does not claim a message. Survives server reconnects with the same approved fixed host session. Does not wake a stopped model.',inputSchema:{afterSeq:z.number().int().min(0).optional(),replyTo:z.string().max(160).optional(),waitMs:z.number().int().min(100).max(300000).optional()},execution:{taskSupport:'required'}},{
+  server.experimental.tasks.registerToolTask('office_wait_task',{description:'Experimental MCP task: durable five-minute wait with the same human-control, discussion, message and optional guided-task updates as office_wait (afterTaskChange, mutually exclusive with replyTo). Poll task status; fetching a match does not claim a message. Survives server reconnects with the same approved fixed host session. Does not wake a stopped model.',inputSchema:officeWaitSchema.shape,execution:{taskSupport:'required'}},{
     createTask:async(_args,extra)=>{await options.authorizeWait?.();return {task:await extra.taskStore.createTask({ttl:3600000,pollInterval:1000})};},
     getTask:async(_args,extra)=>{await options.authorizeWait?.();return (await extra.taskStore.getTask(extra.taskId))!;},
     getTaskResult:async(_args,extra)=>{await options.authorizeWait?.();return await extra.taskStore.getTaskResult(extra.taskId) as any;}
@@ -266,7 +267,7 @@ server.registerResource('protocol-rules', 'mindpond://protocol/rules', {
 
 tool(
   'memory_search',
-  'Search the layered memory graph (ripple retrieval across L0-L3). Response includes recallId; after the task report used/rejected/unassessed decisions with memory_recall_feedback. Results include node ids — use them to fill related[] when saving. nearDuplicates flags redundant memories (cosine ≥ 0.92) you may merge with memory_dedupe_resolve.',
+  'Search the layered memory graph (ripple retrieval across L0-L3). Response includes recallId; after the task report used/rejected/unassessed decisions with memory_recall_feedback. Results include node ids — use them to fill related[] when saving. nearDuplicates suggests same-domain candidates for review (cosine ≥ 0.92). Read the evidence before proposing a merge.',
   {
     sourceContext: z.string().optional().describe('Source checkout/ref context for freshness evaluation'),
     query: z.string().describe('Search query text'),

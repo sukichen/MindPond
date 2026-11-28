@@ -1,3 +1,6 @@
+import {z} from 'zod';
+import {MindPondError} from './errors.js';
+
 /** Message waits stay open until arrival, cancellation, or this five-minute deadline. */
 export const OFFICE_WAIT_MS = 300_000;
 /** The opt-in send-and-wait path has a longer maximum than inbox polling. */
@@ -6,6 +9,18 @@ export const OFFICE_REPLY_WAIT_MAX_MS = 30 * 60_000;
 export const OFFICE_TOOL_TIMEOUT_MS = OFFICE_REPLY_WAIT_MAX_MS + 60_000;
 /** Codex configuration uses seconds; derive it from the shared transport deadline. */
 export const OFFICE_TOOL_TIMEOUT_SECONDS = OFFICE_TOOL_TIMEOUT_MS / 1000;
+/** Both live and durable waits accept the same public mailbox and task cursors. */
+export const officeWaitSchema = z.object({
+  afterSeq: z.number().int().nonnegative().optional(),
+  replyTo: z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/).optional(),
+  waitMs: z.number().int().min(100).max(OFFICE_WAIT_MS).optional(),
+  afterTaskChange: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+});
+export function validateWaitFilters(input: {replyTo?: string; afterTaskChange?: number}) {
+  if (input.replyTo !== undefined && input.afterTaskChange !== undefined)
+    throw new MindPondError('invalid_input', 'Choose replyTo or afterTaskChange for this wait.');
+}
+
 /** Initial database-wide admission defaults. A saved administrator policy takes precedence across processes. */
 export function officeWaitCapacity(env:NodeJS.ProcessEnv=process.env){
   const read=(key:string,fallback:number,max:number)=>{const value=env[key]===undefined?fallback:Number(env[key]);if(!Number.isSafeInteger(value)||value<1||value>max)throw new Error(`${key} must be 1–${max}`);return value;};

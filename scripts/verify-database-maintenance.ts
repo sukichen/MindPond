@@ -1,3 +1,5 @@
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -60,6 +62,30 @@ try {
   await db.run('UPDATE nodes SET superseded_by=? WHERE id=?',['missing-target',a.id]);
   await db.run('INSERT INTO memory_associations(id,space_id,memory_type,member_a_id,member_b_id,weight,created_at,updated_at) VALUES (?,?,?,?,?,.9,1,1)',['invalid',ma.spaceId,ma.memoryType,...[ma.id,mb.id].sort()]);
   const before=await auditDatabase(db);assert(!before.healthy);assert.equal(before.dangling.length,1);assert.equal(before.foreignAssociations.length,1);
+  // The historical ALTER TABLE migration added superseded_by without a foreign key.
+  const legacy=path.join(dir,'legacy.db');
+  const legacyDb=await open({filename:legacy,driver:sqlite3.Database});
+  try {
+    const schema=(await db.get("SELECT sql FROM sqlite_master WHERE name='nodes'")).sql;
+    const oldSchema=schema.replace('superseded_by TEXT REFERENCES nodes(id) ON DELETE SET NULL','superseded_by TEXT');
+    assert.notEqual(oldSchema,schema);
+    await legacyDb.exec(oldSchema);
+  } finally { await legacyDb.close(); }
+  const legacyGraph=new GraphMemory('.',{dbPath:legacy});
+  try {
+    await legacyGraph.init();
+    const obsolete=await legacyGraph.createNode({dimension:'fact',content:'Legacy supersession fixture',embedding:[1,...Array(383).fill(0)]});
+    await (legacyGraph as any).db.run('UPDATE nodes SET superseded_by=? WHERE id=?',['missing',obsolete.id]);
+  } finally { await legacyGraph.close(); }
+  const cli=(...args:string[])=>promisify(execFile)(process.execPath,['dist/maintenance.js','--db',legacy,...args]);
+  await assert.rejects(cli('--check'),(error:any)=>error.code===2 && JSON.parse(error.stdout).dangling.length===1);
+  for(const args of [['--check','--repair'],['--repair','--repair'],['--unknown','--repair']])
+    await assert.rejects(cli(...args));
+  assert(!(await fs.readdir(dir)).some(name=>name.includes('pre-integrity-repair')));
+  const repair=JSON.parse((await cli('--repair')).stdout);
+  assert.equal(repair.quarantinedMemories,1);
+  assert.equal(JSON.parse((await cli()).stdout).healthy,true);
+  console.log('PASS legacy dangling references fail checks; ambiguous commands cannot repair; explicit repair is effective');
   const backup=path.join(dir,'backup.db');await db.run('VACUUM INTO ?',[backup]);
   await db.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE');
   const result=await quarantineDatabaseIssues(db);await db.exec('COMMIT');
